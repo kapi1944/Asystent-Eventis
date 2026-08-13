@@ -300,6 +300,20 @@
     return dedupeTerms(raw);
   }
 
+  function odczytajLiczbeDni(doc) {
+    const wzorzec = /(?:czas trwania|liczba dni|czas szkolenia)[^0-9]{0,50}(\d{1,2})\s*(?:dni|dzien)\b/i;
+    const elementy = $$('li,p,div,span,td,th,strong,b',doc)
+      .map(el=>cleanLine(el.textContent || ""))
+      .filter(tekst=>tekst.length <= 250 && /czas trwania|liczba dni|czas szkolenia/i.test(normalize(tekst)))
+      .sort((a,b)=>a.length-b.length);
+    for (const tekst of elementy) {
+      const dopasowanie = normalize(tekst).match(wzorzec);
+      if (dopasowanie) return Number(dopasowanie[1]);
+    }
+    const dopasowanie = normalize(doc.body?.innerText || doc.body?.textContent || "").match(wzorzec);
+    return dopasowanie ? Number(dopasowanie[1]) : null;
+  }
+
   function collectSectionByMarker(doc, markerText) {
     const headings = $$('h1,h2,h3,h4,h5,strong,b,.text_over',doc);
     const marker = headings.find(el => normalize(el.textContent).includes(normalize(markerText)));
@@ -335,6 +349,7 @@
     return {
       provider:"SEMPER", id:idMatch?.[1] || url, url, title,
       terms: parseSemperTerms(doc),
+      liczbaDni: odczytajLiczbeDni(doc),
       groupHtml: collectSectionByMarker(doc,"grupa docelowa") || collectSectionByMarker(doc,"adresaci"),
       goalHtml: collectSectionByMarker(doc,"cel szkolenia"),
       benefitsHtml: collectSectionByMarker(doc,"korzyści"),
@@ -383,6 +398,7 @@
     return {
       provider:"IIST", id:idMatch?.[1] || url, url, title,
       terms: parseIistTerms(doc),
+      liczbaDni: odczytajLiczbeDni(doc),
       groupHtml: collectSectionByMarker(doc,"grupa docelowa"),
       goalHtml: collectSectionByMarker(doc,"cel szkolenia"),
       benefitsHtml: collectSectionByMarker(doc,"korzyści dla uczestników"),
@@ -495,6 +511,25 @@
     el.dispatchEvent(new Event("change",{bubbles:true}));
   }
 
+  function znajdzPolePoEtykiecie(tekstEtykiety) {
+    const szukanyTekst = normalize(tekstEtykiety);
+    const etykieta = $$('label').find(el=>normalize(el.textContent).includes(szukanyTekst));
+    if (!etykieta) return null;
+    const identyfikator = etykieta.getAttribute("for");
+    if (identyfikator) {
+      const pole = document.getElementById(identyfikator);
+      if (pole) return pole;
+    }
+    return etykieta.querySelector('input,textarea,select') || etykieta.parentElement?.querySelector('input,textarea,select') || null;
+  }
+
+  function zaznaczOpcjePoEtykiecie(tekstEtykiety) {
+    const pole = znajdzPolePoEtykiecie(tekstEtykiety);
+    if (!(pole instanceof HTMLInputElement)) return false;
+    if (!pole.checked) pole.click();
+    return true;
+  }
+
   function findAddTermButton() {
     const precise = $("#eventForm > div.kt-portlet__body > div > div:nth-child(6) > div:nth-child(3) > div > a");
     if (precise) return precise;
@@ -547,10 +582,11 @@
 
   async function fillEventDetailsIfAdd(source, terms) {
     if (MODE !== "add") return;
-    const duration = Math.max(1,...terms.map(t=>t.durationDays||1));
+    const liczbaDni = source.liczbaDni || Math.max(1,...terms.map(t=>t.durationDays||1));
     setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),source.title);
-    setValue($('input[name="event[hours]"]'), duration === 1 ? "1 dzień" : `${duration} dni`);
-    setValue($('input[name="event[participants]"]'), state.organization === "SEMPER" ? "Ekspert SEMPER" : "Ekspert IIST");
+    setValue($('input[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)"), liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`);
+    if (zaznaczOpcjePoEtykiecie("Podstawowy")) await sleep(100);
+    setValue(znajdzPolePoEtykiecie("Życiorys"), state.organization === "SEMPER" ? "Ekspert SEMPER" : "Trener IIST");
     const rich = [
       ["event[reason]",source.benefitsHtml],
       ["event[information]",source.goalHtml],
@@ -786,7 +822,6 @@
     if (!state.mappingVerifiedThisSession) return toast("Najpierw potwierdź zgodność zapamiętanego/wybranego linku z ogłoszeniem Eventis.");
     compareTerms();
     if (!state.missingTerms.length) return toast("Brak brakujących potwierdzonych terminów.");
-    if (!confirm(`Wypełnić ${state.missingTerms.length} brakujące potwierdzone terminy? Rozszerzenie NIE zapisze formularza Eventis.`)) return;
     try {
       const chosen=[...state.missingTerms];
       const result=await addSelectedTerms(chosen);
@@ -895,7 +930,7 @@
   function render() {
     let root=$("#esync-root");
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn" id="esync-org" title="Zmień SEMPER / IIST">${state.organization==='SEMPER'?'S':'I'}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE · brak automatycznego zapisu formularza</div></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE · brak automatycznego zapisu formularza</div></div>`;
     bindUI();
     renderOutboxStatus();
   }
