@@ -20,6 +20,16 @@
     mappingBlockThreshold: 0.70,
     manualSnapshotMaxAgeHours: 24
   };
+  const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
+  if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
+  const PROGI_WYSZUKIWANIA = Object.freeze({
+    AUTO_AKCEPTACJA: 0.84,
+    MOCNY_KANDYDAT: 0.72,
+    POKAZ_KANDYDATA: 0.42,
+    MINIMALNA_PRZEWAGA: 0.08,
+    MAKS_KANDYDATOW_DO_WERYFIKACJI: 5,
+    MAKS_WYNIKOW_W_UI: 5
+  });
 
   const state = {
     settings: { ...DEFAULT_SETTINGS },
@@ -29,11 +39,17 @@
     eventisTitle: "",
     mapping: null,
     source: null,
+    sourceLoadedFromMapping: false,
     mappingVerifiedThisSession: false,
     sourceTerms: [],
     existingTerms: [],
     missingTerms: [],
     searchChoices: [],
+    searchRequestId: 0,
+    searchAttempted: false,
+    searchMessage: "",
+    searchFinalReason: "",
+    titleAtSearch: "",
     manualRecords: [],
     manualMatches: [],
     pendingOperation: null,
@@ -56,46 +72,15 @@
     setTimeout(() => el.remove(), 2800);
   }
 
-  function normalize(value) {
-    return String(value || "")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/certyfikowane szkolenie online/g, " ")
-      .replace(/szkolenie online/g, " online ")
-      .replace(/[^a-z0-9]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+  function normalize(value) { return NARZEDZIA_WYSZUKIWANIA.normalizujTytul(value); }
 
-  function cleanLine(value) {
-    return String(value || "").replace(/\u00a0/g," ").replace(/\s+/g," ").replace(/^[-*•–·▪▫]\s*/,"").trim();
-  }
+  function cleanLine(value) { return NARZEDZIA_WYSZUKIWANIA.oczyscLinie(value); }
 
-  function titleBeforeFirstPunctuation(title) {
-    const clean = cleanLine(title);
-    const protectedClean = clean.replace(/\bds\.\s*/gi,"ds§ ").replace(/\bm\.in\.\s*/gi,"m§in§ ");
-    const firstPart = (protectedClean.split(/[.,;:!?|…–—-]/)[0] || protectedClean).trim();
-    return firstPart.replace(/\bds§\s*/gi,"ds. ").replace(/\bm§in§\s*/gi,"m.in. ").trim();
-  }
+  function titleBeforeFirstPunctuation(title) { return NARZEDZIA_WYSZUKIWANIA.tytulPrzedPierwszymSeparatorem(title); }
 
-  function tokenSet(value) {
-    const skip = new Set(["oraz","wraz","wedlug","praktyczne","kompleksowe","warsztaty","szkolenie","kurs","dla","nad","pod","online","dniowe","dniowy","dniowa","certyfikowane"]);
-    return new Set(normalize(value).split(" ").filter(x => x.length > 2 && !skip.has(x)));
-  }
+  function tokenSet(value) { return NARZEDZIA_WYSZUKIWANIA.zbiorTokenow(value); }
 
-  function titleSimilarity(a, b) {
-    const A = tokenSet(a), B = tokenSet(b);
-    if (!A.size || !B.size) return 0;
-    let common = 0;
-    for (const x of A) if (B.has(x)) common++;
-    const jaccard = common / new Set([...A, ...B]).size;
-    const containment = common / Math.min(A.size, B.size);
-    const an = normalize(titleBeforeFirstPunctuation(a) || a);
-    const bn = normalize(titleBeforeFirstPunctuation(b) || b);
-    const prefixBonus = an && bn && (an.startsWith(bn.slice(0, Math.min(22,bn.length))) || bn.startsWith(an.slice(0, Math.min(22,an.length)))) ? .08 : 0;
-    return Math.max(0, Math.min(1, .48 * jaccard + .52 * containment + prefixBonus));
-  }
+  function titleSimilarity(a, b) { return NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(a, b); }
 
   function dateRangeFromText(text) {
     const m = String(text || "").match(/(?:od:\s*)?(\d{4}-\d{2}-\d{2})\s*(?:do:|do|-|–|—)\s*(\d{4}-\d{2}-\d{2})/i);
@@ -144,7 +129,7 @@
   async function storageSet(obj) { return chrome.storage.local.set(obj); }
 
   async function fetchText(url, opts={}) {
-    const payload = { url, method: opts.method || "GET", body: opts.body || null, headers: opts.headers || {} };
+    const payload = { url, method: opts.method || "GET", body: opts.body || null, headers: opts.headers || {}, timeoutMs: opts.timeoutMs || 15000 };
     const res = await chrome.runtime.sendMessage({ type:"FETCH_TEXT", payload });
     if (!res?.ok) throw new Error(res?.error || "Nie udało się pobrać strony.");
     return res;
@@ -204,6 +189,12 @@
 
   function mappingKey(org,id) { return `${org}|${id}`; }
 
+  function czyMapowanieDotyczyZrodla(mapowanie, zrodlo) {
+    if (!mapowanie || !zrodlo) return false;
+    if (zrodlo.id && mapowanie.sourceTrainingId === zrodlo.id) return true;
+    return mapowanie.sourceUrl === zrodlo.url;
+  }
+
   async function saveMapping(source, origin="MANUAL_URL") {
     const { mappings = {} } = await storageGet(["mappings"]);
     const key = mappingKey(state.organization,state.eventisId);
@@ -238,6 +229,7 @@
     await audit("MAPPING_FORGOTTEN", {});
     state.mapping = null;
     state.source = null;
+    state.sourceLoadedFromMapping = false;
     state.sourceTerms = [];
     state.missingTerms = [];
     state.mappingVerifiedThisSession = false;
@@ -260,19 +252,11 @@
   }
 
   function normalizeSemperUrl(value) {
-    try {
-      const u = new URL(String(value || "").trim());
-      if (!/(^|\.)szkolenia-semper\.pl$/i.test(u.hostname)) return "";
-      return u.href;
-    } catch { return ""; }
+    return NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(value);
   }
 
   function normalizeIistUrl(value) {
-    try {
-      const u = new URL(String(value || "").trim());
-      if (!/(^|\.)szkoleniaiist\.com\.pl$/i.test(u.hostname)) return "";
-      return u.href;
-    } catch { return ""; }
+    return NARZEDZIA_WYSZUKIWANIA.absolutnyUrlIist(value);
   }
 
   function parseSemperTerms(doc) {
@@ -406,77 +390,229 @@
     };
   }
 
-  async function fetchTraining(url) {
-    const normalizedUrl = state.organization === "SEMPER" ? normalizeSemperUrl(url) : normalizeIistUrl(url);
-    if (!normalizedUrl) throw new Error(`Link nie należy do źródła ${state.organization}.`);
+  async function fetchTraining(url, organizacja=state.organization) {
+    const normalizedUrl = organizacja === "SEMPER" ? normalizeSemperUrl(url) : normalizeIistUrl(url);
+    const czySzczegoly = organizacja === "SEMPER"
+      ? NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(normalizedUrl)
+      : NARZEDZIA_WYSZUKIWANIA.czySzczegolyIist(normalizedUrl);
+    if (!normalizedUrl || !czySzczegoly) throw new Error(`Link nie jest stroną szczegółową szkolenia ${organizacja}.`);
     const { text, finalUrl } = await fetchText(normalizedUrl);
-    const source = state.organization === "SEMPER" ? parseSemperPage(text,finalUrl || normalizedUrl) : parseIistPage(text,finalUrl || normalizedUrl);
+    const source = organizacja === "SEMPER" ? parseSemperPage(text,finalUrl || normalizedUrl) : parseIistPage(text,finalUrl || normalizedUrl);
     if (!source.title) throw new Error("Nie udało się odczytać tytułu szkolenia ze strony źródłowej.");
     return source;
   }
 
   function importantSearchWords(value) {
-    const skip = new Set(["oraz","wraz","wedlug","praktyczne","kompleksowe","warsztaty","szkolenie","kurs","dla","nad","pod"]);
-    return normalize(value).split(" ").filter(w=>w.length>2&&!skip.has(w));
+    return NARZEDZIA_WYSZUKIWANIA.istotneSlowa(value);
   }
 
   function absoluteSemperUrl(value) {
-    try { return new URL(value,"https://www.szkolenia-semper.pl/").href; } catch { return ""; }
+    return NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(value);
   }
 
   function isSemperDetailsUrl(url) {
-    return /^https:\/\/(?:www\.)?szkolenia-semper\.pl\/component\/trainings\/details\//i.test(String(url||""));
+    return NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(url);
   }
 
   function linksFromSemperSearch(html, phrase) {
-    let decoded = String(html||"");
-    try { const parsed=JSON.parse(decoded); if (typeof parsed === "string") decoded=parsed; } catch {}
-    const doc = new DOMParser().parseFromString(decoded,"text/html");
-    const words = importantSearchWords(phrase);
-    const seen = new Set();
-    return $$('a[href]',doc).map(a=>{
-      const href = absoluteSemperUrl(a.getAttribute("href") || "");
-      const title = cleanLine(a.getAttribute("title") || a.textContent || href);
-      const n = normalize(`${title} ${href}`);
-      const score = words.reduce((s,w)=>s+(n.includes(w)?1:0),0);
-      return {url:href,title,score,similarity:titleSimilarity(phrase,title)};
-    }).filter(x=>isSemperDetailsUrl(x.url)&&x.score>0&&!seen.has(x.url)&&seen.add(x.url)).sort((a,b)=>b.similarity-a.similarity||b.score-a.score);
+    return NARZEDZIA_WYSZUKIWANIA.linkiZWyszukiwarkiSemper(html, phrase);
   }
 
-  async function searchSemper(phrase) {
-    const headers = {"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","X-Requested-With":"XMLHttpRequest"};
-    try {
-      const direct = await fetchText("https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php", {method:"POST",headers,body:formUrlEncoded({opc:"szukaj",co:phrase})});
+  function sprawdzAktualnoscWyszukiwania(identyfikator) {
+    if (identyfikator !== state.searchRequestId) throw new Error("Wyszukiwanie zostało zastąpione nowszym.");
+  }
+
+  function zapiszDiagnostykeWyszukiwania(szczegoly) {
+    console.debug("[Eventis Sync][wyszukiwanie]", szczegoly);
+  }
+
+  function dodajKandydata(mapa, kandydat, wariant) {
+    if (!kandydat?.url) return;
+    const poprzedni = mapa.get(kandydat.url);
+    const searchScore = Math.max(kandydat.searchScore || 0, poprzedni?.searchScore || 0);
+    mapa.set(kandydat.url, {
+      ...poprzedni,
+      ...kandydat,
+      searchScore,
+      warianty: [...new Set([...(poprzedni?.warianty || []), wariant])]
+    });
+  }
+
+  async function zweryfikujKandydatow(kandydaci, organizacja, identyfikator) {
+    const posortowani = [...kandydaci]
+      .sort((a,b)=>b.searchScore-a.searchScore)
+      .slice(0,PROGI_WYSZUKIWANIA.MAKS_KANDYDATOW_DO_WERYFIKACJI);
+    const wyniki = [];
+    let bledySieci = 0;
+    let bledyWeryfikacji = 0;
+    for (const kandydat of posortowani) {
+      sprawdzAktualnoscWyszukiwania(identyfikator);
       try {
-        const parsed = JSON.parse(direct.text);
-        const url = absoluteSemperUrl(parsed?.url || "");
-        if (isSemperDetailsUrl(url)) {
-          const src = await fetchTraining(url);
-          if (titleSimilarity(phrase,src.title) >= .65) return [{url:src.url,title:src.title,similarity:titleSimilarity(phrase,src.title)}];
+        const source = kandydat.source || await fetchTraining(kandydat.url, organizacja);
+        const verificationScore = titleSimilarity(state.eventisTitle, source.title);
+        wyniki.push({
+          url: source.url,
+          title: source.title,
+          provider: organizacja,
+          searchScore: kandydat.searchScore || 0,
+          verificationScore,
+          similarity: verificationScore,
+          finalScore: 0.82 * verificationScore + 0.18 * (kandydat.searchScore || 0),
+          source
+        });
+      } catch (blad) {
+        bledyWeryfikacji++;
+        if(/HTTP|połą|pobr|czasu|fetch|network/i.test(blad.message||""))bledySieci++;
+        zapiszDiagnostykeWyszukiwania({provider:organizacja,url:kandydat.url,finalReason:"candidate-fetch-error",error:blad.message});
+      }
+    }
+    return {
+      results:wyniki.sort((a,b)=>b.finalScore-a.finalScore||b.verificationScore-a.verificationScore),
+      verificationErrors:bledyWeryfikacji,
+      networkVerificationErrors:bledySieci
+    };
+  }
+
+  async function searchSemper(warianty, identyfikator) {
+    const headers = {"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","X-Requested-With":"XMLHttpRequest"};
+    const kandydaci = new Map();
+    let udaneZapytania = 0;
+    let ostatniBlad = null;
+    for (const wariant of warianty) {
+      sprawdzAktualnoscWyszukiwania(identyfikator);
+      try {
+        const direct = await fetchText("https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php", {method:"POST",headers,body:formUrlEncoded({opc:"szukaj",co:wariant})});
+        udaneZapytania++;
+        const url = NARZEDZIA_WYSZUKIWANIA.urlZJsonSemper(direct.text);
+        if (url) {
+          dodajKandydata(kandydaci,{
+            url,
+            title:url,
+            searchScore:Math.max(0.7,NARZEDZIA_WYSZUKIWANIA.ocenWynikWyszukiwania(wariant,url))
+          },wariant);
+          try {
+            const source = await fetchTraining(url,"SEMPER");
+            const verificationScore = titleSimilarity(state.eventisTitle,source.title);
+            const searchScore = NARZEDZIA_WYSZUKIWANIA.ocenWynikWyszukiwania(wariant,source.title);
+            dodajKandydata(kandydaci,{url:source.url,title:source.title,searchScore,source},wariant);
+            if (verificationScore >= PROGI_WYSZUKIWANIA.AUTO_AKCEPTACJA) {
+              const weryfikacja = await zweryfikujKandydatow(kandydaci.values(),"SEMPER",identyfikator);
+              return {...weryfikacja,rawCount:kandydaci.size};
+            }
+          } catch (blad) {
+            ostatniBlad = blad;
+          }
         }
-      } catch {}
-    } catch {}
-    const auto = await fetchText("https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj_auto.php", {method:"POST",headers,body:formUrlEncoded({opc:"szukaj",co:phrase})});
-    return linksFromSemperSearch(auto.text,phrase).slice(0,8);
+      } catch (blad) {
+        ostatniBlad = blad;
+      }
+      try {
+        const auto = await fetchText("https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj_auto.php", {method:"POST",headers,body:formUrlEncoded({opc:"szukaj",co:wariant})});
+        udaneZapytania++;
+        for (const kandydat of linksFromSemperSearch(auto.text,wariant)) dodajKandydata(kandydaci,kandydat,wariant);
+      } catch (blad) {
+        ostatniBlad = blad;
+      }
+    }
+    if (!udaneZapytania && ostatniBlad) throw ostatniBlad;
+    const weryfikacja = await zweryfikujKandydatow(kandydaci.values(),"SEMPER",identyfikator);
+    return {...weryfikacja,rawCount:kandydaci.size};
   }
 
-  async function searchIist(phrase) {
-    // v0.1: bez zgadywania nieudokumentowanych parametrów wyszukiwarki IIST.
-    // Pobieramy kalendarz i oceniamy widoczne linki szkoleniowe; ręcznie wskazany link zostaje zapamiętany.
-    const { text } = await fetchText("https://szkoleniaiist.com.pl/szkolenia.php");
-    const doc = new DOMParser().parseFromString(text,"text/html");
-    const seen = new Set();
-    return $$('a[href]',doc).map(a=>{
-      let url=""; try { url=new URL(a.getAttribute("href"),"https://szkoleniaiist.com.pl/").href; } catch {}
-      const title=cleanLine(a.textContent||"");
-      return {url,title,similarity:titleSimilarity(phrase,title)};
-    }).filter(x=>x.title.length>15&&/,(?:\d+)\.html(?:$|[?#])/i.test(decodeURIComponent(x.url))&&x.similarity>=.45&&!seen.has(x.url)&&seen.add(x.url)).sort((a,b)=>b.similarity-a.similarity).slice(0,8);
+  function odczytajFormularzIist(html, urlStrony) {
+    const doc = new DOMParser().parseFromString(html,"text/html");
+    const polaTekstowe = $$('input:not([type]),input[type="text"],input[type="search"]',doc);
+    const poleTytulu = polaTekstowe.find(pole => {
+      const opis = normalize(`${pole.getAttribute("placeholder") || ""} ${pole.getAttribute("aria-label") || ""}`);
+      return opis.includes("wpisz nazwe szkolenia");
+    });
+    const formularz = poleTytulu?.closest("form");
+    if (!formularz || !poleTytulu.name) {
+      const blad = new Error("Nie rozpoznano natywnego formularza „Znajdź szkolenie” IIST. Potrzebny jest aktualny HTML/request strony.");
+      blad.code = "IIST_FORM_NOT_RECOGNIZED";
+      throw blad;
+    }
+    const metoda = String(formularz.getAttribute("method") || "GET").toUpperCase();
+    if (!['GET','POST'].includes(metoda)) throw new Error(`Nieobsługiwana metoda formularza IIST: ${metoda}.`);
+    const surowaAkcja = formularz.getAttribute("action") || urlStrony;
+    if (/^javascript:/i.test(surowaAkcja)) throw new Error("Formularz IIST używa JavaScript/AJAX — potrzebny jest rzeczywisty request z DevTools.");
+    const endpoint = normalizeIistUrl(new URL(surowaAkcja,urlStrony).href);
+    if (!endpoint) throw new Error("Formularz IIST wskazuje endpoint poza dozwoloną domeną.");
+    const pola = [];
+    for (const pole of $$('input[name],select[name],textarea[name]',formularz)) {
+      if (pole === poleTytulu) continue;
+      const typ = String(pole.getAttribute("type") || "").toLowerCase();
+      if (["submit","button","reset","file","image"].includes(typ)) continue;
+      if (["checkbox","radio"].includes(typ) && !pole.checked) continue;
+      if (pole.tagName === "SELECT") {
+        for (const opcja of Array.from(pole.options).filter(opcja => opcja.selected)) pola.push([pole.name,opcja.value]);
+      } else {
+        pola.push([pole.name,pole.value || ""]);
+      }
+    }
+    const przycisk = $('button[type="submit"][name],input[type="submit"][name]',formularz);
+    if (przycisk?.name) pola.push([przycisk.name,przycisk.value || ""]);
+    return {endpoint,method:metoda,titleParameter:poleTytulu.name,fields:pola};
   }
 
-  async function searchTraining() {
-    const phrase = titleBeforeFirstPunctuation(state.eventisTitle) || state.eventisTitle;
-    if (!phrase || phrase.length < 3) throw new Error("Nie odczytano tytułu ogłoszenia Eventis.");
-    return state.organization === "SEMPER" ? searchSemper(phrase) : searchIist(phrase);
+  async function wykonajWyszukiwanieIist(opisFormularza, wariant) {
+    const dane = new URLSearchParams(opisFormularza.fields);
+    dane.set(opisFormularza.titleParameter,wariant);
+    if (opisFormularza.method === "GET") {
+      const url = new URL(opisFormularza.endpoint);
+      for (const [nazwa,wartosc] of dane) url.searchParams.append(nazwa,wartosc);
+      return fetchText(url.href);
+    }
+    return fetchText(opisFormularza.endpoint,{
+      method:"POST",
+      headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},
+      body:dane.toString()
+    });
+  }
+
+  async function searchIist(warianty, identyfikator) {
+    const strona = await fetchText("https://szkoleniaiist.com.pl/szkolenia.php");
+    sprawdzAktualnoscWyszukiwania(identyfikator);
+    const formularz = odczytajFormularzIist(strona.text,strona.finalUrl || "https://szkoleniaiist.com.pl/szkolenia.php");
+    const kandydaci = new Map();
+    let udaneZapytania = 0;
+    let ostatniBlad = null;
+    zapiszDiagnostykeWyszukiwania({provider:"IIST",endpoint:formularz.endpoint,method:formularz.method,titleParameter:formularz.titleParameter});
+    for (const wariant of warianty) {
+      sprawdzAktualnoscWyszukiwania(identyfikator);
+      try {
+        const odpowiedz = await wykonajWyszukiwanieIist(formularz,wariant);
+        udaneZapytania++;
+        const baza = odpowiedz.finalUrl || formularz.endpoint;
+        for (const kandydat of NARZEDZIA_WYSZUKIWANIA.linkiZWyszukiwarkiIist(odpowiedz.text,wariant,baza)) {
+          dodajKandydata(kandydaci,kandydat,wariant);
+        }
+      } catch (blad) {
+        ostatniBlad = blad;
+      }
+    }
+    if (!udaneZapytania && ostatniBlad) throw ostatniBlad;
+    const weryfikacja = await zweryfikujKandydatow(kandydaci.values(),"IIST",identyfikator);
+    return {...weryfikacja,rawCount:kandydaci.size,form:formularz};
+  }
+
+  async function searchTraining(identyfikator=state.searchRequestId) {
+    const warianty = NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(state.eventisTitle);
+    if (!warianty.length) throw new Error("Nie odczytano wystarczająco charakterystycznego tytułu ogłoszenia Eventis.");
+    zapiszDiagnostykeWyszukiwania({provider:state.organization,eventisTitle:state.eventisTitle,variants:warianty});
+    const wynik = state.organization === "SEMPER"
+      ? await searchSemper(warianty,identyfikator)
+      : await searchIist(warianty,identyfikator);
+    zapiszDiagnostykeWyszukiwania({
+      provider:state.organization,
+      eventisTitle:state.eventisTitle,
+      variants:warianty,
+      candidateCount:wynik.rawCount,
+      topCandidate:wynik.results[0]?.title || null,
+      searchScore:wynik.results[0]?.searchScore || 0,
+      verificationScore:wynik.results[0]?.verificationScore || 0
+    });
+    return {...wynik,variants:warianty};
   }
 
   function getExistingTerms() {
@@ -743,8 +879,9 @@
     return {kind:"ok",score};
   }
 
-  async function useSource(source, {learn=false,origin="MANUAL_URL"}={}) {
+  async function useSource(source, {learn=false,origin="MANUAL_URL",fromMapping=false}={}) {
     state.source=source;
+    state.sourceLoadedFromMapping=fromMapping;
     state.sourceTerms=source.terms || [];
     compareTerms();
     state.mappingVerifiedThisSession=false;
@@ -755,16 +892,20 @@
 
   async function loadRememberedMapping() {
     if (!state.mapping?.sourceUrl) return;
+    const identyfikator = state.searchRequestId;
+    const organizacja = state.organization;
     try {
       state.status="LOADING_MAPPING"; render();
-      const source=await fetchTraining(state.mapping.sourceUrl);
-      await useSource(source,{learn:false});
+      const source=await fetchTraining(state.mapping.sourceUrl,organizacja);
+      if(identyfikator!==state.searchRequestId||organizacja!==state.organization)return;
+      await useSource(source,{learn:false,fromMapping:true});
       const ms=mappingState();
       if(ms.kind==="danger"){
         state.mapping.status="REVIEW_REQUIRED";
         await audit("MAPPING_SUSPECTED",{score:ms.score,sourceUrl:source.url});
       }
     } catch (e) {
+      if(identyfikator!==state.searchRequestId||organizacja!==state.organization)return;
       state.status="MAPPING_ERROR";
       state.mappingError=e.message;
       render();
@@ -775,6 +916,10 @@
     if (!state.source) return;
     const ms=mappingState();
     if (ms.kind === "danger") return toast("Powiązanie jest zbyt niezgodne. Zmień link zamiast je potwierdzać.");
+    const mapowanieDotyczyZrodla = czyMapowanieDotyczyZrodla(state.mapping,state.source);
+    if (!mapowanieDotyczyZrodla) {
+      await saveMapping(state.source,"AUTO_RECOMMENDED_CONFIRMED");
+    }
     state.mappingVerifiedThisSession=true;
     if (state.mapping) {
       const { mappings = {} } = await storageGet(["mappings"]);
@@ -793,6 +938,7 @@
     const url=input.value.trim();
     if(!url) return toast("Wklej link szkolenia.");
     try {
+      state.searchRequestId++;
       state.status="LOADING_SOURCE"; render();
       const source=await fetchTraining(url);
       await useSource(source,{learn:true,origin:"MANUAL_URL"});
@@ -801,19 +947,69 @@
   }
 
   async function onSearch() {
+    if (state.status === "SEARCHING") return;
+    const identyfikator = ++state.searchRequestId;
     try {
-      state.status="SEARCHING";state.searchChoices=[];render();
-      const choices=await searchTraining();
-      state.searchChoices=choices;
-      state.status=choices.length?"SEARCH_CHOICES":"SEARCH_EMPTY";
+      state.status="SEARCHING";
+      state.searchAttempted=true;
+      state.searchChoices=[];
+      state.searchMessage=`Szukam szkolenia w ${state.organization}…`;
+      state.titleAtSearch=state.eventisTitle;
       render();
-    } catch(e){state.status="ERROR";state.lastError=e.message;render();}
+      const wynik=await searchTraining(identyfikator);
+      sprawdzAktualnoscWyszukiwania(identyfikator);
+      const pokazane=wynik.results
+        .filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.POKAZ_KANDYDATA)
+        .slice(0,PROGI_WYSZUKIWANIA.MAKS_WYNIKOW_W_UI);
+      const najlepszy=pokazane[0];
+      const drugi=pokazane[1];
+      const maPrzewage=!drugi||najlepszy.verificationScore-drugi.verificationScore>=PROGI_WYSZUKIWANIA.MINIMALNA_PRZEWAGA;
+      if(najlepszy&&najlepszy.verificationScore>=PROGI_WYSZUKIWANIA.AUTO_AKCEPTACJA&&maPrzewage){
+        await useSource(najlepszy.source,{learn:false});
+        state.status="SEARCH_HIGH";
+        state.searchFinalReason="high-confidence-single";
+        state.searchMessage="Znaleziono prawdopodobne szkolenie — sprawdź zgodność.";
+      }else if(pokazane.length){
+        state.searchChoices=pokazane;
+        const mocne=pokazane.filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.MOCNY_KANDYDAT).length;
+        state.status=mocne>1||pokazane.length>1?"SEARCH_MULTIPLE":"SEARCH_WEAK";
+        state.searchFinalReason=state.status==="SEARCH_MULTIPLE"?"multiple-candidates":"weak-candidate";
+        state.searchMessage=state.status==="SEARCH_MULTIPLE"
+          ?`Znaleziono ${pokazane.length} możliwe szkolenia. Wybierz właściwe.`
+          :"Znaleziono podobny wynik, ale nie jest wystarczająco pewny.";
+      }else if(wynik.networkVerificationErrors){
+        state.status="SEARCH_NETWORK";
+        state.searchFinalReason="candidate-network-error";
+        state.searchMessage=`Znaleziono wyniki, ale nie udało się pobrać stron szczegółowych z ${state.organization}.`;
+      }else if(wynik.rawCount){
+        state.status="SEARCH_WEAK";
+        state.searchFinalReason="candidates-failed-verification";
+        state.searchMessage="Znaleziono podobne wyniki, ale żaden nie przeszedł weryfikacji tytułu strony.";
+      }else{
+        state.status="SEARCH_EMPTY";
+        state.searchFinalReason="no-search-results";
+        state.searchMessage=`Nie znaleziono szkolenia w wyszukiwarce ${state.organization}. Możesz podać link ręcznie.`;
+      }
+      zapiszDiagnostykeWyszukiwania({provider:state.organization,finalReason:state.searchFinalReason,topCandidate:najlepszy?.title||null,searchScore:najlepszy?.searchScore||0,verificationScore:najlepszy?.verificationScore||0});
+      render();
+    } catch(e){
+      if(identyfikator!==state.searchRequestId)return;
+      const siec=/HTTP|połą|pobr|czasu|fetch|network/i.test(e.message||"");
+      state.status=siec?"SEARCH_NETWORK":"ERROR";
+      state.lastError=e.message;
+      state.searchMessage=siec?`Nie udało się połączyć z ${state.organization}.`:e.message;
+      state.searchFinalReason=siec?"network-error":"configuration-or-parser-error";
+      zapiszDiagnostykeWyszukiwania({provider:state.organization,finalReason:state.searchFinalReason,error:e.message});
+      render();
+    }
   }
 
   async function chooseSearchResult(url) {
     try {
+      const kandydat=state.searchChoices.find(wynik=>wynik.url===url);
+      state.searchRequestId++;
       state.status="LOADING_SOURCE";render();
-      const source=await fetchTraining(url);
+      const source=kandydat?.source||await fetchTraining(url);
       await useSource(source,{learn:true,origin:"USER_SELECTED"});
     }catch(e){state.status="ERROR";state.lastError=e.message;render();}
   }
@@ -835,11 +1031,13 @@
 
   async function switchOrganization(org) {
     if (!['SEMPER','IIST'].includes(org)||org===state.organization) return;
-    state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];
+    state.searchRequestId++;
+    state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.status="INIT";
     const { mappings={} }=await storageGet(["mappings"]);
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
     render();
     if(state.mapping) await loadRememberedMapping();
+    else if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
   }
 
   function renderTerm(t, status) {
@@ -852,7 +1050,7 @@
     const mapping=state.mapping;
     const source=state.source;
     const ms=mappingState();
-    const remembered=mapping && source;
+    const remembered=!!(mapping&&source&&(state.sourceLoadedFromMapping||czyMapowanieDotyczyZrodla(mapping,source)));
     const statusClass=ms.kind==="danger"?"esync-danger":ms.kind==="warning"||remembered?"esync-warning":"esync-info";
     const score=Math.round(ms.score*100);
     let warning="";
@@ -861,7 +1059,7 @@
       else if(!state.mappingVerifiedThisSession) warning=`<div class="${statusClass}"><b>⚠ Zapamiętane powiązanie — sprawdź</b><div class="esync-small">Link oszczędza wyszukiwanie, ale przed zmianą Eventis porównaj oba tytuły i potwierdź zgodność.</div><div class="esync-progress"><i style="width:${score}%"></i></div><div class="esync-small">Podobieństwo tytułów: ${score}%</div></div>`;
       else warning=`<div class="esync-success"><b>✓ Powiązanie zweryfikowane w tej sesji</b><div class="esync-small">Możesz uzupełnić brakujące terminy.</div></div>`;
     }
-    const choices=state.searchChoices.length?`<div class="esync-card"><h3>Wyniki wyszukiwania</h3>${state.searchChoices.map(c=>`<button class="esync-choice" data-choice-url="${esc(c.url)}"><b>${esc(c.title)}</b><small>Dopasowanie ${Math.round((c.similarity||0)*100)}%</small></button>`).join("")}</div>`:"";
+    const choices=state.searchChoices.length?`<div class="esync-card"><h3>Wyniki wyszukiwania</h3>${state.searchChoices.map(c=>`<div class="esync-choice"><b>${esc(c.title)}</b><small>${esc(c.provider||state.organization)} · zgodność tytułu ${Math.round((c.verificationScore??c.similarity??0)*100)}% · wynik wyszukiwarki ${Math.round((c.searchScore??c.similarity??0)*100)}%</small><div class="esync-choice-actions"><a class="esync-link" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Otwórz stronę</a><button type="button" class="esync-btn primary" data-choice-url="${esc(c.url)}">Wybierz</button></div></div>`).join("")}</div>`:"";
     return `<div class="esync-card">
       <div class="esync-row esync-between"><h3>Źródło szkolenia</h3><span class="esync-badge ${orgClass}">${esc(state.organization)}</span></div>
       <div class="esync-small esync-muted">Eventis: <b>#${esc(state.eventisId)}</b></div>
@@ -872,13 +1070,17 @@
       <input id="esync-source-url" class="esync-input" type="url" value="${esc(source?.url||mapping?.sourceUrl||"")}" placeholder="Link szkolenia ${esc(state.organization)}">
       <div class="esync-grid2" style="margin-top:6px">
         <button id="esync-load-url" class="esync-btn primary">Użyj i zapamiętaj</button>
-        <button id="esync-search" class="esync-btn">Szukaj automatycznie</button>
+        <button id="esync-search" class="esync-btn" ${state.status==="SEARCHING"?'disabled':''}>${state.searchAttempted?'Szukaj ponownie':'Szukaj automatycznie'}</button>
         ${source?`<button id="esync-open-source" class="esync-btn">Otwórz źródło</button>`:"<span></span>"}
         ${mapping?`<button id="esync-forget" class="esync-btn danger">Zapomnij link</button>`:""}
       </div>
       ${source && !state.mappingVerifiedThisSession && ms.kind!=="danger"?`<button id="esync-verify" class="esync-btn warn" style="width:100%;margin-top:7px">✓ Potwierdzam zgodność tytułu i linku</button>`:""}
-      ${state.status==="SEARCHING"||state.status==="LOADING_SOURCE"||state.status==="LOADING_MAPPING"?`<div class="esync-info esync-small">Trwa pobieranie danych…</div>`:""}
-      ${state.status==="SEARCH_EMPTY"?`<div class="esync-warning esync-small">Nie znaleziono pewnego wyniku. Wklej link ręcznie — po poprawnym odczycie zostanie zapamiętany.</div>`:""}
+      ${state.status==="SEARCHING"?`<div class="esync-info esync-small">${esc(state.searchMessage||`Szukam szkolenia w ${state.organization}…`)}</div>`:""}
+      ${state.status==="LOADING_SOURCE"||state.status==="LOADING_MAPPING"?`<div class="esync-info esync-small">Trwa pobieranie danych…</div>`:""}
+      ${["SEARCH_HIGH","SEARCH_MULTIPLE"].includes(state.status)?`<div class="esync-info esync-small">${esc(state.searchMessage)}</div>`:""}
+      ${["SEARCH_EMPTY","SEARCH_WEAK"].includes(state.status)?`<div class="esync-warning esync-small">${esc(state.searchMessage)}</div>`:""}
+      ${state.status==="SEARCH_NETWORK"?`<div class="esync-danger esync-small">${esc(state.searchMessage)}</div>`:""}
+      ${state.status==="TITLE_CHANGED"?`<div class="esync-warning esync-small">${esc(state.searchMessage)}</div>`:""}
       ${state.status==="ERROR"?`<div class="esync-danger esync-small">${esc(state.lastError||"Błąd")}</div>`:""}
       ${state.status==="MAPPING_ERROR"?`<div class="esync-danger esync-small">Zapamiętany link nie zadziałał: ${esc(state.mappingError||"")}. Wybierz nowy link.</div>`:""}
     </div>${choices}`;
@@ -961,7 +1163,30 @@
   function observeTitleChanges() {
     const field=$('textarea[name="event[title]"],input[name="event[title]"],#title');
     if(!field)return;
-    field.addEventListener("change",()=>{state.eventisTitle=getEventisTitle();state.manualMatches=matchManualRecordsToCurrent(state.manualRecords);render();});
+    let czasomierz=null;
+    const oznaczZmiane=()=>{
+      clearTimeout(czasomierz);
+      czasomierz=setTimeout(()=>{
+        const nowyTytul=getEventisTitle();
+        if(normalize(nowyTytul)===normalize(state.eventisTitle))return;
+        state.eventisTitle=nowyTytul;
+        state.searchRequestId++;
+        state.mappingVerifiedThisSession=false;
+        state.searchChoices=[];
+        state.manualMatches=matchManualRecordsToCurrent(state.manualRecords);
+        if(state.source||state.searchAttempted){
+          state.status="TITLE_CHANGED";
+          state.searchMessage="Tytuł Eventis zmienił się. Dotychczasowy wynik może być nieaktualny — uruchom wyszukiwanie ponownie.";
+        }
+        render();
+      },500);
+    };
+    field.addEventListener("input",oznaczZmiane);
+    field.addEventListener("change",oznaczZmiane);
+    field.addEventListener("blur",()=>{
+      oznaczZmiane();
+      if(MODE==="edit"&&!state.mapping)setTimeout(()=>{if(state.status==="TITLE_CHANGED")onSearch();},850);
+    });
   }
 
   async function init() {
@@ -979,6 +1204,7 @@
         state.searchChoices=aliases.slice(0,3).map(m=>({url:m.sourceUrl,title:`[z pamięci] ${m.sourceTitle}`,similarity:m.aliasScore}));
         state.status="SEARCH_CHOICES";render();
       }
+      if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
     }
   }
 

@@ -17,20 +17,30 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (!current.sheetOutbox) await chrome.storage.local.set({ sheetOutbox: [] });
 });
 
-async function fetchText({ url, method = "GET", body = null, headers = {} }) {
-  const response = await fetch(url, {
-    method,
-    body,
-    headers,
-    credentials: "omit",
-    redirect: "follow",
-    cache: "no-store"
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+async function fetchText({ url, method = "GET", body = null, headers = {}, timeoutMs = 15000 }) {
+  const kontroler = new AbortController();
+  const czasomierz = setTimeout(() => kontroler.abort(), Math.max(1000, Number(timeoutMs) || 15000));
+  try {
+    const response = await fetch(url, {
+      method,
+      body,
+      headers,
+      credentials: "omit",
+      redirect: "follow",
+      cache: "no-store",
+      signal: kontroler.signal
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    return { text, finalUrl: response.url, status: response.status };
+  } catch (blad) {
+    if (blad?.name === "AbortError") throw new Error("Przekroczono limit czasu pobierania strony.");
+    throw blad;
+  } finally {
+    clearTimeout(czasomierz);
   }
-  return { text, finalUrl: response.url, status: response.status };
 }
 
 async function setRichFieldInMainWorld(tabId, name, html) {

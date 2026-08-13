@@ -27,7 +27,7 @@
         "https://*.eventis.pl/event/add*",
         "https://*.eventis.pl/event/edit*"
       ],
-      "js": ["content/eventis.js"],
+      "js": ["content/wyszukiwanie.js", "content/eventis.js"],
       "css": ["content/eventis.css"],
       "run_at": "document_idle"
     }
