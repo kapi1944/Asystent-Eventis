@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Eventis Sync — ustawienia</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>SEMPER / IIST Eventis Sync</h1>
+    <p class="lead">Ustawienia prototypu v0.1.0</p>
+
+    <section>
+      <h2>Operator</h2>
+      <label>Inicjał automatycznych oznaczeń
+        <input id="operatorInitial" maxlength="6" placeholder="K">
+      </label>
+      <label>Domyślna organizacja
+        <select id="defaultOrganization">
+          <option value="SEMPER">SEMPER</option>
+          <option value="IIST">IIST</option>
+        </select>
+      </label>
+    </section>
+
+    <section>
+      <h2>Automatyczne wykrywanie profilu Eventis</h2>
+      <p>Rozszerzenie szuka poniższych fragmentów tekstu w interfejsie zalogowanego konta. Gdy nie rozpozna profilu, użyje organizacji domyślnej.</p>
+      <label>Znacznik konta SEMPER
+        <input id="semperAccountMarker" placeholder="np. SEMPER albo adres e-mail konta">
+      </label>
+      <label>Znacznik konta IIST
+        <input id="iistAccountMarker" placeholder="np. IIST albo adres e-mail konta">
+      </label>
+    </section>
+
+    <section>
+      <h2>Bezpieczeństwo mapowań</h2>
+      <label class="inline"><input type="checkbox" id="requireSessionVerification"> Wymagaj potwierdzenia zapamiętanego linku w każdej nowej sesji edycji</label>
+      <label>Próg ostrzegawczy podobieństwa tytułów
+        <input id="mappingWarningThreshold" type="number" min="0" max="1" step="0.01">
+      </label>
+      <label>Próg blokady automatycznych operacji
+        <input id="mappingBlockThreshold" type="number" min="0" max="1" step="0.01">
+      </label>
+      <label>Maksymalny wiek ręcznego snapshotu arkusza (godziny)
+        <input id="manualSnapshotMaxAgeHours" type="number" min="1" max="168">
+      </label>
+    </section>
+
+    <section>
+      <h2>Pamięć rozszerzenia</h2>
+      <div class="stats" id="stats">Ładowanie…</div>
+      <div class="buttons">
+        <button id="exportBtn">Eksportuj pamięć JSON</button>
+        <button id="clearMappingsBtn" class="danger">Usuń zapamiętane powiązania</button>
+      </div>
+      <p class="hint">Kolejka oznaczeń arkusza jest w v0.1 przechowywana lokalnie. Bezpośrednia integracja z Google Sheets zostanie podłączona po ustaleniu mapowania komórek i konfiguracji OAuth / endpointu.</p>
+    </section>
+
+    <div class="savebar">
+      <button id="saveBtn" class="primary">Zapisz ustawienia</button>
+      <span id="status"></span>
+    </div>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

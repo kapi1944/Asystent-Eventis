@@ -1,0 +1,107 @@
+const DEFAULT_SETTINGS = {
+  operatorInitial: "K",
+  defaultOrganization: "SEMPER",
+  semperAccountMarker: "SEMPER",
+  iistAccountMarker: "IIST",
+  requireSessionVerification: true,
+  mappingWarningThreshold: 0.90,
+  mappingBlockThreshold: 0.70,
+  manualSnapshotMaxAgeHours: 24
+};
+
+chrome.runtime.onInstalled.addListener(async () => {
+  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox"]);
+  if (!current.settings) await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
+  if (!current.mappings) await chrome.storage.local.set({ mappings: {} });
+  if (!current.auditLog) await chrome.storage.local.set({ auditLog: [] });
+  if (!current.sheetOutbox) await chrome.storage.local.set({ sheetOutbox: [] });
+});
+
+async function fetchText({ url, method = "GET", body = null, headers = {} }) {
+  const response = await fetch(url, {
+    method,
+    body,
+    headers,
+    credentials: "omit",
+    redirect: "follow",
+    cache: "no-store"
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+  return { text, finalUrl: response.url, status: response.status };
+}
+
+async function setRichFieldInMainWorld(tabId, name, html) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: (fieldName, value) => {
+      const field = Array.from(document.querySelectorAll("input,textarea,select")).find(el => el.name === fieldName);
+      if (!field) return { ok: false, reason: "field-not-found" };
+
+      const fire = (el) => {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+
+      field.value = value;
+      fire(field);
+
+      try {
+        if (window.CKEDITOR && window.CKEDITOR.instances) {
+          const instance = window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name];
+          if (instance && typeof instance.setData === "function") instance.setData(value);
+        }
+      } catch (_) {}
+
+      const areas = [field.parentElement, field.closest(".form-group"), field.closest(".row")].filter(Boolean);
+      for (const area of areas) {
+        for (const editable of area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')) {
+          try {
+            if (editable.ckeditorInstance && typeof editable.ckeditorInstance.setData === "function") {
+              editable.ckeditorInstance.setData(value);
+              if (typeof editable.ckeditorInstance.updateSourceElement === "function") {
+                editable.ckeditorInstance.updateSourceElement();
+              }
+            } else {
+              editable.innerHTML = value;
+              editable.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
+              editable.dispatchEvent(new Event("blur", { bubbles: true }));
+            }
+          } catch (_) {}
+        }
+      }
+      return { ok: true };
+    },
+    args: [name, html]
+  });
+  return result || { ok: false };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  (async () => {
+    switch (message?.type) {
+      case "FETCH_TEXT": {
+        const result = await fetchText(message.payload);
+        sendResponse({ ok: true, ...result });
+        break;
+      }
+      case "SET_RICH_FIELD": {
+        if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
+        const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html);
+        sendResponse({ ok: true, result });
+        break;
+      }
+      case "OPEN_OPTIONS": {
+        await chrome.runtime.openOptionsPage();
+        sendResponse({ ok: true });
+        break;
+      }
+      default:
+        sendResponse({ ok: false, error: "Unknown message" });
+    }
+  })().catch(error => sendResponse({ ok: false, error: error?.message || String(error) }));
+  return true;
+});
