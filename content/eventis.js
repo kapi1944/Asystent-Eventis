@@ -54,6 +54,10 @@
     manualMatches: [],
     pendingOperation: null,
     pendingLooksSaved: false,
+    formularzZmieniony: false,
+    poczatkowyOdciskFormularza: "",
+    analizaTerminowWykonana: false,
+    analizaWykazalaBraki: false,
     status: "INIT"
   };
 
@@ -81,6 +85,43 @@
   function tokenSet(value) { return NARZEDZIA_WYSZUKIWANIA.zbiorTokenow(value); }
 
   function titleSimilarity(a, b) { return NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(a, b); }
+
+  function wyroznijRozniceTytulow(pierwszyTytul, drugiTytul) {
+    const podzielNaSlowa = tytul => String(tytul || "").match(/\S+\s*/g) || [];
+    const kluczSlowa = slowo => normalize(slowo).replace(/\s+/g, "");
+    const pierwszeSlowa = podzielNaSlowa(pierwszyTytul);
+    const drugieSlowa = podzielNaSlowa(drugiTytul);
+    const tabela = Array.from({ length: pierwszeSlowa.length + 1 }, () => Array(drugieSlowa.length + 1).fill(0));
+
+    for (let i = pierwszeSlowa.length - 1; i >= 0; i--) {
+      for (let j = drugieSlowa.length - 1; j >= 0; j--) {
+        tabela[i][j] = kluczSlowa(pierwszeSlowa[i]) === kluczSlowa(drugieSlowa[j])
+          ? tabela[i + 1][j + 1] + 1
+          : Math.max(tabela[i + 1][j], tabela[i][j + 1]);
+      }
+    }
+
+    const zgodnePierwsze = new Set();
+    const zgodneDrugie = new Set();
+    let i = 0;
+    let j = 0;
+    while (i < pierwszeSlowa.length && j < drugieSlowa.length) {
+      if (kluczSlowa(pierwszeSlowa[i]) === kluczSlowa(drugieSlowa[j])) {
+        zgodnePierwsze.add(i++);
+        zgodneDrugie.add(j++);
+      } else if (tabela[i + 1][j] >= tabela[i][j + 1]) i++;
+      else j++;
+    }
+
+    const renderuj = (slowa, zgodne) => slowa.map((slowo, indeks) =>
+      `<span class="${zgodne.has(indeks) ? "esync-tytul-zgodny" : "esync-tytul-rozny"}">${esc(slowo)}</span>`
+    ).join("");
+
+    return {
+      pierwszy: renderuj(pierwszeSlowa, zgodnePierwsze),
+      drugi: renderuj(drugieSlowa, zgodneDrugie)
+    };
+  }
 
   function dateRangeFromText(text) {
     const m = String(text || "").match(/(?:od:\s*)?(\d{4}-\d{2}-\d{2})\s*(?:do:|do|-|–|—)\s*(\d{4}-\d{2}-\d{2})/i);
@@ -232,6 +273,8 @@
     state.sourceLoadedFromMapping = false;
     state.sourceTerms = [];
     state.missingTerms = [];
+    state.analizaTerminowWykonana = false;
+    state.analizaWykazalaBraki = false;
     state.mappingVerifiedThisSession = false;
   }
 
@@ -306,9 +349,9 @@
     if (!parent) return "";
     let html = "";
     let node = marker.nextElementSibling;
-    let guard = 0;
-    while (node && guard++ < 20) {
-      if (/^H[1-5]$/.test(node.tagName)) break;
+    let licznikBezpieczenstwa = 0;
+    while (node && licznikBezpieczenstwa++ < 500) {
+      if (czyPoczatekSekcji(node)) break;
       const txt = normalize(node.textContent);
       if (txt.includes("informacje organizacyjne") || txt.includes("inwestycja")) break;
       html += node.outerHTML || "";
@@ -317,13 +360,25 @@
     return sanitizeHtml(html);
   }
 
+  function czyPoczatekSekcji(element) {
+    const selektor = "h1,h2,h3,h4,h5,strong,b,.text_over";
+    const kandydaci = [element];
+    if (element.firstElementChild) kandydaci.push(element.firstElementChild);
+    if (element.firstElementChild?.firstElementChild) kandydaci.push(element.firstElementChild.firstElementChild);
+    const naglowek = kandydaci.find(kandydat=>kandydat.matches?.(selektor));
+    if (!naglowek) return false;
+    const tekst = normalize(naglowek.textContent || "");
+    return /^(?:grupa docelowa|adresaci|cel szkolenia|korzysci|program szkolenia|metodologia|szkolenie stacjonarne|szkolenie on-line|szkolenie online|trenerzy|informacje organizacyjne|inwestycja)(?:\s|:|$)/.test(tekst);
+  }
+
   function sanitizeHtml(html) {
     const doc = new DOMParser().parseFromString(`<div>${html || ""}</div>`,"text/html");
     const root = doc.body.firstElementChild;
     root.querySelectorAll("script,style,img,svg,iframe,object,form,input,button").forEach(x=>x.remove());
     root.querySelectorAll("a").forEach(a=>a.replaceWith(doc.createTextNode(a.textContent||"")));
     root.querySelectorAll("*").forEach(el=>Array.from(el.attributes).forEach(a=>{ if (/^on/i.test(a.name)||["style","class","id"].includes(a.name)) el.removeAttribute(a.name); }));
-    return root.innerHTML.replace(/Program szkolenia[\s\S]*?zabronione\.?/gi,"").replace(/Szkolenie realizowane w ramach programu partnerskiego[\s\S]*?(?=<h|$)/gi,"").trim();
+    while (root.firstChild && /^[\s|]*$/.test(root.firstChild.textContent || "")) root.firstChild.remove();
+    return root.innerHTML.trim();
   }
 
   function parseSemperPage(html,url) {
@@ -636,6 +691,72 @@
     const existingKeys = new Set(state.existingTerms.map(existingKey));
     const confirmed = state.sourceTerms.filter(t=>t.confirmed);
     state.missingTerms = confirmed.filter(t=>!existingKeys.has(existingKey(t)));
+    if (state.analizaTerminowWykonana && state.missingTerms.length) state.analizaWykazalaBraki = true;
+  }
+
+  function odciskFormularza() {
+    const formularz = $("#eventForm");
+    if (!formularz) return "";
+    return Array.from(formularz.elements).filter(pole=>!pole.closest("#esync-root")).map((pole, indeks) => {
+      const typ = String(pole.type || pole.tagName).toLowerCase();
+      if (["button","submit","reset","image"].includes(typ)) return "";
+      const wartosc = ["checkbox","radio"].includes(typ)
+        ? `${pole.checked}:${pole.value}`
+        : pole instanceof HTMLSelectElement && pole.multiple
+          ? Array.from(pole.selectedOptions).map(opcja=>opcja.value).join("\u001d")
+          : pole.value;
+      return `${indeks}\u001f${pole.name}\u001f${typ}\u001f${pole.disabled}\u001f${wartosc}`;
+    }).join("\u001e");
+  }
+
+  function aktualizujStanPrzyciskuPanelu() {
+    state.formularzZmieniony = odciskFormularza() !== state.poczatkowyOdciskFormularza;
+    const przycisk = $("#esync-panel-action");
+    if (!przycisk) return;
+    const zamknijKarte = state.analizaTerminowWykonana && !state.analizaWykazalaBraki && !state.formularzZmieniony;
+    przycisk.dataset.action = zamknijKarte ? "close" : "save";
+    przycisk.textContent = zamknijKarte ? "Zamknij kartę X" : "Zapisz kartę";
+    przycisk.classList.toggle("good",!zamknijKarte);
+    przycisk.classList.toggle("primary",zamknijKarte);
+    przycisk.disabled = !zamknijKarte && !state.formularzZmieniony;
+  }
+
+  function obserwujZmianyFormularza() {
+    const formularz = $("#eventForm");
+    if (!formularz) return;
+    state.poczatkowyOdciskFormularza = odciskFormularza();
+    const aktualizujZPoznieniem = zdarzenie => {
+      if (!zdarzenie.isTrusted || zdarzenie.target.closest("#esync-root")) return;
+      setTimeout(aktualizujStanPrzyciskuPanelu, 0);
+    };
+    formularz.addEventListener("input",aktualizujZPoznieniem);
+    formularz.addEventListener("change",aktualizujZPoznieniem);
+  }
+
+  function znajdzPrzyciskZapisu() {
+    const formularz = $("#eventForm");
+    if (!formularz) return null;
+    const kandydaci = $$('button[type="submit"],input[type="submit"],button:not([type])',formularz).filter(przycisk=>!przycisk.disabled);
+    const tekst = przycisk => normalize(przycisk.textContent || przycisk.value || "");
+    return kandydaci.find(przycisk=>/zapisz|aktualizuj/.test(tekst(przycisk)))
+      || kandydaci.find(przycisk=>/dodaj/.test(tekst(przycisk))&&!/termin/.test(tekst(przycisk)))
+      || kandydaci.find(przycisk=>przycisk.type==="submit")
+      || null;
+  }
+
+  function zapiszFormularzZPanelu() {
+    if (!state.formularzZmieniony) return;
+    const formularz = $("#eventForm");
+    if (!formularz) return toast("Nie znaleziono formularza Eventis.");
+    const przyciskZapisu = znajdzPrzyciskZapisu();
+    if (przyciskZapisu) przyciskZapisu.click();
+    else formularz.requestSubmit();
+  }
+
+  function wykonajAkcjePanelu() {
+    const przycisk = $("#esync-panel-action");
+    if (przycisk?.dataset.action === "close") chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+    else zapiszFormularzZPanelu();
   }
 
   function setValue(el,val) {
@@ -718,10 +839,13 @@
 
   async function fillEventDetailsIfAdd(source, terms) {
     if (MODE !== "add") return;
-    const liczbaDni = source.liczbaDni || Math.max(1,...terms.map(t=>t.durationDays||1));
+    const liczbaDni = Math.max(1,...terms.map(termin=>durationDays(termin.start,termin.end)));
+    const poleCzasuTrwania = $('[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)");
     setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),source.title);
-    setValue($('input[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)"), liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`);
+    setValue(poleCzasuTrwania, liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`);
     if (zaznaczOpcjePoEtykiecie("Podstawowy")) await sleep(100);
+    zaznaczOpcjePoEtykiecie("Case study");
+    zaznaczOpcjePoEtykiecie("Wykłady");
     setValue(znajdzPolePoEtykiecie("Życiorys"), state.organization === "SEMPER" ? "Ekspert SEMPER" : "Trener IIST");
     const rich = [
       ["event[reason]",source.benefitsHtml],
@@ -883,7 +1007,11 @@
     state.source=source;
     state.sourceLoadedFromMapping=fromMapping;
     state.sourceTerms=source.terms || [];
+    state.analizaTerminowWykonana=false;
+    state.analizaWykazalaBraki=false;
     compareTerms();
+    state.analizaTerminowWykonana=true;
+    state.analizaWykazalaBraki=state.missingTerms.length>0;
     state.mappingVerifiedThisSession=false;
     if (learn) await saveMapping(source,origin);
     state.status="SOURCE_READY";
@@ -1024,7 +1152,10 @@
       await fillEventDetailsIfAdd(state.source,chosen);
       await createPendingOperation(result.added);
       await audit("FORM_FILLED",{terms:result.added.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price}))});
-      state.status="FORM_FILLED"; compareTerms(); render();
+      state.status="FORM_FILLED";
+      state.formularzZmieniony=true;
+      compareTerms();
+      render();
       toast("Formularz uzupełniony. Sprawdź go wizualnie i zapisz ręcznie w Eventis.");
     }catch(e){state.status="ERROR";state.lastError=e.message;render();}
   }
@@ -1032,7 +1163,7 @@
   async function switchOrganization(org) {
     if (!['SEMPER','IIST'].includes(org)||org===state.organization) return;
     state.searchRequestId++;
-    state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.status="INIT";
+    state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
     const { mappings={} }=await storageGet(["mappings"]);
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
     render();
@@ -1053,6 +1184,9 @@
     const remembered=!!(mapping&&source&&(state.sourceLoadedFromMapping||czyMapowanieDotyczyZrodla(mapping,source)));
     const statusClass=ms.kind==="danger"?"esync-danger":ms.kind==="warning"||remembered?"esync-warning":"esync-info";
     const score=Math.round(ms.score*100);
+    const wyroznioneTytuly=source
+      ? wyroznijRozniceTytulow(state.eventisTitle||"Nie odczytano tytułu",source.title)
+      : null;
     let warning="";
     if (remembered) {
       if(ms.kind==="danger") warning=`<div class="esync-danger"><b>🔴 Podejrzane powiązanie — operacje zablokowane</b><div class="esync-small">Podobieństwo tytułów: ${score}%. Wybierz właściwe szkolenie.</div></div>`;
@@ -1062,18 +1196,15 @@
     const choices=state.searchChoices.length?`<div class="esync-card"><h3>Wyniki wyszukiwania</h3>${state.searchChoices.map(c=>`<div class="esync-choice"><b>${esc(c.title)}</b><small>${esc(c.provider||state.organization)} · zgodność tytułu ${Math.round((c.verificationScore??c.similarity??0)*100)}% · wynik wyszukiwarki ${Math.round((c.searchScore??c.similarity??0)*100)}%</small><div class="esync-choice-actions"><a class="esync-link" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Otwórz stronę</a><button type="button" class="esync-btn primary" data-choice-url="${esc(c.url)}">Wybierz</button></div></div>`).join("")}</div>`:"";
     return `<div class="esync-card">
       <div class="esync-row esync-between"><h3>Źródło szkolenia</h3><span class="esync-badge ${orgClass}">${esc(state.organization)}</span></div>
-      <div class="esync-small esync-muted">Eventis: <b>#${esc(state.eventisId)}</b></div>
-      <div class="esync-title">${esc(state.eventisTitle||"Nie odczytano tytułu")}</div>
-      ${source?`<div class="esync-source-title"><b>${esc(state.organization)}:</b> ${esc(source.title)}</div>`:""}
-      ${warning}
-      <div class="esync-divider"></div>
-      <input id="esync-source-url" class="esync-input" type="url" value="${esc(source?.url||mapping?.sourceUrl||"")}" placeholder="Link szkolenia ${esc(state.organization)}">
-      <div class="esync-grid2" style="margin-top:6px">
-        <button id="esync-load-url" class="esync-btn primary">Użyj i zapamiętaj</button>
-        <button id="esync-search" class="esync-btn" ${state.status==="SEARCHING"?'disabled':''}>${state.searchAttempted?'Szukaj ponownie':'Szukaj automatycznie'}</button>
-        ${source?`<button id="esync-open-source" class="esync-btn">Otwórz źródło</button>`:"<span></span>"}
-        ${mapping?`<button id="esync-forget" class="esync-btn danger">Zapomnij link</button>`:""}
+      <div class="esync-zrodlo-eventis" style="padding:7px;border-radius:8px;background:#F68541;font-size:11px">
+        <div class="esync-zrodlo-identyfikator" style="font-weight:700;margin-bottom:2px">Eventis: #${esc(state.eventisId)}</div>
+        <div style="line-height:1.35">${wyroznioneTytuly?.pierwszy||esc(state.eventisTitle||"Nie odczytano tytułu")}</div>
       </div>
+      ${source?`<div class="esync-zrodlo-zewnetrzne" style="margin-top:6px;padding:7px;border-radius:8px;background:#EDF5FA;font-size:11px">
+        <div class="esync-zrodlo-identyfikator" style="font-weight:700;margin-bottom:2px">${esc(state.organization)}: #${esc(source.id)}</div>
+        <div>${wyroznioneTytuly.drugi}</div>
+      </div>`:""}
+      ${warning}
       ${source && !state.mappingVerifiedThisSession && ms.kind!=="danger"?`<button id="esync-verify" class="esync-btn warn" style="width:100%;margin-top:7px">✓ Potwierdzam zgodność tytułu i linku</button>`:""}
       ${state.status==="SEARCHING"?`<div class="esync-info esync-small">${esc(state.searchMessage||`Szukam szkolenia w ${state.organization}…`)}</div>`:""}
       ${state.status==="LOADING_SOURCE"||state.status==="LOADING_MAPPING"?`<div class="esync-info esync-small">Trwa pobieranie danych…</div>`:""}
@@ -1086,6 +1217,20 @@
     </div>${choices}`;
   }
 
+  function renderujAkcjeZrodla() {
+    const mapping=state.mapping;
+    const source=state.source;
+    return `<div class="esync-card esync-source-actions">
+      <input id="esync-source-url" class="esync-input" type="url" value="${esc(source?.url||mapping?.sourceUrl||"")}" placeholder="Link szkolenia ${esc(state.organization)}">
+      <div class="esync-grid2" style="margin-top:6px">
+        <button id="esync-load-url" class="esync-btn primary">Użyj i zapamiętaj</button>
+        <button id="esync-search" class="esync-btn" ${state.status==="SEARCHING"?'disabled':''}>${state.searchAttempted?'Szukaj ponownie':'Szukaj automatycznie'}</button>
+        ${source?`<button id="esync-open-source" class="esync-btn">Otwórz źródło</button>`:"<span></span>"}
+        ${mapping?`<button id="esync-forget" class="esync-btn danger">Zapomnij link</button>`:""}
+      </div>
+    </div>`;
+  }
+
   function renderTermsCard() {
     if(!state.source) return "";
     compareTerms();
@@ -1093,11 +1238,9 @@
     const existingKeys=new Set(state.existingTerms.map(existingKey));
     return `<div class="esync-card">
       <div class="esync-section-title"><span>Porównanie terminów</span><button id="esync-refresh" class="esync-btn" style="min-height:25px;padding:3px 6px">Sprawdź ponownie</button></div>
-      <div class="esync-kpi"><div><b>${confirmed.length}</b><span>potwierdzone</span></div><div><b>${state.existingTerms.length}</b><span>Eventis</span></div><div><b>${state.missingTerms.length}</b><span>brakujące</span></div></div>
+      <div class="esync-kpi"><div class="${confirmed.length ? "" : "pusty"}"><b>${confirmed.length}</b><span>potwierdzone</span></div><div class="${state.existingTerms.length ? "" : "pusty"}"><b>${state.existingTerms.length}</b><span>Eventis</span></div><div class="${state.missingTerms.length ? "" : "pusty"}"><b>${state.missingTerms.length}</b><span>brakujące</span></div></div>
       ${confirmed.length?confirmed.map(t=>renderTerm(t,existingKeys.has(existingKey(t))?"exists":"missing")).join(""):`<div class="esync-warning esync-small">Na stronie źródłowej nie wykryto żadnego terminu oznaczonego jako potwierdzony/gwarantowany. Rozszerzenie niczego nie doda.</div>`}
       ${unconfirmed.length?`<details><summary class="esync-small esync-muted">Pokaż ${unconfirmed.length} niepotwierdzonych (tylko informacyjnie)</summary>${unconfirmed.map(t=>renderTerm(t,"unconfirmed")).join("")}</details>`:""}
-      <button id="esync-add-missing" class="esync-btn good" style="width:100%;margin-top:8px" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button>
-      <button id="esync-queue-existing" class="esync-btn" style="width:100%;margin-top:5px" ${!state.mappingVerifiedThisSession||!confirmed.length?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button>
       ${state.status==="FORM_FILLED"?`<div class="esync-success"><b>Formularz został uzupełniony.</b><br>Zweryfikuj go wizualnie i kliknij zapis w Eventis. Rozszerzenie nie zapisuje formularza automatycznie.</div>`:""}
     </div>`;
   }
@@ -1132,7 +1275,9 @@
   function render() {
     let root=$("#esync-root");
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE · brak automatycznego zapisu formularza</div></div>`;
+    const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
+    const liczbaPotwierdzonych=state.sourceTerms.filter(termin=>termin.confirmed).length;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'Zamknij kartę X':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
@@ -1150,6 +1295,7 @@
     $("#esync-add-missing")?.addEventListener("click",onAddMissing);
     $("#esync-queue-existing")?.addEventListener("click",queueExistingTerms);
     $("#esync-confirm-save")?.addEventListener("click",()=>confirmPendingSaved("USER_CONFIRM"));
+    $("#esync-panel-action")?.addEventListener("click",wykonajAkcjePanelu);
     $$('[data-choice-url]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>chooseSearchResult(btn.dataset.choiceUrl)));
     $("#esync-parse-manual")?.addEventListener("click",async()=>{
       const raw=$("#esync-manual-paste")?.value||"";
@@ -1192,6 +1338,7 @@
   async function init() {
     await loadSettingsAndState();
     render();
+    obserwujZmianyFormularza();
     observeTitleChanges();
     await inspectPendingAfterReload();
     if(state.pendingLooksSaved) render();

@@ -28,7 +28,7 @@
         "https://*.eventis.pl/event/edit*"
       ],
       "js": ["content/wyszukiwanie.js", "content/eventis.js"],
-      "css": ["content/eventis.css"],
+      "css": ["content/eventis.css", "content/akcja-panelu.css", "content/porownanie-tytulow.css"],
       "run_at": "document_idle"
     }
   ],

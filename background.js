@@ -109,6 +109,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
+      case "CLOSE_TAB": {
+        if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
+        await chrome.tabs.remove(sender.tab.id);
+        break;
+      }
       default:
         sendResponse({ ok: false, error: "Unknown message" });
     }

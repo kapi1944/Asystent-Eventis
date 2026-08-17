@@ -1,0 +1,42 @@
+#esync-root {
+  display: flex;
+  flex-direction: column;
+}
+
+#esync-root .esync-head,
+#esync-root .esync-panel-action {
+  flex-shrink: 0;
+}
+
+#esync-root .esync-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+#esync-root .esync-source-actions {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.12);
+}
+
+#esync-root.esync-collapsed .esync-panel-action {
+  display: none;
+}
+
+.esync-panel-action {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  background: #fff;
+  border-top: 1px solid #e7ebf0;
+}
+
+.esync-panel-action .esync-btn {
+  width: 100%;
+  min-height: 40px;
+}
