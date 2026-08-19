@@ -42,6 +42,7 @@
     sourceLoadedFromMapping: false,
     mappingVerifiedThisSession: false,
     sourceTerms: [],
+    reczniePotwierdzoneTerminy: new Set(),
     existingTerms: [],
     missingTerms: [],
     searchChoices: [],
@@ -137,6 +138,20 @@
     return Math.max(1, Math.round((b-a)/86400000)+1);
   }
 
+  function zastosujReguleCzterodniowegoTerminu(start, end, city, price) {
+    const surowaLiczbaDni = durationDays(start,end);
+    if (surowaLiczbaDni !== 4) return {start,end,city,price,durationDays:surowaLiczbaDni};
+    const przesunietyPoczatek = new Date(start + "T00:00:00");
+    przesunietyPoczatek.setDate(przesunietyPoczatek.getDate()+1);
+    return {
+      start:przesunietyPoczatek.toISOString().slice(0,10),
+      end,
+      city,
+      price:city === "Online" ? price : price-300,
+      durationDays:3
+    };
+  }
+
   function cityFromText(text) {
     const n = normalize(text);
     if (/\bonline\b/.test(n)) return "Online";
@@ -156,6 +171,9 @@
 
   function termKey(t) { return `${t.start}|${t.end}|${normalize(t.city)}`; }
   function existingKey(t) { return `${t.start}|${normalize(t.city)}`; }
+  function czyTerminPotwierdzony(termin) {
+    return termin.confirmed || state.reczniePotwierdzoneTerminy.has(termKey(termin));
+  }
   function dedupeTerms(terms) {
     const map = new Map();
     for (const t of terms) {
@@ -312,17 +330,8 @@
       const price = priceFromText(cells[3] || text);
       if (!range || !city || !price) continue;
       const confirmed = !!row.querySelector(".gw") || isConfirmedText(text);
-      let start = range.start, end = range.end, finalPrice = price;
-      const rawDuration = durationDays(start,end);
-      // Zachowanie biznesowe ze starego skryptu: 4-dniowe wpisy są publikowane w Eventis jako ostatnie 3 dni,
-      // a dla szkolenia stacjonarnego cena jest pomniejszana o 300 zł.
-      if (rawDuration === 4) {
-        const d = new Date(start + "T00:00:00");
-        d.setDate(d.getDate()+1);
-        start = d.toISOString().slice(0,10);
-        if (city !== "Online") finalPrice = price - 300;
-      }
-      raw.push({ start,end,city,price:finalPrice,confirmed,durationDays: rawDuration === 4 ? 3 : rawDuration, rawText:text });
+      const dostosowanyTermin = zastosujReguleCzterodniowegoTerminu(range.start,range.end,city,price);
+      raw.push({...dostosowanyTermin,confirmed,rawText:text});
     }
     return dedupeTerms(raw);
   }
@@ -416,7 +425,7 @@
       const price = priceFromText(text);
       if (!range || !city || !price) continue;
       const confirmed = isConfirmedText(text);
-      terms.push({ start:range.start,end:range.end,city,price,confirmed,durationDays:durationDays(range.start,range.end),rawText:text });
+      terms.push({...zastosujReguleCzterodniowegoTerminu(range.start,range.end,city,price),confirmed,rawText:text});
     }
     // Awaryjny parser tekstowy, gdy layout strony nie da minimalnych bloków.
     if (!terms.length) {
@@ -424,7 +433,7 @@
       for (const line of lines) {
         if (!/od:\s*\d{4}-\d{2}-\d{2}/i.test(line) || !/do:\s*\d{4}-\d{2}-\d{2}/i.test(line)) continue;
         const range = dateRangeFromText(line), city = cityFromText(line), price = priceFromText(line);
-        if (range && city && price) terms.push({start:range.start,end:range.end,city,price,confirmed:isConfirmedText(line),durationDays:durationDays(range.start,range.end),rawText:line});
+        if (range && city && price) terms.push({...zastosujReguleCzterodniowegoTerminu(range.start,range.end,city,price),confirmed:isConfirmedText(line),rawText:line});
       }
     }
     return dedupeTerms(terms);
@@ -689,7 +698,7 @@
   function compareTerms() {
     state.existingTerms = getExistingTerms();
     const existingKeys = new Set(state.existingTerms.map(existingKey));
-    const confirmed = state.sourceTerms.filter(t=>t.confirmed);
+    const confirmed = state.sourceTerms.filter(czyTerminPotwierdzony);
     state.missingTerms = confirmed.filter(t=>!existingKeys.has(existingKey(t)));
     if (state.analizaTerminowWykonana && state.missingTerms.length) state.analizaWykazalaBraki = true;
   }
@@ -715,7 +724,7 @@
     if (!przycisk) return;
     const zamknijKarte = state.analizaTerminowWykonana && !state.analizaWykazalaBraki && !state.formularzZmieniony;
     przycisk.dataset.action = zamknijKarte ? "close" : "save";
-    przycisk.textContent = zamknijKarte ? "Zamknij kartę X" : "Zapisz kartę";
+    przycisk.textContent = zamknijKarte ? "↺ Wróć do listy" : "Zapisz kartę";
     przycisk.classList.toggle("good",!zamknijKarte);
     przycisk.classList.toggle("primary",zamknijKarte);
     przycisk.disabled = !zamknijKarte && !state.formularzZmieniony;
@@ -780,11 +789,82 @@
     return etykieta.querySelector('input,textarea,select') || etykieta.parentElement?.querySelector('input,textarea,select') || null;
   }
 
-  function zaznaczOpcjePoEtykiecie(tekstEtykiety) {
-    const pole = znajdzPolePoEtykiecie(tekstEtykiety);
-    if (!(pole instanceof HTMLInputElement)) return false;
+  async function wybierzWygladPodstawowy() {
+    let pole = znajdzPolePoEtykiecie("Podstawowy");
+    if (!(pole instanceof HTMLInputElement)) throw new Error("Nie znaleziono opcji wyglądu prelegentów „Podstawowy”.");
     if (!pole.checked) pole.click();
-    return true;
+    for (let proba=0;proba<10;proba++) {
+      await sleep(100);
+      pole = znajdzPolePoEtykiecie("Podstawowy");
+      if (pole instanceof HTMLInputElement && pole.checked) return;
+    }
+    throw new Error("Nie udało się wybrać wyglądu prelegentów „Podstawowy”.");
+  }
+
+  function odczytajTrescEdytoraPola(pole) {
+    let kontener = pole?.parentElement;
+    while (kontener && kontener !== document.body) {
+      const edytory = kontener.querySelectorAll('.ck-editor__editable[contenteditable="true"]');
+      if (edytory.length === 1) return cleanLine(edytory[0].textContent || "");
+      if (edytory.length > 1) return "";
+      kontener = kontener.parentElement;
+    }
+    return "";
+  }
+
+  async function uzupelnijIZweryfikujZyciorys() {
+    const zyciorys = state.organization === "SEMPER" ? "Ekspert SEMPER" : "Trener IIST";
+    for (let proba=0;proba<3;proba++) {
+      const pole = znajdzPolePoEtykiecie("Życiorys");
+      const edytor = document.getElementById("participants");
+      if (!pole && !edytor) throw new Error("Nie znaleziono pola „Życiorys” w sekcji prelegentów.");
+      if (pole?.name || edytor) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:pole?.name,elementId:"participants",html:`<p>${zyciorys}</p>`});
+      else setValue(pole,zyciorys);
+      await sleep(150);
+      const wpisanaTresc = cleanLine(document.getElementById("participants")?.textContent || odczytajTrescEdytoraPola(pole));
+      if (normalize(wpisanaTresc) === normalize(zyciorys)) return;
+    }
+    throw new Error(`Nie udało się uzupełnić pola „Życiorys” wartością „${zyciorys}”.`);
+  }
+
+  function zaznaczOpcjePolaWielokrotnegoWyboru(tekstEtykiety, nazwyOpcji) {
+    const szukanyTekst = normalize(tekstEtykiety);
+    const etykieta = $$('label,div').filter(element=>normalize(element.textContent).includes(szukanyTekst))
+      .sort((pierwszy,drugi)=>(pierwszy.textContent || "").length-(drugi.textContent || "").length)[0];
+    if (!etykieta) return false;
+    let pole = etykieta.htmlFor ? document.getElementById(etykieta.htmlFor) : null;
+    let kontener = etykieta.parentElement;
+    while (!(pole instanceof HTMLSelectElement) && kontener && kontener !== document.body) {
+      const pola = Array.from(kontener.querySelectorAll('select[multiple],select'));
+      if (pola.length === 1) pole = pola[0];
+      if (pola.length > 1) break;
+      kontener = kontener.parentElement;
+    }
+    if (!(pole instanceof HTMLSelectElement)) return false;
+    const szukaneOpcje = new Set(nazwyOpcji.map(nazwa=>normalize(nazwa)));
+    let znalezionoWszystkie = true;
+    for (const nazwa of szukaneOpcje) {
+      const opcja = Array.from(pole.options).find(element=>normalize(element.textContent) === nazwa);
+      if (opcja) opcja.selected = true;
+      else znalezionoWszystkie = false;
+    }
+    pole.dispatchEvent(new Event("input",{bubbles:true}));
+    pole.dispatchEvent(new Event("change",{bubbles:true}));
+    return znalezionoWszystkie;
+  }
+
+  function wymaganeFormyZajec() {
+    const formy = ["Case study","Wykłady"];
+    if (normalize(getEventisTitle() || state.eventisTitle).includes("warsztaty praktyczne")) formy.push("Warsztaty");
+    return formy;
+  }
+
+  async function uzupelnijWymaganeFormyZajec() {
+    for (let proba=0;proba<10;proba++) {
+      if (zaznaczOpcjePolaWielokrotnegoWyboru("Jakie formy zajęć stosowane są w trakcie wydarzenia?",wymaganeFormyZajec())) return true;
+      await sleep(100);
+    }
+    return false;
   }
 
   function findAddTermButton() {
@@ -841,12 +921,13 @@
     if (MODE !== "add") return;
     const liczbaDni = Math.max(1,...terms.map(termin=>durationDays(termin.start,termin.end)));
     const poleCzasuTrwania = $('[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)");
+    const czasTrwania = liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`;
     setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),source.title);
-    setValue(poleCzasuTrwania, liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`);
-    if (zaznaczOpcjePoEtykiecie("Podstawowy")) await sleep(100);
-    zaznaczOpcjePoEtykiecie("Case study");
-    zaznaczOpcjePoEtykiecie("Wykłady");
-    setValue(znajdzPolePoEtykiecie("Życiorys"), state.organization === "SEMPER" ? "Ekspert SEMPER" : "Trener IIST");
+    if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:poleCzasuTrwania?.name,elementId:"eventHours",html:`<p>${czasTrwania}</p>`});
+    else setValue(poleCzasuTrwania,czasTrwania);
+    await wybierzWygladPodstawowy();
+    await uzupelnijWymaganeFormyZajec();
+    await uzupelnijIZweryfikujZyciorys();
     const rich = [
       ["event[reason]",source.benefitsHtml],
       ["event[information]",source.goalHtml],
@@ -907,7 +988,7 @@
   }
 
   async function queueExistingTerms() {
-    const confirmed = state.sourceTerms.filter(t=>t.confirmed);
+    const confirmed = state.sourceTerms.filter(czyTerminPotwierdzony);
     const existingKeys = new Set(getExistingTerms().map(existingKey));
     const matched = confirmed.filter(t=>existingKeys.has(existingKey(t)));
     if (!matched.length) return toast("Brak potwierdzonych terminów, które już istnieją w Eventis.");
@@ -1007,6 +1088,7 @@
     state.source=source;
     state.sourceLoadedFromMapping=fromMapping;
     state.sourceTerms=source.terms || [];
+    state.reczniePotwierdzoneTerminy.clear();
     state.analizaTerminowWykonana=false;
     state.analizaWykazalaBraki=false;
     compareTerms();
@@ -1058,7 +1140,7 @@
     compareTerms(); render();
   }
 
-  function sourceConfirmedCount(){return state.sourceTerms.filter(t=>t.confirmed).length;}
+  function sourceConfirmedCount(){return state.sourceTerms.filter(czyTerminPotwierdzony).length;}
 
   async function onLoadUrl() {
     const input=$("#esync-source-url");
@@ -1086,9 +1168,31 @@
       render();
       const wynik=await searchTraining(identyfikator);
       sprawdzAktualnoscWyszukiwania(identyfikator);
-      const pokazane=wynik.results
+      let pokazane=wynik.results
         .filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.POKAZ_KANDYDATA)
         .slice(0,PROGI_WYSZUKIWANIA.MAKS_WYNIKOW_W_UI);
+      if(state.organization==="IIST"&&!pokazane.length&&!wynik.networkVerificationErrors){
+        state.searchMessage="Brak podobnego tytułu w IIST. Sprawdzam pomocniczo bazę SEMPER…";
+        render();
+        try {
+          const wynikSemper=await searchSemper(wynik.variants,identyfikator);
+          sprawdzAktualnoscWyszukiwania(identyfikator);
+          const podobneSemper=wynikSemper.results
+            .filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.POKAZ_KANDYDATA)
+            .slice(0,PROGI_WYSZUKIWANIA.MAKS_WYNIKOW_W_UI);
+          if(podobneSemper.length){
+            state.searchChoices=podobneSemper;
+            state.status="SEARCH_WEAK";
+            state.searchFinalReason="iist-empty-semper-fallback";
+            state.searchMessage="Nie znaleziono podobnego tytułu w IIST, ale wykryto go w SEMPER. Sprawdź wynik i potwierdź zmianę profilu.";
+            zapiszDiagnostykeWyszukiwania({provider:"IIST",fallbackProvider:"SEMPER",finalReason:state.searchFinalReason,topCandidate:podobneSemper[0].title,verificationScore:podobneSemper[0].verificationScore});
+            render();
+            return;
+          }
+        } catch(bladAwaryjnegoWyszukiwania) {
+          zapiszDiagnostykeWyszukiwania({provider:"IIST",fallbackProvider:"SEMPER",finalReason:"semper-fallback-error",error:bladAwaryjnegoWyszukiwania.message});
+        }
+      }
       const najlepszy=pokazane[0];
       const drugi=pokazane[1];
       const maPrzewage=!drugi||najlepszy.verificationScore-drugi.verificationScore>=PROGI_WYSZUKIWANIA.MINIMALNA_PRZEWAGA;
@@ -1135,9 +1239,18 @@
   async function chooseSearchResult(url) {
     try {
       const kandydat=state.searchChoices.find(wynik=>wynik.url===url);
+      const organizacjaKandydata=kandydat?.provider||state.organization;
+      if(organizacjaKandydata!==state.organization){
+        const potwierdzono=confirm(`Wynik pochodzi z profilu ${organizacjaKandydata}, a panel działa obecnie jako ${state.organization}. Czy przełączyć profil na ${organizacjaKandydata} i przejść do weryfikacji zgodności?`);
+        if(!potwierdzono)return;
+        state.organization=organizacjaKandydata;
+        state.organizationDetectedBy="confirmed-search-fallback";
+        const {mappings={}}=await storageGet(["mappings"]);
+        state.mapping=mappings[mappingKey(state.organization,state.eventisId)]||null;
+      }
       state.searchRequestId++;
       state.status="LOADING_SOURCE";render();
-      const source=kandydat?.source||await fetchTraining(url);
+      const source=kandydat?.source||await fetchTraining(url,state.organization);
       await useSource(source,{learn:true,origin:"USER_SELECTED"});
     }catch(e){state.status="ERROR";state.lastError=e.message;render();}
   }
@@ -1172,8 +1285,21 @@
   }
 
   function renderTerm(t, status) {
+    const kluczTerminu=termKey(t);
+    const potwierdzonyRecznie=!t.confirmed&&state.reczniePotwierdzoneTerminy.has(kluczTerminu);
     const badge = status === "missing" ? '<span class="esync-badge yellow">BRAK</span>' : status === "exists" ? '<span class="esync-badge green">JEST</span>' : '<span class="esync-badge gray">NIEPOTW.</span>';
-    return `<div class="esync-term"><div><div class="esync-term-main">${esc(t.start)}${t.end&&t.end!==t.start?` → ${esc(t.end)}`:""} · ${esc(t.city)}</div><div class="esync-term-sub">${t.price?`${esc(t.price)} zł · `:""}${esc(t.durationDays||durationDays(t.start,t.end))} dni${t.confirmed?" · termin potwierdzony":""}</div></div><div>${badge}</div></div>`;
+    const stylPrzelacznika=potwierdzonyRecznie?'border-color:#599b6e;background:#ecfdf3;color:#166534':'border-color:#9fb0c5;background:#fff;color:#41536a';
+    const przelacznik=!t.confirmed?`<button type="button" data-reczne-potwierdzenie="${esc(kluczTerminu)}" title="${potwierdzonyRecznie?'Cofnij ręczne potwierdzenie':'Oznacz ten termin jako potwierdzony'}" style="margin-top:4px;border:1px solid;border-radius:999px;padding:3px 7px;cursor:pointer;font:800 9px/1.1 inherit;${stylPrzelacznika}">${potwierdzonyRecznie?'RĘCZNIE ✓':'POTWIERDŹ'}</button>`:"";
+    return `<div class="esync-term"><div><div class="esync-term-main">${esc(t.start)}${t.end&&t.end!==t.start?` → ${esc(t.end)}`:""} · ${esc(t.city)}</div><div class="esync-term-sub">${t.price?`${esc(t.price)} zł · `:""}${esc(t.durationDays||durationDays(t.start,t.end))} dni${t.confirmed?" · termin potwierdzony":potwierdzonyRecznie?" · potwierdzony ręcznie":""}</div></div><div style="display:flex;align-items:flex-end;flex-direction:column">${badge}${przelacznik}</div></div>`;
+  }
+
+  function przelaczRecznePotwierdzenie(kluczTerminu) {
+    const termin=state.sourceTerms.find(element=>termKey(element)===kluczTerminu&&!element.confirmed);
+    if(!termin)return;
+    if(state.reczniePotwierdzoneTerminy.has(kluczTerminu))state.reczniePotwierdzoneTerminy.delete(kluczTerminu);
+    else state.reczniePotwierdzoneTerminy.add(kluczTerminu);
+    compareTerms();
+    render();
   }
 
   function renderMappingCard() {
@@ -1234,13 +1360,13 @@
   function renderTermsCard() {
     if(!state.source) return "";
     compareTerms();
-    const confirmed=state.sourceTerms.filter(t=>t.confirmed), unconfirmed=state.sourceTerms.filter(t=>!t.confirmed);
+    const confirmed=state.sourceTerms.filter(czyTerminPotwierdzony), unconfirmed=state.sourceTerms.filter(t=>!czyTerminPotwierdzony(t));
     const existingKeys=new Set(state.existingTerms.map(existingKey));
     return `<div class="esync-card">
       <div class="esync-section-title"><span>Porównanie terminów</span><button id="esync-refresh" class="esync-btn" style="min-height:25px;padding:3px 6px">Sprawdź ponownie</button></div>
       <div class="esync-kpi"><div class="${confirmed.length ? "" : "pusty"}"><b>${confirmed.length}</b><span>potwierdzone</span></div><div class="${state.existingTerms.length ? "" : "pusty"}"><b>${state.existingTerms.length}</b><span>Eventis</span></div><div class="${state.missingTerms.length ? "" : "pusty"}"><b>${state.missingTerms.length}</b><span>brakujące</span></div></div>
       ${confirmed.length?confirmed.map(t=>renderTerm(t,existingKeys.has(existingKey(t))?"exists":"missing")).join(""):`<div class="esync-warning esync-small">Na stronie źródłowej nie wykryto żadnego terminu oznaczonego jako potwierdzony/gwarantowany. Rozszerzenie niczego nie doda.</div>`}
-      ${unconfirmed.length?`<details><summary class="esync-small esync-muted">Pokaż ${unconfirmed.length} niepotwierdzonych (tylko informacyjnie)</summary>${unconfirmed.map(t=>renderTerm(t,"unconfirmed")).join("")}</details>`:""}
+      ${unconfirmed.length?`<details open><summary class="esync-small esync-muted">${unconfirmed.length} niepotwierdzonych — kliknij POTWIERDŹ, aby dodać ręcznie</summary>${unconfirmed.map(t=>renderTerm(t,"unconfirmed")).join("")}</details>`:""}
       ${state.status==="FORM_FILLED"?`<div class="esync-success"><b>Formularz został uzupełniony.</b><br>Zweryfikuj go wizualnie i kliknij zapis w Eventis. Rozszerzenie nie zapisuje formularza automatycznie.</div>`:""}
     </div>`;
   }
@@ -1276,8 +1402,8 @@
     let root=$("#esync-root");
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
-    const liczbaPotwierdzonych=state.sourceTerms.filter(termin=>termin.confirmed).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'Zamknij kartę X':'Zapisz kartę'}</button></div>`;
+    const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
@@ -1292,6 +1418,7 @@
     $("#esync-forget")?.addEventListener("click",async()=>{if(confirm("Usunąć zapamiętane powiązanie dla tego ogłoszenia?")){await forgetMapping();render();}});
     $("#esync-verify")?.addEventListener("click",verifyMapping);
     $("#esync-refresh")?.addEventListener("click",()=>{compareTerms();render();});
+    $$('[data-reczne-potwierdzenie]',$("#esync-root")||document).forEach(przycisk=>przycisk.addEventListener("click",()=>przelaczRecznePotwierdzenie(przycisk.dataset.recznePotwierdzenie)));
     $("#esync-add-missing")?.addEventListener("click",onAddMissing);
     $("#esync-queue-existing")?.addEventListener("click",queueExistingTerms);
     $("#esync-confirm-save")?.addEventListener("click",()=>confirmPendingSaved("USER_CONFIRM"));
@@ -1320,6 +1447,7 @@
         state.mappingVerifiedThisSession=false;
         state.searchChoices=[];
         state.manualMatches=matchManualRecordsToCurrent(state.manualRecords);
+        uzupelnijWymaganeFormyZajec().then(aktualizujStanPrzyciskuPanelu);
         if(state.source||state.searchAttempted){
           state.status="TITLE_CHANGED";
           state.searchMessage="Tytuł Eventis zmienił się. Dotychczasowy wynik może być nieaktualny — uruchom wyszukiwanie ponownie.";
@@ -1340,6 +1468,10 @@
     render();
     obserwujZmianyFormularza();
     observeTitleChanges();
+    if (MODE === "edit") {
+      await uzupelnijWymaganeFormyZajec();
+      aktualizujStanPrzyciskuPanelu();
+    }
     await inspectPendingAfterReload();
     if(state.pendingLooksSaved) render();
     if(state.mapping) await loadRememberedMapping();

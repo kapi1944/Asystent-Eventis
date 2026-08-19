@@ -43,32 +43,38 @@ async function fetchText({ url, method = "GET", body = null, headers = {}, timeo
   }
 }
 
-async function setRichFieldInMainWorld(tabId, name, html) {
+async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu) {
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (fieldName, value) => {
+    func: (fieldName, value, identyfikatorEdytora) => {
       const field = Array.from(document.querySelectorAll("input,textarea,select")).find(el => el.name === fieldName);
-      if (!field) return { ok: false, reason: "field-not-found" };
+      const bezposredniEdytor = identyfikatorEdytora ? document.getElementById(identyfikatorEdytora) : null;
+      if (!field && !bezposredniEdytor) return { ok: false, reason: "field-not-found" };
 
       const fire = (el) => {
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
       };
 
-      field.value = value;
-      fire(field);
+      if (field) {
+        field.value = value;
+        fire(field);
+      }
 
       try {
         if (window.CKEDITOR && window.CKEDITOR.instances) {
-          const instance = window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name];
+          const instance = field && (window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name]);
           if (instance && typeof instance.setData === "function") instance.setData(value);
         }
       } catch (_) {}
 
-      const areas = [field.parentElement, field.closest(".form-group"), field.closest(".row")].filter(Boolean);
+      const areas = [bezposredniEdytor, field?.parentElement, field?.closest(".form-group"), field?.closest(".row")].filter(Boolean);
       for (const area of areas) {
-        for (const editable of area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')) {
+        const edytory = area.matches?.('[contenteditable="true"]')
+          ? [area]
+          : area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]');
+        for (const editable of edytory) {
           try {
             if (editable.ckeditorInstance && typeof editable.ckeditorInstance.setData === "function") {
               editable.ckeditorInstance.setData(value);
@@ -85,7 +91,7 @@ async function setRichFieldInMainWorld(tabId, name, html) {
       }
       return { ok: true };
     },
-    args: [name, html]
+    args: [name, html, identyfikatorElementu]
   });
   return result || { ok: false };
 }
@@ -100,7 +106,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "SET_RICH_FIELD": {
         if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
-        const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html);
+        const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId);
         sendResponse({ ok: true, result });
         break;
       }
