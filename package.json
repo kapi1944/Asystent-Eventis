@@ -4,6 +4,6 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check background.js && node --check content/wyszukiwanie.js && node --check content/eventis.js && node --check options/options.js"
+    "check": "node --check shared/config.js && node --check shared/wyszukiwanie.js && node --check shared/terminy.js && node --check shared/arkusz.js && node --check background/sheet-bridge-client.js && node --check background.js && node --check content/eventis.js && node --check options/options.js && node -e \"new Function(require('node:fs').readFileSync('apps-script/Code.gs','utf8'))\""
   }
 }

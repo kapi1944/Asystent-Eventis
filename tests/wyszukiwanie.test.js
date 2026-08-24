@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const narzedzia = require("../content/wyszukiwanie");
+const narzedzia = require("../shared/wyszukiwanie");
 
 const TYTUL_REGRESYJNY = "Zamówienia publiczne do 170 000 zł oraz tryb podstawowy w Prawie zamówień publicznych - 2-dniowe warsztaty praktyczne";
 

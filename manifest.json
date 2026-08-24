@@ -14,7 +14,9 @@
     "https://szkolenia-semper.pl/*",
     "https://www.szkolenia-semper.pl/*",
     "https://szkoleniaiist.com.pl/*",
-    "https://www.szkoleniaiist.com.pl/*"
+    "https://www.szkoleniaiist.com.pl/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -27,7 +29,13 @@
         "https://*.eventis.pl/event/add*",
         "https://*.eventis.pl/event/edit*"
       ],
-      "js": ["content/wyszukiwanie.js", "content/eventis.js"],
+      "js": [
+        "shared/config.js",
+        "shared/wyszukiwanie.js",
+        "shared/terminy.js",
+        "shared/arkusz.js",
+        "content/eventis.js"
+      ],
       "css": ["content/eventis.css", "content/akcja-panelu.css", "content/porownanie-tytulow.css"],
       "run_at": "document_idle"
     }

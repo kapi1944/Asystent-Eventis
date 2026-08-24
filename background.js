@@ -1,13 +1,24 @@
-const DEFAULT_SETTINGS = {
-  operatorInitial: "K",
-  defaultOrganization: "SEMPER",
-  semperAccountMarker: "SEMPER",
-  iistAccountMarker: "IIST",
-  requireSessionVerification: true,
-  mappingWarningThreshold: 0.90,
-  mappingBlockThreshold: 0.70,
-  manualSnapshotMaxAgeHours: 24
-};
+importScripts("shared/config.js","background/sheet-bridge-client.js");
+
+const DEFAULT_SETTINGS = globalThis.EventisSyncConfig.DEFAULT_SETTINGS;
+const KLIENT_MOSTU_ARKUSZA = globalThis.KlientMostuArkuszaEventis;
+
+async function wykonajAkcjeMostuArkusza(akcja) {
+  try {
+    const { settings = {} } = await chrome.storage.local.get(["settings"]);
+    const konfiguracja = { ...DEFAULT_SETTINGS, ...settings };
+    return KLIENT_MOSTU_ARKUSZA.wykonajZadanieMostu({
+      action:akcja,
+      sheetBridgeEnabled:konfiguracja.sheetBridgeEnabled,
+      sheetBridgeUrl:konfiguracja.sheetBridgeUrl,
+      sheetBridgeKey:konfiguracja.sheetBridgeKey,
+      sheetName:konfiguracja.sheetName,
+      timeoutMs:20000
+    });
+  } catch (_) {
+    return KLIENT_MOSTU_ARKUSZA.utworzWynikBledu("INTERNAL_ERROR","");
+  }
+}
 
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox"]);
@@ -108,6 +119,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
         const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId);
         sendResponse({ ok: true, result });
+        break;
+      }
+      case "SHEET_BRIDGE_HEALTH": {
+        sendResponse(await wykonajAkcjeMostuArkusza("health"));
+        break;
+      }
+      case "SHEET_BRIDGE_LIST_SHEETS": {
+        sendResponse(await wykonajAkcjeMostuArkusza("listSheets"));
+        break;
+      }
+      case "SHEET_BRIDGE_READ_ROWS": {
+        sendResponse(await wykonajAkcjeMostuArkusza("readRows"));
         break;
       }
       case "OPEN_OPTIONS": {

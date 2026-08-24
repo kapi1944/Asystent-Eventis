@@ -8,20 +8,16 @@
   const VERSION = "0.1.0";
   const PAGE_LOAD_ID = crypto.randomUUID();
   const MODE = location.pathname.startsWith("/event/edit") ? "edit" : "add";
-  const CITIES = ["Warszawa","Kraków","Poznań","Wrocław","Gdańsk","Katowice","Szczecin","Zakopane","Kołobrzeg"];
   const REGIONS = { Warszawa:7, Kraków:6, Poznań:15, Wrocław:1, Gdańsk:11, Katowice:12, Szczecin:16, Zakopane:6, Kołobrzeg:16 };
-  const DEFAULT_SETTINGS = {
-    operatorInitial: "K",
-    defaultOrganization: "SEMPER",
-    semperAccountMarker: "SEMPER",
-    iistAccountMarker: "IIST",
-    requireSessionVerification: true,
-    mappingWarningThreshold: 0.90,
-    mappingBlockThreshold: 0.70,
-    manualSnapshotMaxAgeHours: 24
-  };
+  const KONFIGURACJA = globalThis.EventisSyncConfig;
   const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
+  const NARZEDZIA_TERMINOW = globalThis.NarzedziaTerminowEventis;
+  const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
+  if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
+  if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
+  if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano modułu arkusza.");
+  const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
     MOCNY_KANDYDAT: 0.72,
@@ -125,63 +121,36 @@
   }
 
   function dateRangeFromText(text) {
-    const m = String(text || "").match(/(?:od:\s*)?(\d{4}-\d{2}-\d{2})\s*(?:do:|do|-|–|—)\s*(\d{4}-\d{2}-\d{2})/i);
-    if (m) return { start:m[1], end:m[2] };
-    const dates = String(text || "").match(/\d{4}-\d{2}-\d{2}/g) || [];
-    if (dates.length >= 2) return { start:dates[0], end:dates[1] };
-    if (dates.length === 1) return { start:dates[0], end:dates[0] };
-    return null;
+    return NARZEDZIA_TERMINOW.dateRangeFromText(text);
   }
 
   function durationDays(start,end) {
-    const a = new Date(start + "T00:00:00"), b = new Date(end + "T00:00:00");
-    return Math.max(1, Math.round((b-a)/86400000)+1);
+    return NARZEDZIA_TERMINOW.durationDays(start,end);
   }
 
   function zastosujReguleCzterodniowegoTerminu(start, end, city, price) {
-    const surowaLiczbaDni = durationDays(start,end);
-    if (surowaLiczbaDni !== 4) return {start,end,city,price,durationDays:surowaLiczbaDni};
-    const przesunietyPoczatek = new Date(start + "T00:00:00");
-    przesunietyPoczatek.setDate(przesunietyPoczatek.getDate()+1);
-    return {
-      start:przesunietyPoczatek.toISOString().slice(0,10),
-      end,
-      city,
-      price:city === "Online" ? price : price-300,
-      durationDays:3
-    };
+    return NARZEDZIA_TERMINOW.zastosujReguleCzterodniowegoTerminu(start,end,city,price);
   }
 
   function cityFromText(text) {
-    const n = normalize(text);
-    if (/\bonline\b/.test(n)) return "Online";
-    for (const city of CITIES) if (n.includes(normalize(city))) return city;
-    return "";
+    return NARZEDZIA_TERMINOW.cityFromText(text);
   }
 
   function priceFromText(text) {
-    const m = String(text || "").replace(/\s+/g," ").match(/(\d{3,5})(?:[.,]\d{2})?\s*zł/i);
-    return m ? parseInt(m[1], 10) : null;
+    return NARZEDZIA_TERMINOW.priceFromText(text);
   }
 
   function isConfirmedText(text) {
-    const n = normalize(text).replace(/\s+/g,"");
-    return n.includes("ostatniewolnemiejsca") || n.includes("ostatniewolne") || n.includes("potwierdzony") || n.includes("gwarantowany") || n.includes("gwarancjaterminu");
+    return NARZEDZIA_TERMINOW.isConfirmedText(text);
   }
 
-  function termKey(t) { return `${t.start}|${t.end}|${normalize(t.city)}`; }
-  function existingKey(t) { return `${t.start}|${normalize(t.city)}`; }
+  function termKey(t) { return NARZEDZIA_TERMINOW.termKey(t); }
+  function existingKey(t) { return NARZEDZIA_TERMINOW.existingKey(t); }
   function czyTerminPotwierdzony(termin) {
     return termin.confirmed || state.reczniePotwierdzoneTerminy.has(termKey(termin));
   }
   function dedupeTerms(terms) {
-    const map = new Map();
-    for (const t of terms) {
-      const k = termKey(t);
-      const prev = map.get(k);
-      if (!prev || (t.confirmed && !prev.confirmed)) map.set(k,t);
-    }
-    return Array.from(map.values()).sort((a,b)=>a.start.localeCompare(b.start)||String(a.city).localeCompare(String(b.city)));
+    return NARZEDZIA_TERMINOW.dedupeTerms(terms);
   }
 
   async function storageGet(keys) { return chrome.storage.local.get(keys); }
@@ -941,12 +910,23 @@
     if(category) category.classList.add("esync-manual-highlight");
   }
 
+  function przygotujTerminDoKolejki(termin) {
+    return {
+      sourceStart:termin.sourceStart || termin.start,
+      sourceEnd:termin.sourceEnd || termin.end,
+      start:termin.start,
+      end:termin.end,
+      city:termin.city,
+      price:termin.price
+    };
+  }
+
   async function createPendingOperation(terms) {
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
     const key = mappingKey(state.organization,state.eventisId);
     pendingOperations[key] = {
       id:crypto.randomUUID(), organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,
-      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price})),
+      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(przygotujTerminDoKolejki),
       operator:state.settings.operatorInitial || "K", createdAt:new Date().toISOString(), createdPageLoadId:PAGE_LOAD_ID, status:"WAITING_FOR_SAVE"
     };
     await storageSet({pendingOperations});
@@ -976,7 +956,7 @@
     for (const term of op.terms) {
       const idem = `${state.organization}|${state.eventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
       if (!sheetOutbox.some(x=>x.idempotencyKey===idem && x.status!=="CANCELLED")) {
-        sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term,sourceUrl:op.sourceUrl});
+        sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
       }
     }
     delete pendingOperations[key];
@@ -997,7 +977,7 @@
     for (const term of matched) {
       const idem=`${state.organization}|${state.eventisId}|${term.start}|${normalize(term.city)}|${state.settings.operatorInitial}`;
       if (!sheetOutbox.some(x=>x.idempotencyKey===idem&&x.status!=="CANCELLED")) {
-        sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:state.settings.operatorInitial,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:{start:term.start,end:term.end,city:term.city,price:term.price},sourceUrl:state.source?.url||state.mapping?.sourceUrl||"",reason:"ALREADY_EXISTS"});
+        sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:state.settings.operatorInitial,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:przygotujTerminDoKolejki(term),sourceUrl:state.source?.url||state.mapping?.sourceUrl||"",reason:"ALREADY_EXISTS"});
         added++;
       }
     }
@@ -1006,55 +986,12 @@
     toast(`Dodano do kolejki arkusza: ${added}.`);
   }
 
-  function normalizeManualDatePart(raw) {
-    return String(raw).replace(/[.]/g,"-");
-  }
-
-  function parseManualRecordLine(line) {
-    const raw = String(line || "").replace(/<br\s*\/?\s*>/gi," ").replace(/\\\|/g,"|").replace(/\|/g," ").replace(/\s+/g," ").trim();
-    const n = normalize(raw);
-    let status = null;
-    if (n.includes("odpotwierdzone")) status="DECONFIRMED";
-    else if (n.includes("potwierdzone szkolenie")) status="CONFIRMED";
-    if (!status) return null;
-
-    let start=null,end=null,dateToken="";
-    let m = raw.match(/(\d{4}[.-]\d{2}[.-]\d{2})\s*(?:do|[-–—])\s*(\d{4}[.-]\d{2}[.-]\d{2})/i);
-    if (m) { start=normalizeManualDatePart(m[1]); end=normalizeManualDatePart(m[2]); dateToken=m[0]; }
-    if (!m) {
-      m = raw.match(/(\d{1,2})\s*[-–—]\s*(\d{1,2})[.]([01]?\d)[.](\d{4})/);
-      if (m) {
-        const pad=x=>String(x).padStart(2,"0");
-        start=`${m[4]}-${pad(m[3])}-${pad(m[1])}`; end=`${m[4]}-${pad(m[3])}-${pad(m[2])}`; dateToken=m[0];
-      }
-    }
-    if (!m) {
-      m = raw.match(/(\d{4}[.-]\d{2}[.-]\d{2})/);
-      if (m) { start=end=normalizeManualDatePart(m[1]); dateToken=m[0]; }
-    }
-    if (!start) return {status,rawText:raw,error:"Nie rozpoznano daty"};
-    const city = cityFromText(raw);
-    if (!city) return {status,rawText:raw,start,end,error:"Nie rozpoznano lokalizacji"};
-    const participantsMatch = raw.match(/(\d+)\s*(?:os(?:oby|ób|oba)?|osoby|osób)/i);
-    const participants = participantsMatch ? Number(participantsMatch[1]) : null;
-    let title = raw
-      .replace(/POTWIERDZONE\s+SZKOLENIE/ig,"")
-      .replace(/ODPOTWIERDZONE/ig,"")
-      .replace(dateToken,"")
-      .replace(new RegExp(city === "Online" ? "(?:SZKOLENIE\\s+)?ONLINE" : city,"ig"),"")
-      .replace(/\d+\s*(?:os(?:oby|ób|oba)?|osoby|osób)/ig,"")
-      .replace(/^\s*["']|["']\s*$/g,"")
-      .replace(/^[,.;:\s]+|[,.;:\s]+$/g,"")
-      .trim();
-    return {status,title,normalizedTitle:normalize(title),start,end,city,participants,rawText:raw};
-  }
-
   function parseManualPaste(text) {
-    return String(text||"").split(/\n+/).map(cleanLine).filter(line=>/POTWIERDZONE\s+SZKOLENIE|ODPOTWIERDZONE/i.test(line)).map(parseManualRecordLine).filter(Boolean);
+    return NARZEDZIA_ARKUSZA.parseManualPaste(text);
   }
 
   function matchManualRecordsToCurrent(records) {
-    return (records||[]).map(r=>({...r,similarity:r.title?titleSimilarity(state.eventisTitle,r.title):0})).filter(r=>r.error || r.similarity>=.58).sort((a,b)=>(b.similarity||0)-(a.similarity||0));
+    return NARZEDZIA_ARKUSZA.matchManualRecordsToCurrent(records,state.eventisTitle);
   }
 
   async function saveManualSnapshot(records, rawText) {

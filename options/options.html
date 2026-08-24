@@ -50,13 +50,37 @@
     </section>
 
     <section>
+      <h2>Google Sheets Bridge</h2>
+      <p>Połączenie jest uruchamiane wyłącznie ręcznie i w tym etapie pozwala tylko sprawdzić endpoint, pobrać listę kart oraz odczytać pasujące wiersze.</p>
+      <label class="inline"><input type="checkbox" id="sheetBridgeEnabled"> Włącz połączenie z Bridge</label>
+      <label>URL Web App
+        <input id="sheetBridgeUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://script.google.com/macros/s/.../exec">
+      </label>
+      <label>Klucz Bridge
+        <input id="sheetBridgeKey" type="password" autocomplete="new-password" placeholder="Wpisz klucz Bridge">
+      </label>
+      <p class="hint">Zapisany klucz pozostaje ukryty. Pozostaw pole puste, aby zachować dotychczasowy klucz, albo wpisz nowy, aby go zastąpić.</p>
+      <label>Karta arkusza
+        <select id="sheetName">
+          <option value="">Najpierw pobierz listę kart</option>
+        </select>
+      </label>
+      <div class="buttons">
+        <button type="button" id="sheetBridgeHealthBtn">Sprawdź połączenie</button>
+        <button type="button" id="sheetBridgeListBtn">Pobierz listę kart</button>
+        <button type="button" id="sheetBridgeReadBtn">Test odczytu</button>
+      </div>
+      <div class="bridge-status" id="sheetBridgeStatus" aria-live="polite"></div>
+    </section>
+
+    <section>
       <h2>Pamięć rozszerzenia</h2>
       <div class="stats" id="stats">Ładowanie…</div>
       <div class="buttons">
         <button id="exportBtn">Eksportuj pamięć JSON</button>
         <button id="clearMappingsBtn" class="danger">Usuń zapamiętane powiązania</button>
       </div>
-      <p class="hint">Kolejka oznaczeń arkusza jest w v0.1 przechowywana lokalnie. Bezpośrednia integracja z Google Sheets zostanie podłączona po ustaleniu mapowania komórek i konfiguracji OAuth / endpointu.</p>
+      <p class="hint">Kolejka oznaczeń arkusza pozostaje lokalna. Bridge działa obecnie wyłącznie w trybie odczytu i nie wysyła wpisów z kolejki.</p>
     </section>
 
     <div class="savebar">
@@ -64,6 +88,7 @@
       <span id="status"></span>
     </div>
   </main>
+  <script src="../shared/config.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
