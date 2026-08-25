@@ -1010,7 +1010,7 @@
   }
 
   function utworzPodgladImportu(rekordy, rawText = "") {
-    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,state.eventisImportQueue);
+    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,state.eventisImportQueue,{organization:state.organization});
     const kluczeDoDodania = new Set(przygotowane.items.map(element => element.recordKey));
     const potwierdzone = rekordy.filter(rekord => rekord.status === "CONFIRMED" && !rekord.error);
     return {
@@ -1029,7 +1029,7 @@
     if (!state.manualPreview) return;
     const dane = await storageGet(["eventisImportQueue"]);
     const obecnaKolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : state.eventisImportQueue;
-    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(state.manualPreview.records,obecnaKolejka);
+    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(state.manualPreview.records,obecnaKolejka,{organization:state.organization});
     if (!przygotowane.items.length) return toast("Brak nowych potwierdzonych pozycji do dodania do kolejki.");
     state.eventisImportQueue = [...obecnaKolejka,...przygotowane.items];
     await storageSet({eventisImportQueue:state.eventisImportQueue});
@@ -1051,7 +1051,7 @@
   }
 
   function dopasowaniaKolejkiDoBiezacegoTytulu() {
-    return state.eventisImportQueue
+    return NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
       .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status))
       .map(element => ({
         element,
@@ -1073,20 +1073,23 @@
     if (!state.mappingVerifiedThisSession) return toast("Najpierw zweryfikuj zgodność źródła szkolenia.");
     if (!state.source || !state.sourceTerms.length) return toast("Najpierw załaduj źródło SEMPER/IIST.");
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
-    const jednoznaczne=dopasowania.filter(dopasowanie => dopasowanie.terminy.length===1);
-    const nierozwiazane=dopasowania.filter(dopasowanie => dopasowanie.terminy.length!==1);
-    if (nierozwiazane.length) {
+    const {jednoznaczne,nierozwiazane,duplikatyTerminow}=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania);
+    if (nierozwiazane.length || duplikatyTerminow.length) {
       state.eventisImportQueue=state.eventisImportQueue.map(element => {
         const dopasowanie=nierozwiazane.find(kandydat=>kandydat.element.id===element.id);
+        const duplikat=duplikatyTerminow.some(kandydat=>kandydat.element.id===element.id);
         return dopasowanie
           ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,dopasowanie.terminy.length ? "Znaleziono kilka odpowiadających terminów w danych SEMPER/IIST." : "Nie znaleziono odpowiadającego terminu w danych SEMPER/IIST. Sprawdź datę, lokalizację albo źródło szkolenia.")
-          : element;
+          : duplikat
+            ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"DUPLICATE_SOURCE_TERM"}
+            : element;
       });
       await zapiszKolejke();
-      render();
-      return toast("Nie wszystkie pozycje mają jednoznaczny termin w danych SEMPER/IIST.");
     }
-    if (!jednoznaczne.length) return toast("Brak pasujących pozycji kolejki dla tego szkolenia.");
+    if (!jednoznaczne.length) {
+      render();
+      return toast("Brak jednoznacznych pozycji kolejki dla tego szkolenia.");
+    }
     const istniejąceKlucze=new Set(getExistingTerms().map(existingKey));
     const elementyJuzIstniejace=jednoznaczne.filter(dopasowanie=>istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
     const doWprowadzenia=jednoznaczne.filter(dopasowanie=>!istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
@@ -1102,21 +1105,26 @@
     try {
       const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
       const result=await addSelectedTerms(unikalneTerminy(termy));
-      await fillEventDetailsIfAdd(state.source,result.added);
-      const idsDoOczekiwania=doWprowadzenia.map(dopasowanie=>dopasowanie.element.id);
+      const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
+      await fillEventDetailsIfAdd(state.source,powiazanie.terms);
       const idsZakonczone=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
-      const idsOczekujace=new Set(result.added.length ? idsDoOczekiwania : []);
+      const idsOczekujace=new Set(powiazanie.queueItemIds);
       state.eventisImportQueue=state.eventisImportQueue.map(element=>{
         if(idsZakonczone.has(element.id)) return element;
         if(idsOczekujace.has(element.id)) return NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS);
         return element;
       });
       await zapiszKolejke();
-      await createPendingOperation(result.added,Array.from(idsOczekujace));
+      if (!powiazanie.terms.length) {
+        render();
+        return toast("Żaden termin kolejki nie został dodany do formularza.");
+      }
+      await createPendingOperation(powiazanie.terms,powiazanie.queueItemIds);
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       render();
-      toast(`${elementyJuzIstniejace.length ? `${elementyJuzIstniejace.length} terminów już istnieje. ` : ""}Formularz uzupełniony terminami z kolejki. Zapisz Eventis ręcznie po kontroli.`);
+      const liczbaProblemow=nierozwiazane.length+duplikatyTerminow.length;
+      toast(`Przygotowano terminów: ${powiazanie.terms.length}.${liczbaProblemow ? ` Pozycje wymagające sprawdzenia: ${liczbaProblemow}.` : ""} Zapisz Eventis ręcznie po kontroli.`);
     } catch (blad) {
       state.status="ERROR"; state.lastError=blad.message; render();
     }
@@ -1464,9 +1472,10 @@
   }
 
   function renderKolejkaCard() {
-    const podsumowanie=NARZEDZIA_KOLEJKI.podsumujKolejke(state.eventisImportQueue);
+    const kolejkaOrganizacji=NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization);
+    const podsumowanie=NARZEDZIA_KOLEJKI.podsumujKolejke(kolejkaOrganizacji);
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
-    const gotowe=dopasowania.filter(dopasowanie=>dopasowanie.terminy.length===1);
+    const gotowe=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania).jednoznaczne;
     return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${dopasowania.length?`<div class="esync-small" style="margin-top:7px"><b>Pasujące do bieżącego szkolenia</b></div>${dopasowania.map(dopasowanie=>`<div class="esync-import-row"><div><div class="esync-term-main">${esc(dopasowanie.element.title)}</div><div class="esync-term-sub">${esc(dopasowanie.element.start)}${dopasowanie.element.end!==dopasowanie.element.start?` → ${esc(dopasowanie.element.end)}`:''} · ${esc(dopasowanie.element.city)}${dopasowanie.element.participants!=null?` · ${esc(dopasowanie.element.participants)} uczestn.`:''} · podobieństwo ${Math.round(dopasowanie.similarity*100)}%</div>${dopasowanie.element.errorMessage?`<div class="esync-small esync-danger">${esc(dopasowanie.element.errorMessage)}</div>`:''}</div>${dopasowanie.element.status===NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD?`<button class="esync-btn warn" data-queue-retry="${esc(dopasowanie.element.id)}">Ponów</button>`:''}</div>`).join('')} ${state.mappingVerifiedThisSession&&gotowe.length?`<button id="esync-add-queue-terms" class="esync-btn good" style="width:100%;margin-top:7px">Wprowadź terminy z kolejki (${gotowe.length})</button>`:''}`:`<div class="esync-small esync-muted" style="margin-top:7px">Na tym ogłoszeniu nie znaleziono oczekujących pozycji o podobnym tytule.</div>`}</div>`;
   }
 
