@@ -4,6 +4,6 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check shared/config.js && node --check shared/wyszukiwanie.js && node --check shared/terminy.js && node --check shared/opisy-semper.js && node --check shared/arkusz.js && node --check shared/kolejka-eventis.js && node --check background/sheet-bridge-client.js && node --check background.js && node --check content/eventis.js && node --check options/options.js && node -e \"new Function(require('node:fs').readFileSync('apps-script/Code.gs','utf8'))\""
+    "check": "node --check shared/config.js && node --check shared/wyszukiwanie.js && node --check shared/terminy.js && node --check shared/opisy-semper.js && node --check shared/arkusz.js && node --check shared/kolejka-eventis.js && node --check shared/pola-rich-text.js && node --check background/sheet-bridge-client.js && node --check background.js && node --check content/eventis.js && node --check options/options.js && node -e \"new Function(require('node:fs').readFileSync('apps-script/Code.gs','utf8'))\""
   }
 }

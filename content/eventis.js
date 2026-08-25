@@ -15,12 +15,14 @@
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
   const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
   const NARZEDZIA_OPISOW_SEMPER = globalThis.NarzedziaOpisowSemper;
+  const NARZEDZIA_POL_RICH_TEXT = globalThis.NarzedziaPolRichTextEventis;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
   if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
   if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano modułu arkusza.");
   if (!NARZEDZIA_KOLEJKI) throw new Error("Nie załadowano modułu kolejki Eventis.");
   if (!NARZEDZIA_OPISOW_SEMPER) throw new Error("Nie załadowano parsera opisów SEMPER.");
+  if (!NARZEDZIA_POL_RICH_TEXT) throw new Error("Nie załadowano obsługi pól rich-text.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
@@ -29,6 +31,12 @@
     MINIMALNA_PRZEWAGA: 0.08,
     MAKS_KANDYDATOW_DO_WERYFIKACJI: 5,
     MAKS_WYNIKOW_W_UI: 5
+  });
+  const NAZWY_POL_OPISOWYCH = Object.freeze({
+    "event[forWho]":"Grupa docelowa",
+    "event[information]":"Cel szkolenia",
+    "event[reason]":"Korzyści ze szkolenia",
+    "event[plan]":"Program szkolenia"
   });
 
   const state = {
@@ -753,6 +761,14 @@
     el.dispatchEvent(new Event("change",{bubbles:true}));
   }
 
+  async function ustawPoleRichText(pole, html, dodatkoweDane = {}) {
+    const wynik = await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:pole,html,...dodatkoweDane});
+    if (wynik?.ok) return wynik;
+    const nazwaPola = NAZWY_POL_OPISOWYCH[pole] || pole || dodatkoweDane.elementId || "pole rich-text";
+    const szczegoly = wynik?.message || "Edytor Eventis nie potwierdził aktualizacji danych.";
+    throw new Error(`Nie udało się poprawnie ustawić pola „${nazwaPola}”. ${szczegoly}`);
+  }
+
   function znajdzPolePoEtykiecie(tekstEtykiety) {
     const szukanyTekst = normalize(tekstEtykiety);
     const etykieta = $$('label').find(el=>normalize(el.textContent).includes(szukanyTekst));
@@ -899,15 +915,17 @@
     const poleCzasuTrwania = $('[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)");
     const czasTrwania = liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`;
     setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),source.title);
-    if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:poleCzasuTrwania?.name,elementId:"eventHours",html:`<p>${czasTrwania}</p>`});
+    if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await ustawPoleRichText(poleCzasuTrwania?.name,`<p>${czasTrwania}</p>`,{elementId:"eventHours"});
     else setValue(poleCzasuTrwania,czasTrwania);
     await wybierzWygladPodstawowy();
     await uzupelnijWymaganeFormyZajec();
     await uzupelnijIZweryfikujZyciorys();
-    for (const { klucz, pole } of NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH) {
-      const html = source.opisy?.[klucz];
-      if (html) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:pole,html});
-    }
+    await NARZEDZIA_POL_RICH_TEXT.uzupelnijPolaOpisoweJesliDodawanie(
+      MODE,
+      source.opisy,
+      NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH,
+      ustawPoleRichText
+    );
     const participantType=$('input[name="event[participantsType]"][value="1"]'); if(participantType){participantType.checked=true;participantType.dispatchEvent(new Event("change",{bubbles:true}));}
     const adult=$('input[name="ageGroup[]"][value="4"]'); if(adult&&!adult.checked){adult.checked=true;adult.dispatchEvent(new Event("change",{bubbles:true}));}
     const category=$("#tematSelect") || $('select[name="event[category_id]"]');
@@ -1395,7 +1413,7 @@
       compareTerms();
       render();
       toast("Formularz uzupełniony. Sprawdź go wizualnie i zapisz ręcznie w Eventis.");
-    }catch(e){state.status="ERROR";state.lastError=e.message;render();}
+    }catch(e){state.status="ERROR";state.lastError=e.message;render();toast(e.message);}
   }
 
   async function switchOrganization(org) {

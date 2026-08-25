@@ -59,68 +59,92 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (fieldName, value, identyfikatorEdytora) => {
+    func: async (fieldName, value, identyfikatorEdytora) => {
       const field = Array.from(document.querySelectorAll("input,textarea,select")).find(el => el.name === fieldName);
       const bezposredniEdytor = identyfikatorEdytora ? document.getElementById(identyfikatorEdytora) : null;
-      if (!field && !bezposredniEdytor) return { ok: false, reason: "field-not-found" };
+      const nazwaPola = fieldName || identyfikatorEdytora || "nieznane";
+      const blad = (code, message) => ({ ok: false, code, field: nazwaPola, message });
+      if (!field && !bezposredniEdytor) {
+        return blad("FIELD_NOT_FOUND", `Nie znaleziono pola „${nazwaPola}”.`);
+      }
 
-      const fire = (el) => {
+      const wyemitujZmiany = (el) => {
         el.dispatchEvent(new Event("input", { bubbles: true }));
         el.dispatchEvent(new Event("change", { bubbles: true }));
       };
 
-      if (field) {
-        field.value = value;
-        fire(field);
-      }
+      const areas = [bezposredniEdytor, field?.parentElement, field?.closest(".form-group"), field?.closest(".row")].filter(Boolean);
+      const edytowalneElementy = areas.flatMap(area => area.matches?.('[contenteditable="true"]')
+        ? [area]
+        : Array.from(area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')));
 
       try {
-        if (window.CKEDITOR && window.CKEDITOR.instances) {
-          const instance = field && (window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name]);
-          if (instance && typeof instance.setData === "function") {
-            instance.setData(value, () => {
-              if (typeof instance.updateElement === "function") instance.updateElement();
-              if (field) fire(field);
-            });
+        const instancjaCkeditora4 = field && window.CKEDITOR?.instances
+          && (window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name]);
+        if (instancjaCkeditora4) {
+          if (typeof instancjaCkeditora4.setData !== "function" || typeof instancjaCkeditora4.updateElement !== "function") {
+            return blad("EDITOR_INSTANCE_UNSUPPORTED", `Instancja edytora pola „${nazwaPola}” nie udostępnia wymaganego API.`);
           }
-        }
-      } catch (_) {}
-
-      const bezposrednieInstancje = [field?.ckeditorInstance, bezposredniEdytor?.ckeditorInstance].filter(Boolean);
-      for (const instance of bezposrednieInstancje) {
-        try {
-          if (typeof instance.setData !== "function") continue;
-          instance.setData(value);
-          if (typeof instance.updateSourceElement === "function") instance.updateSourceElement();
-          if (field) fire(field);
-        } catch (_) {}
-      }
-
-      const areas = [bezposredniEdytor, field?.parentElement, field?.closest(".form-group"), field?.closest(".row")].filter(Boolean);
-      for (const area of areas) {
-        const edytory = area.matches?.('[contenteditable="true"]')
-          ? [area]
-          : area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]');
-        for (const editable of edytory) {
-          try {
-            if (editable.ckeditorInstance && typeof editable.ckeditorInstance.setData === "function") {
-              editable.ckeditorInstance.setData(value);
-              if (typeof editable.ckeditorInstance.updateSourceElement === "function") {
-                editable.ckeditorInstance.updateSourceElement();
-              }
-            } else {
-              editable.innerHTML = value;
-              editable.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
-              editable.dispatchEvent(new Event("blur", { bubbles: true }));
+          await new Promise((rozwiaz, odrzuc) => {
+            let zakonczono = false;
+            const potwierdz = () => {
+              if (zakonczono) return;
+              zakonczono = true;
+              rozwiaz();
+            };
+            try {
+              const wynik = instancjaCkeditora4.setData(value, potwierdz);
+              if (wynik && typeof wynik.then === "function") wynik.then(potwierdz, odrzuc);
+              else if (instancjaCkeditora4.setData.length < 2) potwierdz();
+            } catch (bladAktualizacji) {
+              odrzuc(bladAktualizacji);
             }
-          } catch (_) {}
+          });
+          instancjaCkeditora4.updateElement();
+          wyemitujZmiany(field);
+          return { ok: true, method: "ckeditor4", field: nazwaPola, modelUpdated: true, sourceUpdated: true };
         }
+
+        const bezposrednieInstancje = [field?.ckeditorInstance, bezposredniEdytor?.ckeditorInstance, ...edytowalneElementy.map(editable => editable.ckeditorInstance)]
+          .filter((instancja, indeks, wszystkie) => instancja && wszystkie.indexOf(instancja) === indeks);
+        if (bezposrednieInstancje.length) {
+          const instancja = bezposrednieInstancje.find(kandydat => typeof kandydat.setData === "function");
+          if (!instancja) {
+            return blad("EDITOR_INSTANCE_UNSUPPORTED", `Instancja edytora pola „${nazwaPola}” nie udostępnia metody setData().`);
+          }
+          const wynik = instancja.setData(value);
+          if (wynik && typeof wynik.then === "function") await wynik;
+          if (typeof instancja.updateSourceElement === "function") instancja.updateSourceElement();
+          else if (typeof instancja.updateElement === "function") instancja.updateElement();
+          else if (field) field.value = value;
+          else return blad("EDITOR_SOURCE_UNAVAILABLE", `Edytor pola „${nazwaPola}” nie potwierdził aktualizacji źródła danych.`);
+          if (field) wyemitujZmiany(field);
+          return { ok: true, method: "ckeditor-instance", field: nazwaPola, modelUpdated: true, sourceUpdated: true };
+        }
+
+        if (edytowalneElementy.length) {
+          return blad("EDITOR_MODEL_UNAVAILABLE", `Edytor pola „${nazwaPola}” nie udostępnia modelu ani źródła danych.`);
+        }
+
+        if (field) {
+          field.value = value;
+          wyemitujZmiany(field);
+          return { ok: true, method: "form-control", field: nazwaPola, modelUpdated: true, sourceUpdated: true };
+        }
+      } catch (bladAktualizacji) {
+        return blad("EDITOR_UPDATE_FAILED", `Nie udało się zaktualizować pola „${nazwaPola}”: ${bladAktualizacji?.message || "nieznany błąd"}.`);
       }
-      return { ok: true };
+
+      return blad("EDITOR_MODEL_UNAVAILABLE", `Nie znaleziono obsługiwanej instancji edytora pola „${nazwaPola}”.`);
     },
     args: [name, html, identyfikatorElementu]
   });
-  return result || { ok: false };
+  return result || {
+    ok: false,
+    code: "EXECUTION_NO_RESULT",
+    field: name || identyfikatorElementu || "nieznane",
+    message: "Nie otrzymano wyniku aktualizacji pola rich-text."
+  };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -133,8 +157,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "SET_RICH_FIELD": {
         if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
-        const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId);
-        sendResponse({ ok: true, result });
+        try {
+          const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId);
+          sendResponse(result);
+        } catch (blad) {
+          sendResponse({
+            ok: false,
+            code: "EXECUTION_FAILED",
+            field: message.name || message.elementId || "nieznane",
+            message: `Nie udało się uruchomić aktualizacji pola rich-text: ${blad?.message || "nieznany błąd"}.`
+          });
+        }
         break;
       }
       case "SHEET_BRIDGE_HEALTH": {
