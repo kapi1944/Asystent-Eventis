@@ -159,11 +159,23 @@
     return { ...element, status, errorMessage, updatedAt: new Date().toISOString() };
   }
 
+  function oznaczElementyOczekujaceOperacji(kolejka = [], operacja) {
+    const identyfikatory = new Set(operacja?.queueItemIds || []);
+    if (!identyfikatory.size || !operacja?.operationId) return kolejka;
+    return kolejka.map(element =>
+      element.organization === operacja.organization && identyfikatory.has(element.id)
+        ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId }
+        : element
+    );
+  }
+
   function rozliczElementyOperacji(kolejka = [], operacja, status, komunikatBledu = "") {
     const identyfikatory = new Set(operacja?.queueItemIds || []);
     if (!identyfikatory.size) return kolejka;
     return kolejka.map(element =>
-      element.organization === operacja.organization && identyfikatory.has(element.id)
+      element.organization === operacja.organization
+        && identyfikatory.has(element.id)
+        && (!operacja.operationId || element.operationId === operacja.operationId)
         ? zmienStatusElementu(element,status,komunikatBledu)
         : element
     );
@@ -193,6 +205,7 @@
     rozdzielDopasowaniaKolejki,
     powiazDodaneTerminy,
     zmienStatusElementu,
+    oznaczElementyOczekujaceOperacji,
     rozliczElementyOperacji,
     znajdzOperacjeDlaStrony
   };

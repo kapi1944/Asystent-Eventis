@@ -1,7 +1,19 @@
-importScripts("shared/config.js","background/sheet-bridge-client.js");
+importScripts("shared/config.js","shared/operacje-eventis.js","background/sheet-bridge-client.js");
 
 const DEFAULT_SETTINGS = globalThis.EventisSyncConfig.DEFAULT_SETTINGS;
 const KLIENT_MOSTU_ARKUSZA = globalThis.KlientMostuArkuszaEventis;
+const kolejkiClaimowOperacji = new Map();
+
+async function wykonajClaimSeryjnie(kluczClaimu, akcja) {
+  const poprzedni = kolejkiClaimowOperacji.get(kluczClaimu) || Promise.resolve();
+  const biezacy = poprzedni.catch(() => {}).then(akcja);
+  kolejkiClaimowOperacji.set(kluczClaimu,biezacy);
+  try {
+    return await biezacy;
+  } finally {
+    if (kolejkiClaimowOperacji.get(kluczClaimu) === biezacy) kolejkiClaimowOperacji.delete(kluczClaimu);
+  }
+}
 
 async function wykonajAkcjeMostuArkusza(akcja) {
   try {
@@ -21,13 +33,34 @@ async function wykonajAkcjeMostuArkusza(akcja) {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox", "eventisImportQueue"]);
+  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox", "eventisImportQueue", "eventisAutomaticBatches"]);
   if (!current.settings) await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
   if (!current.mappings) await chrome.storage.local.set({ mappings: {} });
   if (!current.auditLog) await chrome.storage.local.set({ auditLog: [] });
   if (!current.sheetOutbox) await chrome.storage.local.set({ sheetOutbox: [] });
   if (!current.eventisImportQueue) await chrome.storage.local.set({ eventisImportQueue: [] });
+  if (!current.eventisAutomaticBatches) await chrome.storage.local.set({ eventisAutomaticBatches: {} });
 });
+
+function bezpiecznyUrlEdycjiEventis(wartosc) {
+  try {
+    const url = new URL(String(wartosc || ""));
+    if (url.protocol !== "https:" || url.username || url.password || !/(^|\.)eventis\.pl$/i.test(url.hostname)) return "";
+    if (!/^\/event\/edit(?:\/|$)/i.test(url.pathname)) return "";
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
+async function otworzKartyEdycjiEventis(adresy = []) {
+  const poprawne = [...new Set(adresy.map(bezpiecznyUrlEdycjiEventis).filter(Boolean))];
+  if (!poprawne.length) return { ok:false, error:"Brak prawidłowych adresów kart Eventis." };
+  for (let indeks = 0; indeks < poprawne.length; indeks++) {
+    await chrome.tabs.create({url:poprawne[indeks],active:indeks === 0});
+  }
+  return { ok:true, opened:poprawne.length };
+}
 
 async function fetchText({ url, method = "GET", body = null, headers = {}, timeoutMs = 15000 }) {
   const kontroler = new AbortController();
@@ -170,6 +203,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         break;
       }
+      case "CLAIM_PENDING_OPERATION": {
+        const operacja = message.operation;
+        if (!operacja?.operationId || !operacja?.operationScopeKey) throw new Error("Nieprawidłowy claim operacji importu.");
+        const NARZEDZIA_OPERACJI = globalThis.NarzedziaOperacjiEventis;
+        if (!NARZEDZIA_OPERACJI) throw new Error("Nie załadowano obsługi operacji Eventis.");
+        const wynik = await wykonajClaimSeryjnie(operacja.operationScopeKey,() => NARZEDZIA_OPERACJI.uzyskajClaimOperacji({
+          pobierz:async () => (await chrome.storage.local.get(["pendingOperations"])).pendingOperations || {},
+          zapisz:async pendingOperations => chrome.storage.local.set({pendingOperations})
+        },operacja));
+        sendResponse(wynik);
+        break;
+      }
       case "SHEET_BRIDGE_HEALTH": {
         sendResponse(await wykonajAkcjeMostuArkusza("health"));
         break;
@@ -185,6 +230,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "OPEN_OPTIONS": {
         await chrome.runtime.openOptionsPage();
         sendResponse({ ok: true });
+        break;
+      }
+      case "OPEN_EVENTIS_TABS": {
+        sendResponse(await otworzKartyEdycjiEventis(message.urls));
         break;
       }
       case "CLOSE_TAB": {

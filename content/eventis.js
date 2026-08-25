@@ -15,6 +15,8 @@
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
   const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
   const NARZEDZIA_OPISOW_SEMPER = globalThis.NarzedziaOpisowSemper;
+  const NARZEDZIA_OPERACJI = globalThis.NarzedziaOperacjiEventis;
+  const NARZEDZIA_LISTY = globalThis.NarzedziaListyEventis;
   const NARZEDZIA_POL_RICH_TEXT = globalThis.NarzedziaPolRichTextEventis;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
@@ -22,6 +24,8 @@
   if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano modułu arkusza.");
   if (!NARZEDZIA_KOLEJKI) throw new Error("Nie załadowano modułu kolejki Eventis.");
   if (!NARZEDZIA_OPISOW_SEMPER) throw new Error("Nie załadowano parsera opisów SEMPER.");
+  if (!NARZEDZIA_OPERACJI) throw new Error("Nie załadowano obsługi operacji Eventis.");
+  if (!NARZEDZIA_LISTY) throw new Error("Nie załadowano obsługi listy Eventis.");
   if (!NARZEDZIA_POL_RICH_TEXT) throw new Error("Nie załadowano obsługi pól rich-text.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
@@ -210,7 +214,9 @@
     state.organization = detectOrganization(state.settings);
     const key = mappingKey(state.organization,state.eventisId);
     state.mapping = (data.mappings || {})[key] || null;
-    state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(data.pendingOperations || {},state.organization,state.eventisId,state.eventisTitle);
+    const pendingOperations = data.pendingOperations || {};
+    state.pendingOperation = pendingOperations[kluczClaimuBiezacegoFormularza()]
+      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle);
     state.eventisImportQueue = Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : [];
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
@@ -943,21 +949,79 @@
     };
   }
 
-  async function createPendingOperation(terms, queueItemIds = []) {
-    const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
-    const key = mappingKey(state.organization,state.eventisId);
-    const aktualnyTytulEventis = getEventisTitle() || state.eventisTitle;
-    if (pendingOperations[key]) {
-      state.pendingOperation=pendingOperations[key];
-      throw new Error("To ogłoszenie ma już operację oczekującą na rozliczenie zapisu.");
-    }
-    pendingOperations[key] = {
-      id:crypto.randomUUID(), organization:state.organization,eventisId:state.eventisId,eventisTitle:aktualnyTytulEventis,
-      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(przygotujTerminDoKolejki), queueItemIds:[...queueItemIds], skipSheetOutbox:queueItemIds.length>0,
-      operator:state.settings.operatorInitial || "K", createdAt:new Date().toISOString(), createdPageLoadId:PAGE_LOAD_ID, status:"WAITING_FOR_SAVE"
+  function kluczClaimuBiezacegoFormularza() {
+    return NARZEDZIA_OPERACJI.kluczClaimuOperacji(state.organization,MODE,state.eventisId,PAGE_LOAD_ID);
+  }
+
+  function kluczStorageOperacji(operacja) {
+    return operacja?.operationScopeKey || mappingKey(operacja?.organization,operacja?.eventisId);
+  }
+
+  function identyfikatorOperacji(operacja) { return operacja?.operationId || operacja?.id || ""; }
+
+  function terminyOperacji(operacja) { return operacja?.expectedTerms || operacja?.terms || []; }
+
+  function eventisIdPoczatkowyOperacji(operacja) {
+    return operacja?.eventisIdAtStart ?? operacja?.eventisId ?? null;
+  }
+
+  function utworzPlanOperacji(terms, queueItemIds = []) {
+    const eventisIdAtStart = MODE === "add" ? null : state.eventisId;
+    return {
+      operationId:NARZEDZIA_OPERACJI.utworzOperationId(),
+      operationScopeKey:kluczClaimuBiezacegoFormularza(),
+      organization:state.organization,
+      eventisIdAtStart,
+      eventisIdResolved:MODE === "edit" ? state.eventisId : null,
+      eventisTitleAtStart:getEventisTitle() || state.eventisTitle,
+      sourceId:state.source?.id || state.mapping?.sourceTrainingId || null,
+      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "",
+      expectedTerms:terms.map(przygotujTerminDoKolejki),
+      queueItemIds:[...queueItemIds],
+      skipSheetOutbox:queueItemIds.length>0,
+      operator:state.settings.operatorInitial || "K",
+      createdAt:new Date().toISOString(),
+      createdPageLoadId:PAGE_LOAD_ID,
+      status:"CLAIMED"
     };
+  }
+
+  async function uzyskajClaimOperacji(operacja) {
+    const wynik = await chrome.runtime.sendMessage({type:"CLAIM_PENDING_OPERATION",operation:operacja});
+    if (!wynik.ok) {
+      state.pendingOperation=wynik.operacja || null;
+      return wynik;
+    }
+    state.pendingOperation=wynik.operacja;
+    return wynik;
+  }
+
+  async function zwolnijNiepotwierdzonyClaim(operacja) {
+    const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+    const key = kluczStorageOperacji(operacja);
+    if (pendingOperations[key]?.operationId !== operacja.operationId || pendingOperations[key]?.status !== "CLAIMED") return;
+    delete pendingOperations[key];
     await storageSet({pendingOperations});
-    state.pendingOperation=pendingOperations[key];
+    state.pendingOperation=null;
+  }
+
+  async function potwierdzOperacjeOczekujaca(operacja, terms, queueItemIds = []) {
+    const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+    const key = kluczStorageOperacji(operacja);
+    if (pendingOperations[key]?.operationId !== operacja.operationId) {
+      throw new Error("Operacja importu utraciła ownership przed potwierdzeniem formularza.");
+    }
+    const potwierdzona = {
+      ...pendingOperations[key],
+      expectedTerms:terms.map(przygotujTerminDoKolejki),
+      queueItemIds:[...queueItemIds],
+      skipSheetOutbox:queueItemIds.length>0,
+      status:"WAITING_FOR_SAVE"
+    };
+    pendingOperations[key]=potwierdzona;
+    await storageSet({pendingOperations});
+    state.pendingOperation=potwierdzona;
+    return potwierdzona;
   }
 
   async function sprawdzBrakOczekujacejOperacji() {
@@ -967,7 +1031,8 @@
       return false;
     }
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
-    const operacja = pendingOperations[mappingKey(state.organization,state.eventisId)] || null;
+    const operacja = pendingOperations[kluczClaimuBiezacegoFormularza()]
+      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle);
     if (!operacja) return true;
     state.pendingOperation=operacja;
     render();
@@ -984,7 +1049,7 @@
   async function inspectPendingAfterReload() {
     if (!state.pendingOperation || state.pendingOperation.createdPageLoadId === PAGE_LOAD_ID) return;
     const existingKeys = new Set(getExistingTerms().map(existingKey));
-    const allExist = state.pendingOperation.terms.every(t=>existingKeys.has(existingKey(t)));
+    const allExist = terminyOperacji(state.pendingOperation).every(t=>existingKeys.has(existingKey(t)));
     if (!allExist) return;
     if (pageHasSaveSuccessMarker()) await confirmPendingSaved("AUTO_SUCCESS_MARKER");
     else state.pendingLooksSaved = true;
@@ -994,19 +1059,20 @@
     if (!state.pendingOperation) return;
     const op = state.pendingOperation;
     const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
-    const key = mappingKey(op.organization,op.eventisId);
-    if (pendingOperations[key]?.id !== op.id) {
-      state.pendingOperation=pendingOperations[mappingKey(state.organization,state.eventisId)] || null;
+    const key = kluczStorageOperacji(op);
+    if (identyfikatorOperacji(pendingOperations[key]) !== identyfikatorOperacji(op)) {
+      state.pendingOperation=pendingOperations[kluczClaimuBiezacegoFormularza()] || null;
       state.pendingLooksSaved=false;
       render();
       return toast("Operacja oczekująca zmieniła się w innej karcie. Odświeżono stan panelu.");
     }
-    const docelowyEventisId = String(op.eventisId || "").startsWith("new:") && !String(state.eventisId || "").startsWith("new:")
+    const eventisIdPoczatkowy = eventisIdPoczatkowyOperacji(op);
+    const docelowyEventisId = (!eventisIdPoczatkowy || String(eventisIdPoczatkowy).startsWith("new:")) && !String(state.eventisId || "").startsWith("new:")
       ? state.eventisId
-      : op.eventisId;
-    const docelowyTytulEventis = getEventisTitle() || op.eventisTitle;
+      : op.eventisIdResolved || eventisIdPoczatkowy || state.eventisId;
+    const docelowyTytulEventis = getEventisTitle() || op.eventisTitleAtStart || op.eventisTitle;
     if (!op.skipSheetOutbox) {
-      for (const term of op.terms) {
+      for (const term of terminyOperacji(op)) {
         const idem = `${op.organization}|${docelowyEventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
         if (!sheetOutbox.some(x=>x.idempotencyKey===idem && x.status!=="CANCELLED")) {
           sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:op.organization,eventisId:docelowyEventisId,eventisTitle:docelowyTytulEventis,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
@@ -1017,7 +1083,7 @@
     delete pendingOperations[key];
     await storageSet({pendingOperations,sheetOutbox,eventisImportQueue:zaktualizowanaKolejka});
     state.eventisImportQueue=zaktualizowanaKolejka;
-    await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:op.terms});
+    await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:terminyOperacji(op)});
     state.pendingOperation=null; state.pendingLooksSaved=false;
     toast(op.queueItemIds?.length ? "Zapis Eventis potwierdzony. Pozycje kolejki oznaczono jako zakończone." : "Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
     render();
@@ -1027,8 +1093,8 @@
     if (!state.pendingOperation) return;
     const op = state.pendingOperation;
     const { pendingOperations = {}, eventisImportQueue = [] } = await storageGet(["pendingOperations","eventisImportQueue"]);
-    const key = mappingKey(op.organization,op.eventisId);
-    if (pendingOperations[key]?.id !== op.id) return toast("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
+    const key = kluczStorageOperacji(op);
+    if (identyfikatorOperacji(pendingOperations[key]) !== identyfikatorOperacji(op)) return toast("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
     const komunikat = "Zapis formularza Eventis nie został potwierdzony. Sprawdź dane i ponów operację.";
     const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,op,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,komunikat);
     delete pendingOperations[key];
@@ -1036,7 +1102,7 @@
     state.eventisImportQueue=zaktualizowanaKolejka;
     state.pendingOperation=null;
     state.pendingLooksSaved=false;
-    await audit("EVENTIS_SAVE_FAILED",{terms:op.terms,queueItemIds:op.queueItemIds || []});
+    await audit("EVENTIS_SAVE_FAILED",{terms:terminyOperacji(op),queueItemIds:op.queueItemIds || []});
     render();
     toast("Nieudany zapis rozliczono. Powiązane pozycje kolejki można ponowić.");
   }
@@ -1128,18 +1194,19 @@
   async function ponowKolejke(id) {
     await odswiezKolejke();
     state.eventisImportQueue=state.eventisImportQueue.map(element => element.id===id
-      ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE)
+      ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE),operationId:null}
       : element);
     await zapiszKolejke();
     render();
   }
 
-  async function wprowadzTerminyZKolejki() {
+  async function wprowadzTerminyZKolejki(identyfikatoryDozwolone = null) {
     if (!state.mappingVerifiedThisSession) return toast("Najpierw zweryfikuj zgodność źródła szkolenia.");
     if (!state.source || !state.sourceTerms.length) return toast("Najpierw załaduj źródło SEMPER/IIST.");
     if (!await sprawdzBrakOczekujacejOperacji()) return;
     await odswiezKolejke();
-    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
+    const dozwolone = identyfikatoryDozwolone ? new Set(identyfikatoryDozwolone) : null;
+    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu().filter(dopasowanie => !dozwolone || dozwolone.has(dopasowanie.element.id));
     const {jednoznaczne,nierozwiazane,duplikatyTerminow}=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania);
     if (nierozwiazane.length || duplikatyTerminow.length) {
       state.eventisImportQueue=state.eventisImportQueue.map(element => {
@@ -1171,20 +1238,25 @@
     }
     try {
       const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
-      const result=await addSelectedTerms(unikalneTerminy(termy));
-      const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
+      const planOperacji=utworzPlanOperacji(unikalneTerminy(termy),doWprowadzenia.map(dopasowanie=>dopasowanie.element.id));
+      const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
+        () => uzyskajClaimOperacji(planOperacji),
+        async operacja => {
+          const result=await addSelectedTerms(unikalneTerminy(termy));
+          const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
+          if (!powiazanie.terms.length) return {result,powiazanie,operacja};
+          const potwierdzonaOperacja=await potwierdzOperacjeOczekujaca(operacja,powiazanie.terms,powiazanie.queueItemIds);
+          return {result,powiazanie,operacja:potwierdzonaOperacja};
+        }
+      );
+      if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
+      const {powiazanie,operacja}=wykonanie.wynik;
       if (!powiazanie.terms.length) {
+        await zwolnijNiepotwierdzonyClaim(operacja);
         render();
         return toast("Żaden termin kolejki nie został dodany do formularza.");
       }
-      await createPendingOperation(powiazanie.terms,powiazanie.queueItemIds);
-      const idsZakonczone=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
-      const idsOczekujace=new Set(powiazanie.queueItemIds);
-      state.eventisImportQueue=state.eventisImportQueue.map(element=>{
-        if(idsZakonczone.has(element.id)) return element;
-        if(idsOczekujace.has(element.id)) return NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS);
-        return element;
-      });
+      state.eventisImportQueue=NARZEDZIA_KOLEJKI.oznaczElementyOczekujaceOperacji(state.eventisImportQueue,operacja);
       await zapiszKolejke();
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
@@ -1280,6 +1352,31 @@
     }
     await audit("MAPPING_VERIFIED_THIS_SESSION",{score:ms.score,sourceUrl:state.source.url});
     compareTerms(); render();
+  }
+
+  async function uruchomAutomatycznaKolejkeJesliGotowa() {
+    if (MODE !== "edit") return;
+    const dane = await storageGet(["eventisAutomaticBatches","eventisImportQueue"]);
+    const znalezione = NARZEDZIA_LISTY.znajdzAktywneZadanie(dane.eventisAutomaticBatches,state.organization,state.eventisId);
+    if (!znalezione) return;
+    const aktywneId = new Set((dane.eventisImportQueue || [])
+      .filter(element => element.organization === state.organization && ["PENDING","ERROR"].includes(element.status))
+      .map(element => element.id));
+    const identyfikatoryKolejki = (znalezione.zadanie.identyfikatoryKolejki || []).filter(id => aktywneId.has(id));
+    if (!identyfikatoryKolejki.length) return;
+    const stanMapowania = mappingState();
+    const gotoweMapowanie = NARZEDZIA_LISTY.czyMapowanieGotoweDoAutomatyzacji(state.mapping,state.settings.mappingWarningThreshold);
+    if (!state.source || !czyMapowanieDotyczyZrodla(state.mapping,state.source) || !gotoweMapowanie || stanMapowania.kind !== "ok") {
+      state.status = "ERROR";
+      state.lastError = "Automatyczna kolejka została zatrzymana: karta nie ma aktywnego, zgodnego i wcześniej zweryfikowanego mapowania SEMPER/IIST.";
+      render();
+      toast(state.lastError);
+      return;
+    }
+    state.mappingVerifiedThisSession = true;
+    await audit("AUTOMATIC_QUEUE_MAPPING_ACCEPTED",{identyfikatorSerii:znalezione.seria.identyfikatorSerii,queueItemIds:identyfikatoryKolejki});
+    render();
+    await wprowadzTerminyZKolejki(identyfikatoryKolejki);
   }
 
   function sourceConfirmedCount(){return state.sourceTerms.filter(czyTerminPotwierdzony).length;}
@@ -1404,9 +1501,18 @@
     if (!state.missingTerms.length) return toast("Brak brakujących potwierdzonych terminów.");
     try {
       const chosen=[...state.missingTerms];
-      const result=await addSelectedTerms(chosen);
-      await fillEventDetailsIfAdd(state.source,chosen);
-      await createPendingOperation(result.added);
+      const planOperacji=utworzPlanOperacji(chosen);
+      const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
+        () => uzyskajClaimOperacji(planOperacji),
+        async operacja => {
+          const result=await addSelectedTerms(chosen);
+          await fillEventDetailsIfAdd(state.source,chosen);
+          await potwierdzOperacjeOczekujaca(operacja,result.added);
+          return result;
+        }
+      );
+      if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
+      const result=wykonanie.wynik;
       await audit("FORM_FILLED",{terms:result.added.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price}))});
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
@@ -1423,7 +1529,8 @@
     state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
     const { mappings={}, pendingOperations={} }=await storageGet(["mappings","pendingOperations"]);
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
-    state.pendingOperation=NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle);
+    state.pendingOperation=pendingOperations[kluczClaimuBiezacegoFormularza()]
+      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle);
     state.pendingLooksSaved=false;
     render();
     await inspectPendingAfterReload();
@@ -1650,6 +1757,7 @@
       }
       if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
     }
+    await uruchomAutomatycznaKolejkeJesliGotowa();
   }
 
   init().catch(e=>{console.error("Eventis Sync init",e);state.status="ERROR";state.lastError=e.message;render();});

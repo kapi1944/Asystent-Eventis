@@ -36,10 +36,28 @@
         "shared/opisy-semper.js",
         "shared/arkusz.js",
         "shared/kolejka-eventis.js",
+        "shared/operacje-eventis.js",
+        "shared/lista-eventis.js",
         "shared/pola-rich-text.js",
         "content/eventis.js"
       ],
       "css": ["content/eventis.css", "content/akcja-panelu.css", "content/porownanie-tytulow.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://eventis.pl/company/listevents*",
+        "https://*.eventis.pl/company/listevents*"
+      ],
+      "js": [
+        "shared/config.js",
+        "shared/wyszukiwanie.js",
+        "shared/arkusz.js",
+        "shared/kolejka-eventis.js",
+        "shared/lista-eventis.js",
+        "content/lista-eventis.js"
+      ],
+      "css": ["content/eventis.css"],
       "run_at": "document_idle"
     }
   ],
