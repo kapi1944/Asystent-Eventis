@@ -14,11 +14,13 @@
   const NARZEDZIA_TERMINOW = globalThis.NarzedziaTerminowEventis;
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
   const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
+  const NARZEDZIA_OPISOW_SEMPER = globalThis.NarzedziaOpisowSemper;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
   if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
   if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano modułu arkusza.");
   if (!NARZEDZIA_KOLEJKI) throw new Error("Nie załadowano modułu kolejki Eventis.");
+  if (!NARZEDZIA_OPISOW_SEMPER) throw new Error("Nie załadowano parsera opisów SEMPER.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
@@ -373,10 +375,7 @@
       provider:"SEMPER", id:idMatch?.[1] || url, url, title,
       terms: parseSemperTerms(doc),
       liczbaDni: odczytajLiczbeDni(doc),
-      groupHtml: collectSectionByMarker(doc,"grupa docelowa") || collectSectionByMarker(doc,"adresaci"),
-      goalHtml: collectSectionByMarker(doc,"cel szkolenia"),
-      benefitsHtml: collectSectionByMarker(doc,"korzyści"),
-      programHtml: collectSectionByMarker(doc,"program szkolenia")
+      opisy: NARZEDZIA_OPISOW_SEMPER.parsujOpisySemper(html)
     };
   }
 
@@ -422,10 +421,12 @@
       provider:"IIST", id:idMatch?.[1] || url, url, title,
       terms: parseIistTerms(doc),
       liczbaDni: odczytajLiczbeDni(doc),
-      groupHtml: collectSectionByMarker(doc,"grupa docelowa"),
-      goalHtml: collectSectionByMarker(doc,"cel szkolenia"),
-      benefitsHtml: collectSectionByMarker(doc,"korzyści dla uczestników"),
-      programHtml: collectSectionByMarker(doc,"program szkolenia")
+      opisy: {
+        grupaHtml: collectSectionByMarker(doc,"grupa docelowa"),
+        celHtml: collectSectionByMarker(doc,"cel szkolenia"),
+        korzysciHtml: collectSectionByMarker(doc,"korzyści dla uczestników"),
+        programHtml: collectSectionByMarker(doc,"program szkolenia")
+      }
     };
   }
 
@@ -903,15 +904,12 @@
     await wybierzWygladPodstawowy();
     await uzupelnijWymaganeFormyZajec();
     await uzupelnijIZweryfikujZyciorys();
-    const rich = [
-      ["event[reason]",source.benefitsHtml],
-      ["event[information]",source.goalHtml],
-      ["event[forWho]",source.groupHtml],
-      ["event[plan]",source.programHtml]
-    ];
-    for (const [name,html] of rich) if (html) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name,html});
+    for (const { klucz, pole } of NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH) {
+      const html = source.opisy?.[klucz];
+      if (html) await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:pole,html});
+    }
     const participantType=$('input[name="event[participantsType]"][value="1"]'); if(participantType){participantType.checked=true;participantType.dispatchEvent(new Event("change",{bubbles:true}));}
-    const adult=$('input[name="ageGroup[]"][value="4"]'); if(adult){adult.checked=true;adult.dispatchEvent(new Event("change",{bubbles:true}));}
+    const adult=$('input[name="ageGroup[]"][value="4"]'); if(adult&&!adult.checked){adult.checked=true;adult.dispatchEvent(new Event("change",{bubbles:true}));}
     const category=$("#tematSelect") || $('select[name="event[category_id]"]');
     if(category) category.classList.add("esync-manual-highlight");
   }
@@ -1106,7 +1104,6 @@
       const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
       const result=await addSelectedTerms(unikalneTerminy(termy));
       const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
-      await fillEventDetailsIfAdd(state.source,powiazanie.terms);
       const idsZakonczone=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
       const idsOczekujace=new Set(powiazanie.queueItemIds);
       state.eventisImportQueue=state.eventisImportQueue.map(element=>{

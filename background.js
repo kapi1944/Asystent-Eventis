@@ -77,9 +77,24 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
       try {
         if (window.CKEDITOR && window.CKEDITOR.instances) {
           const instance = field && (window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name]);
-          if (instance && typeof instance.setData === "function") instance.setData(value);
+          if (instance && typeof instance.setData === "function") {
+            instance.setData(value, () => {
+              if (typeof instance.updateElement === "function") instance.updateElement();
+              if (field) fire(field);
+            });
+          }
         }
       } catch (_) {}
+
+      const bezposrednieInstancje = [field?.ckeditorInstance, bezposredniEdytor?.ckeditorInstance].filter(Boolean);
+      for (const instance of bezposrednieInstancje) {
+        try {
+          if (typeof instance.setData !== "function") continue;
+          instance.setData(value);
+          if (typeof instance.updateSourceElement === "function") instance.updateSourceElement();
+          if (field) fire(field);
+        } catch (_) {}
+      }
 
       const areas = [bezposredniEdytor, field?.parentElement, field?.closest(".form-group"), field?.closest(".row")].filter(Boolean);
       for (const area of areas) {

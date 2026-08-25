@@ -33,6 +33,7 @@
         "shared/config.js",
         "shared/wyszukiwanie.js",
         "shared/terminy.js",
+        "shared/opisy-semper.js",
         "shared/arkusz.js",
         "shared/kolejka-eventis.js",
         "content/eventis.js"
