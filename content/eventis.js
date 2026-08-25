@@ -202,7 +202,7 @@
     state.organization = detectOrganization(state.settings);
     const key = mappingKey(state.organization,state.eventisId);
     state.mapping = (data.mappings || {})[key] || null;
-    state.pendingOperation = (data.pendingOperations || {})[key] || null;
+    state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(data.pendingOperations || {},state.organization,state.eventisId,state.eventisTitle);
     state.eventisImportQueue = Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : [];
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
@@ -928,13 +928,33 @@
   async function createPendingOperation(terms, queueItemIds = []) {
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
     const key = mappingKey(state.organization,state.eventisId);
+    const aktualnyTytulEventis = getEventisTitle() || state.eventisTitle;
+    if (pendingOperations[key]) {
+      state.pendingOperation=pendingOperations[key];
+      throw new Error("To ogłoszenie ma już operację oczekującą na rozliczenie zapisu.");
+    }
     pendingOperations[key] = {
-      id:crypto.randomUUID(), organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,
+      id:crypto.randomUUID(), organization:state.organization,eventisId:state.eventisId,eventisTitle:aktualnyTytulEventis,
       sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(przygotujTerminDoKolejki), queueItemIds:[...queueItemIds], skipSheetOutbox:queueItemIds.length>0,
       operator:state.settings.operatorInitial || "K", createdAt:new Date().toISOString(), createdPageLoadId:PAGE_LOAD_ID, status:"WAITING_FOR_SAVE"
     };
     await storageSet({pendingOperations});
     state.pendingOperation=pendingOperations[key];
+  }
+
+  async function sprawdzBrakOczekujacejOperacji() {
+    if (state.pendingOperation) {
+      render();
+      toast("Najpierw rozlicz poprzednią operację oczekującą na zapis Eventis.");
+      return false;
+    }
+    const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+    const operacja = pendingOperations[mappingKey(state.organization,state.eventisId)] || null;
+    if (!operacja) return true;
+    state.pendingOperation=operacja;
+    render();
+    toast("Najpierw rozlicz poprzednią operację oczekującą na zapis Eventis.");
+    return false;
   }
 
   function pageHasSaveSuccessMarker() {
@@ -956,21 +976,26 @@
     if (!state.pendingOperation) return;
     const op = state.pendingOperation;
     const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
-    const key = mappingKey(state.organization,state.eventisId);
+    const key = mappingKey(op.organization,op.eventisId);
+    if (pendingOperations[key]?.id !== op.id) {
+      state.pendingOperation=pendingOperations[mappingKey(state.organization,state.eventisId)] || null;
+      state.pendingLooksSaved=false;
+      render();
+      return toast("Operacja oczekująca zmieniła się w innej karcie. Odświeżono stan panelu.");
+    }
+    const docelowyEventisId = String(op.eventisId || "").startsWith("new:") && !String(state.eventisId || "").startsWith("new:")
+      ? state.eventisId
+      : op.eventisId;
+    const docelowyTytulEventis = getEventisTitle() || op.eventisTitle;
     if (!op.skipSheetOutbox) {
       for (const term of op.terms) {
-        const idem = `${state.organization}|${state.eventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
+        const idem = `${op.organization}|${docelowyEventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
         if (!sheetOutbox.some(x=>x.idempotencyKey===idem && x.status!=="CANCELLED")) {
-          sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
+          sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:op.organization,eventisId:docelowyEventisId,eventisTitle:docelowyTytulEventis,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
         }
       }
     }
-    const queueItemIds = new Set(op.queueItemIds || []);
-    const zaktualizowanaKolejka = queueItemIds.size
-      ? eventisImportQueue.map(element => queueItemIds.has(element.id)
-        ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE)
-        : element)
-      : eventisImportQueue;
+    const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,op,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE);
     delete pendingOperations[key];
     await storageSet({pendingOperations,sheetOutbox,eventisImportQueue:zaktualizowanaKolejka});
     state.eventisImportQueue=zaktualizowanaKolejka;
@@ -978,6 +1003,24 @@
     state.pendingOperation=null; state.pendingLooksSaved=false;
     toast(op.queueItemIds?.length ? "Zapis Eventis potwierdzony. Pozycje kolejki oznaczono jako zakończone." : "Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
     render();
+  }
+
+  async function oznaczNieudanyZapis() {
+    if (!state.pendingOperation) return;
+    const op = state.pendingOperation;
+    const { pendingOperations = {}, eventisImportQueue = [] } = await storageGet(["pendingOperations","eventisImportQueue"]);
+    const key = mappingKey(op.organization,op.eventisId);
+    if (pendingOperations[key]?.id !== op.id) return toast("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
+    const komunikat = "Zapis formularza Eventis nie został potwierdzony. Sprawdź dane i ponów operację.";
+    const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,op,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,komunikat);
+    delete pendingOperations[key];
+    await storageSet({pendingOperations,eventisImportQueue:zaktualizowanaKolejka});
+    state.eventisImportQueue=zaktualizowanaKolejka;
+    state.pendingOperation=null;
+    state.pendingLooksSaved=false;
+    await audit("EVENTIS_SAVE_FAILED",{terms:op.terms,queueItemIds:op.queueItemIds || []});
+    render();
+    toast("Nieudany zapis rozliczono. Powiązane pozycje kolejki można ponowić.");
   }
 
   async function queueExistingTerms() {
@@ -1048,6 +1091,11 @@
     await storageSet({eventisImportQueue:state.eventisImportQueue});
   }
 
+  async function odswiezKolejke() {
+    const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
+    state.eventisImportQueue=Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
+  }
+
   function dopasowaniaKolejkiDoBiezacegoTytulu() {
     return NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
       .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status))
@@ -1060,6 +1108,7 @@
   }
 
   async function ponowKolejke(id) {
+    await odswiezKolejke();
     state.eventisImportQueue=state.eventisImportQueue.map(element => element.id===id
       ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE)
       : element);
@@ -1070,6 +1119,8 @@
   async function wprowadzTerminyZKolejki() {
     if (!state.mappingVerifiedThisSession) return toast("Najpierw zweryfikuj zgodność źródła szkolenia.");
     if (!state.source || !state.sourceTerms.length) return toast("Najpierw załaduj źródło SEMPER/IIST.");
+    if (!await sprawdzBrakOczekujacejOperacji()) return;
+    await odswiezKolejke();
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
     const {jednoznaczne,nierozwiazane,duplikatyTerminow}=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania);
     if (nierozwiazane.length || duplikatyTerminow.length) {
@@ -1104,6 +1155,11 @@
       const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
       const result=await addSelectedTerms(unikalneTerminy(termy));
       const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
+      if (!powiazanie.terms.length) {
+        render();
+        return toast("Żaden termin kolejki nie został dodany do formularza.");
+      }
+      await createPendingOperation(powiazanie.terms,powiazanie.queueItemIds);
       const idsZakonczone=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
       const idsOczekujace=new Set(powiazanie.queueItemIds);
       state.eventisImportQueue=state.eventisImportQueue.map(element=>{
@@ -1112,11 +1168,6 @@
         return element;
       });
       await zapiszKolejke();
-      if (!powiazanie.terms.length) {
-        render();
-        return toast("Żaden termin kolejki nie został dodany do formularza.");
-      }
-      await createPendingOperation(powiazanie.terms,powiazanie.queueItemIds);
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       render();
@@ -1330,6 +1381,7 @@
 
   async function onAddMissing() {
     if (!state.mappingVerifiedThisSession) return toast("Najpierw potwierdź zgodność zapamiętanego/wybranego linku z ogłoszeniem Eventis.");
+    if (!await sprawdzBrakOczekujacejOperacji()) return;
     compareTerms();
     if (!state.missingTerms.length) return toast("Brak brakujących potwierdzonych terminów.");
     try {
@@ -1348,11 +1400,16 @@
 
   async function switchOrganization(org) {
     if (!['SEMPER','IIST'].includes(org)||org===state.organization) return;
+    if (state.pendingOperation) return toast("Najpierw rozlicz operację oczekującą na zapis przed zmianą profilu.");
     state.searchRequestId++;
     state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
-    const { mappings={} }=await storageGet(["mappings"]);
+    const { mappings={}, pendingOperations={} }=await storageGet(["mappings","pendingOperations"]);
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
+    state.pendingOperation=NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle);
+    state.pendingLooksSaved=false;
     render();
+    await inspectPendingAfterReload();
+    if(state.pendingLooksSaved) render();
     if(state.mapping) await loadRememberedMapping();
     else if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
   }
@@ -1361,7 +1418,7 @@
     const kluczTerminu=termKey(t);
     const potwierdzonyRecznie=!t.confirmed&&state.reczniePotwierdzoneTerminy.has(kluczTerminu);
     const badge = status === "missing" ? '<span class="esync-badge yellow">BRAK</span>' : status === "exists" ? '<span class="esync-badge green">JEST</span>' : '<span class="esync-badge gray">NIEPOTW.</span>';
-    const stylPrzelacznika=potwierdzonyRecznie?'border-color:#599b6e;background:#ecfdf3;color:#166534':'border-color:#9fb0c5;background:#fff;color:#41536a';
+    const stylPrzelacznika=potwierdzonyRecznie?'border-color:#599b6e;background:#ecfdf3;color:#166534':'border-color:#e7a568;background:#fff1e3;color:#99511b';
     const przelacznik=!t.confirmed?`<button type="button" class="esync-potwierdz-termin" data-reczne-potwierdzenie="${esc(kluczTerminu)}" title="${potwierdzonyRecznie?'Cofnij ręczne potwierdzenie':'Oznacz ten termin jako potwierdzony'}" style="${stylPrzelacznika}">${potwierdzonyRecznie?'RĘCZNIE ✓':'POTWIERDŹ TERMIN'}</button>`:"";
     const daneTerminu=`${esc(t.start)}${t.end&&t.end!==t.start?` → ${esc(t.end)}`:""} · ${esc(t.city)}${t.price?` · ${esc(t.price)} zł`:""} · ${esc(t.durationDays||durationDays(t.start,t.end))} dni`;
     if(status==="unconfirmed") return `<div class="esync-term esync-term-niepotwierdzony"><div class="esync-term-main">${daneTerminu}</div><div class="esync-term-actions">${przelacznik}${badge}</div></div>`;
@@ -1450,7 +1507,7 @@
     if(!state.pendingOperation) return "";
     if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID) return `<div class="esync-card"><div class="esync-warning"><b>⏳ Oczekiwanie na ręczny zapis Eventis</b><div class="esync-small">Po zapisaniu i przeładowaniu strony rozszerzenie zweryfikuje obecność nowych terminów.</div></div></div>`;
     if(state.pendingLooksSaved) return `<div class="esync-card"><div class="esync-warning"><b>⚠ Terminy są widoczne po ponownym otwarciu strony</b><div class="esync-small">Nie wykryłem jednoznacznego komunikatu sukcesu Eventis. Jeżeli zapis rzeczywiście się udał, potwierdź ręcznie.</div><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam: Eventis zapisał zmiany</button></div></div>`;
-    return `<div class="esync-card"><div class="esync-danger"><b>Nie potwierdzono zapisu</b><div class="esync-small">Istnieje oczekująca operacja, ale nie wszystkie dodane terminy są obecne w formularzu po ponownym otwarciu.</div></div></div>`;
+    return `<div class="esync-card"><div class="esync-danger"><b>Nie potwierdzono zapisu</b><div class="esync-small">Istnieje oczekująca operacja, ale nie wszystkie dodane terminy są obecne w formularzu po ponownym otwarciu.</div><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Oznacz zapis jako nieudany</button></div></div>`;
   }
 
   function renderManualCard() {
@@ -1508,6 +1565,7 @@
     $("#esync-add-missing")?.addEventListener("click",onAddMissing);
     $("#esync-queue-existing")?.addEventListener("click",queueExistingTerms);
     $("#esync-confirm-save")?.addEventListener("click",()=>confirmPendingSaved("USER_CONFIRM"));
+    $("#esync-reject-save")?.addEventListener("click",oznaczNieudanyZapis);
     $("#esync-add-import-queue")?.addEventListener("click",dodajPodgladDoKolejki);
     $("#esync-add-queue-terms")?.addEventListener("click",wprowadzTerminyZKolejki);
     $$('[data-queue-retry]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>ponowKolejke(btn.dataset.queueRetry)));

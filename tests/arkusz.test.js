@@ -138,3 +138,28 @@ test("parser rozpoznaje pełną tabelę Markdown bez dzielenia escapowanych pipe
   assert.match(analiza.records[12].title,/Certyfikowane szkolenie online$/);
   assert.doesNotMatch(analiza.records[12].title,/Chciałbym móc/);
 });
+
+test("błędny rekord tabeli nie blokuje poprawnego rekordu", () => {
+  const analiza = narzedzia.analizujReczneWklejenie([
+    '| \\| POTWIERDZONE SZKOLENIE \\| "Prawo pracy", 2026-09-28 do 2026-09-29, Warszawa, 4 osoby |',
+    '| \\| POTWIERDZONE SZKOLENIE \\| "Rekord bez daty i lokalizacji", 4 osoby |'
+  ].join("\n"));
+  assert.equal(analiza.records.length,2);
+  assert.equal(analiza.errors.length,1);
+  assert.equal(analiza.records[0].error,undefined);
+  assert.equal(analiza.records[0].start,"2026-09-28");
+  assert.equal(analiza.records[1].error,"Nie rozpoznano daty");
+});
+
+test("parser odrzuca pusty tytuł i nieprawidłową datę bez blokowania poprawnego rekordu", () => {
+  const analiza = narzedzia.analizujReczneWklejenie([
+    'POTWIERDZONE SZKOLENIE "Prawo pracy" 2026-09-28 Warszawa',
+    'POTWIERDZONE SZKOLENIE "" 2026-09-29 ONLINE',
+    'POTWIERDZONE SZKOLENIE "VAT" 2026-99-99 ONLINE'
+  ].join("\n"));
+  assert.equal(analiza.records.length,3);
+  assert.equal(analiza.errors.length,2);
+  assert.equal(analiza.records[0].error,undefined);
+  assert.equal(analiza.records[1].error,"Nie rozpoznano tytułu");
+  assert.equal(analiza.records[2].error,"Nieprawidłowy zakres dat");
+});

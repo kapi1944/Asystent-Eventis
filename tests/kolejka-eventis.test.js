@@ -81,3 +81,32 @@ test("dopasowanie kolejki najpierw używa sourceStart/sourceEnd", () => {
   const termin = {sourceStart:"2026-09-28",sourceEnd:"2026-09-29",start:"2026-09-29",end:"2026-09-29",city:"Online",price:1200};
   assert.equal(kolejka.dopasujElementKolejkiDoTerminow(element,[termin]).length,1);
 });
+
+test("rozliczenie pending operation zmienia tylko powiązane elementy właściwej organizacji", () => {
+  const elementy = [
+    {id:"wspolny",organization:"SEMPER",status:"WAITING_FOR_SAVE"},
+    {id:"wspolny",organization:"IIST",status:"WAITING_FOR_SAVE"},
+    {id:"inny",organization:"SEMPER",status:"PENDING"}
+  ];
+  const operacja = {organization:"SEMPER",queueItemIds:["wspolny"]};
+  const wynik = kolejka.rozliczElementyOperacji(elementy,operacja,"ERROR","Nieudany zapis");
+  assert.equal(wynik[0].status,"ERROR");
+  assert.equal(wynik[0].errorMessage,"Nieudany zapis");
+  assert.equal(wynik[1].status,"WAITING_FOR_SAVE");
+  assert.equal(wynik[2].status,"PENDING");
+});
+
+test("pending operation z event/add jest odnajdywana po przejściu do liczbowego event/edit", () => {
+  const operacja = {id:"nowa",organization:"SEMPER",eventisId:"new:prawo pracy",eventisTitle:"Prawo pracy"};
+  const operacje = {"SEMPER|new:prawo pracy":operacja};
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","123","Prawo pracy"),operacja);
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"IIST","123","Prawo pracy"),null);
+});
+
+test("pending operation z event/add nie jest wybierana przy niejednoznacznym tytule", () => {
+  const operacje = {
+    "SEMPER|new:1":{id:"pierwsza",organization:"SEMPER",eventisId:"new:1",eventisTitle:"Prawo pracy"},
+    "SEMPER|new:2":{id:"druga",organization:"SEMPER",eventisId:"new:2",eventisTitle:"Prawo pracy"}
+  };
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","123","Prawo pracy"),null);
+});

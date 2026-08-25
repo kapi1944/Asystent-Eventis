@@ -159,6 +159,29 @@
     return { ...element, status, errorMessage, updatedAt: new Date().toISOString() };
   }
 
+  function rozliczElementyOperacji(kolejka = [], operacja, status, komunikatBledu = "") {
+    const identyfikatory = new Set(operacja?.queueItemIds || []);
+    if (!identyfikatory.size) return kolejka;
+    return kolejka.map(element =>
+      element.organization === operacja.organization && identyfikatory.has(element.id)
+        ? zmienStatusElementu(element,status,komunikatBledu)
+        : element
+    );
+  }
+
+  function znajdzOperacjeDlaStrony(operacje = {}, organizacja, eventisId, eventisTitle) {
+    const dokladna = operacje[`${organizacja}|${eventisId}`];
+    if (dokladna) return dokladna;
+    const normalizujTytul = wartosc => String(wartosc || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const tytul = normalizujTytul(eventisTitle);
+    const kandydaci = Object.values(operacje).filter(operacja =>
+      operacja?.organization === organizacja
+      && String(operacja.eventisId || "").startsWith("new:")
+      && normalizujTytul(operacja.eventisTitle) === tytul
+    );
+    return kandydaci.length === 1 ? kandydaci[0] : null;
+  }
+
   const interfejs = {
     STATUSY_KOLEJKI_EVENTIS,
     kluczKolejki,
@@ -169,7 +192,9 @@
     dopasujElementKolejkiDoTerminow,
     rozdzielDopasowaniaKolejki,
     powiazDodaneTerminy,
-    zmienStatusElementu
+    zmienStatusElementu,
+    rozliczElementyOperacji,
+    znajdzOperacjeDlaStrony
   };
 
   globalny.NarzedziaKolejkiEventis = interfejs;

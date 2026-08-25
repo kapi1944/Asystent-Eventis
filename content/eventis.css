@@ -3,3 +3,4 @@
 .esync-import-summary{display:grid;grid-template-columns:repeat(2,1fr);gap:4px;margin:6px 0;font-size:10px;color:#596579}
 .esync-import-summary span{padding:5px;border:1px solid #e3e8ef;border-radius:7px;background:#f8fafc}
 .esync-import-row{display:flex;justify-content:space-between;gap:7px;border-top:1px solid #eef1f4;padding:7px 0;font-size:11px}
+.esync-term-niepotwierdzony .esync-term-main{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}

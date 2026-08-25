@@ -26,6 +26,22 @@
     return String(wartosc).replace(/[.]/g, "-");
   }
 
+  function czyPoprawnaData(wartosc) {
+    const dopasowanie = String(wartosc || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!dopasowanie) return false;
+    const [, rok, miesiac, dzien] = dopasowanie.map(Number);
+    const data = new Date(Date.UTC(rok, miesiac - 1, dzien));
+    return data.getUTCFullYear() === rok
+      && data.getUTCMonth() === miesiac - 1
+      && data.getUTCDate() === dzien;
+  }
+
+  function czyPoprawnyZakresDat(zakresDat) {
+    return czyPoprawnaData(zakresDat?.start)
+      && czyPoprawnaData(zakresDat?.end)
+      && zakresDat.start <= zakresDat.end;
+  }
+
   function utworzRekordArkusza(dane) {
     const rekord = {
       status: dane.status,
@@ -127,6 +143,8 @@
     const tytul = tytulWCudzyslowie || odtworzTytulBezCudzyslowu(tekstDoAnalizy, zakresDat, miasto, dopasowanieUczestnikow);
     const dane = { status, title: tytul, normalizedTitle: normalizuj(tytul), start: zakresDat?.start || null, end: zakresDat?.end || null, city: miasto || null, participants: liczbaUczestnikow, rawText: surowy };
     if (!zakresDat) dane.error = "Nie rozpoznano daty";
+    else if (!czyPoprawnyZakresDat(zakresDat)) dane.error = "Nieprawidłowy zakres dat";
+    else if (!dane.normalizedTitle) dane.error = "Nie rozpoznano tytułu";
     else if (!miasto) dane.error = "Nie rozpoznano lokalizacji";
     return utworzRekordArkusza(dane);
   }
