@@ -1365,8 +1365,10 @@
     const potwierdzonyRecznie=!t.confirmed&&state.reczniePotwierdzoneTerminy.has(kluczTerminu);
     const badge = status === "missing" ? '<span class="esync-badge yellow">BRAK</span>' : status === "exists" ? '<span class="esync-badge green">JEST</span>' : '<span class="esync-badge gray">NIEPOTW.</span>';
     const stylPrzelacznika=potwierdzonyRecznie?'border-color:#599b6e;background:#ecfdf3;color:#166534':'border-color:#9fb0c5;background:#fff;color:#41536a';
-    const przelacznik=!t.confirmed?`<button type="button" data-reczne-potwierdzenie="${esc(kluczTerminu)}" title="${potwierdzonyRecznie?'Cofnij ręczne potwierdzenie':'Oznacz ten termin jako potwierdzony'}" style="margin-top:4px;border:1px solid;border-radius:999px;padding:3px 7px;cursor:pointer;font:800 9px/1.1 inherit;${stylPrzelacznika}">${potwierdzonyRecznie?'RĘCZNIE ✓':'POTWIERDŹ'}</button>`:"";
-    return `<div class="esync-term"><div><div class="esync-term-main">${esc(t.start)}${t.end&&t.end!==t.start?` → ${esc(t.end)}`:""} · ${esc(t.city)}</div><div class="esync-term-sub">${t.price?`${esc(t.price)} zł · `:""}${esc(t.durationDays||durationDays(t.start,t.end))} dni${t.confirmed?" · termin potwierdzony":potwierdzonyRecznie?" · potwierdzony ręcznie":""}</div></div><div style="display:flex;align-items:flex-end;flex-direction:column">${badge}${przelacznik}</div></div>`;
+    const przelacznik=!t.confirmed?`<button type="button" class="esync-potwierdz-termin" data-reczne-potwierdzenie="${esc(kluczTerminu)}" title="${potwierdzonyRecznie?'Cofnij ręczne potwierdzenie':'Oznacz ten termin jako potwierdzony'}" style="${stylPrzelacznika}">${potwierdzonyRecznie?'RĘCZNIE ✓':'POTWIERDŹ TERMIN'}</button>`:"";
+    const daneTerminu=`${esc(t.start)}${t.end&&t.end!==t.start?` → ${esc(t.end)}`:""} · ${esc(t.city)}${t.price?` · ${esc(t.price)} zł`:""} · ${esc(t.durationDays||durationDays(t.start,t.end))} dni`;
+    if(status==="unconfirmed") return `<div class="esync-term esync-term-niepotwierdzony"><div class="esync-term-main">${daneTerminu}</div><div class="esync-term-actions">${przelacznik}${badge}</div></div>`;
+    return `<div class="esync-term"><div><div class="esync-term-main">${daneTerminu}</div><div class="esync-term-sub">${t.confirmed?"termin potwierdzony":potwierdzonyRecznie?"potwierdzony ręcznie":""}</div></div><div>${badge}</div></div>`;
   }
 
   function przelaczRecznePotwierdzenie(kluczTerminu) {
@@ -1442,7 +1444,7 @@
       <div class="esync-section-title"><span>Porównanie terminów</span><button id="esync-refresh" class="esync-btn" style="min-height:25px;padding:3px 6px">Sprawdź ponownie</button></div>
       <div class="esync-kpi"><div class="${confirmed.length ? "" : "pusty"}"><b>${confirmed.length}</b><span>potwierdzone</span></div><div class="${state.existingTerms.length ? "" : "pusty"}"><b>${state.existingTerms.length}</b><span>Eventis</span></div><div class="${state.missingTerms.length ? "" : "pusty"}"><b>${state.missingTerms.length}</b><span>brakujące</span></div></div>
       ${confirmed.length?confirmed.map(t=>renderTerm(t,existingKeys.has(existingKey(t))?"exists":"missing")).join(""):`<div class="esync-warning esync-small">Na stronie źródłowej nie wykryto żadnego terminu oznaczonego jako potwierdzony/gwarantowany. Rozszerzenie niczego nie doda.</div>`}
-      ${unconfirmed.length?`<details open><summary class="esync-small esync-muted">${unconfirmed.length} niepotwierdzonych — kliknij POTWIERDŹ, aby dodać ręcznie</summary>${unconfirmed.map(t=>renderTerm(t,"unconfirmed")).join("")}</details>`:""}
+       ${unconfirmed.length?`<section class="esync-niepotwierdzone"><div class="esync-niepotwierdzone-naglowek"><b>${unconfirmed.length} niepotwierdzonych terminów</b><span class="esync-small">Potwierdź ręcznie, aby dodać do listy.</span></div>${unconfirmed.map(t=>renderTerm(t,"unconfirmed")).join("")}</section>`:""}
       ${state.status==="FORM_FILLED"?`<div class="esync-success"><b>Formularz został uzupełniony.</b><br>Zweryfikuj go wizualnie i kliknij zapis w Eventis. Rozszerzenie nie zapisuje formularza automatycznie.</div>`:""}
     </div>`;
   }
