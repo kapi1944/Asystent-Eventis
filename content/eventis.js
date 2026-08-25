@@ -13,10 +13,12 @@
   const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
   const NARZEDZIA_TERMINOW = globalThis.NarzedziaTerminowEventis;
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
+  const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
   if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
   if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano modułu arkusza.");
+  if (!NARZEDZIA_KOLEJKI) throw new Error("Nie załadowano modułu kolejki Eventis.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
@@ -49,6 +51,8 @@
     titleAtSearch: "",
     manualRecords: [],
     manualMatches: [],
+    manualPreview: null,
+    eventisImportQueue: [],
     pendingOperation: null,
     pendingLooksSaved: false,
     formularzZmieniony: false,
@@ -189,7 +193,7 @@
   }
 
   async function loadSettingsAndState() {
-    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot"]);
+    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue"]);
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
@@ -197,9 +201,11 @@
     const key = mappingKey(state.organization,state.eventisId);
     state.mapping = (data.mappings || {})[key] || null;
     state.pendingOperation = (data.pendingOperations || {})[key] || null;
+    state.eventisImportQueue = Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : [];
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
       state.manualMatches = matchManualRecordsToCurrent(state.manualRecords);
+      state.manualPreview = utworzPodgladImportu(state.manualRecords, data.manualSheetSnapshot.rawText || "");
     }
   }
 
@@ -921,12 +927,12 @@
     };
   }
 
-  async function createPendingOperation(terms) {
+  async function createPendingOperation(terms, queueItemIds = []) {
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
     const key = mappingKey(state.organization,state.eventisId);
     pendingOperations[key] = {
       id:crypto.randomUUID(), organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,
-      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(przygotujTerminDoKolejki),
+      sourceUrl:state.source?.url || state.mapping?.sourceUrl || "", terms:terms.map(przygotujTerminDoKolejki), queueItemIds:[...queueItemIds], skipSheetOutbox:queueItemIds.length>0,
       operator:state.settings.operatorInitial || "K", createdAt:new Date().toISOString(), createdPageLoadId:PAGE_LOAD_ID, status:"WAITING_FOR_SAVE"
     };
     await storageSet({pendingOperations});
@@ -951,19 +957,28 @@
   async function confirmPendingSaved(method="USER_CONFIRM") {
     if (!state.pendingOperation) return;
     const op = state.pendingOperation;
-    const { pendingOperations = {}, sheetOutbox = [] } = await storageGet(["pendingOperations","sheetOutbox"]);
+    const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
     const key = mappingKey(state.organization,state.eventisId);
-    for (const term of op.terms) {
-      const idem = `${state.organization}|${state.eventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
-      if (!sheetOutbox.some(x=>x.idempotencyKey===idem && x.status!=="CANCELLED")) {
-        sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
+    if (!op.skipSheetOutbox) {
+      for (const term of op.terms) {
+        const idem = `${state.organization}|${state.eventisId}|${term.start}|${normalize(term.city)}|${op.operator}`;
+        if (!sheetOutbox.some(x=>x.idempotencyKey===idem && x.status!=="CANCELLED")) {
+          sheetOutbox.push({id:crypto.randomUUID(),idempotencyKey:idem,status:"PENDING_SHEET_MAPPING",createdAt:new Date().toISOString(),operator:op.operator,organization:state.organization,eventisId:state.eventisId,eventisTitle:state.eventisTitle,term:przygotujTerminDoKolejki(term),sourceUrl:op.sourceUrl});
+        }
       }
     }
+    const queueItemIds = new Set(op.queueItemIds || []);
+    const zaktualizowanaKolejka = queueItemIds.size
+      ? eventisImportQueue.map(element => queueItemIds.has(element.id)
+        ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE)
+        : element)
+      : eventisImportQueue;
     delete pendingOperations[key];
-    await storageSet({pendingOperations,sheetOutbox});
+    await storageSet({pendingOperations,sheetOutbox,eventisImportQueue:zaktualizowanaKolejka});
+    state.eventisImportQueue=zaktualizowanaKolejka;
     await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:op.terms});
     state.pendingOperation=null; state.pendingLooksSaved=false;
-    toast("Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
+    toast(op.queueItemIds?.length ? "Zapis Eventis potwierdzony. Pozycje kolejki oznaczono jako zakończone." : "Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
     render();
   }
 
@@ -994,11 +1009,127 @@
     return NARZEDZIA_ARKUSZA.matchManualRecordsToCurrent(records,state.eventisTitle);
   }
 
+  function utworzPodgladImportu(rekordy, rawText = "") {
+    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,state.eventisImportQueue);
+    const kluczeDoDodania = new Set(przygotowane.items.map(element => element.recordKey));
+    const potwierdzone = rekordy.filter(rekord => rekord.status === "CONFIRMED" && !rekord.error);
+    return {
+      rawText,
+      records: rekordy,
+      confirmed: potwierdzone.length,
+      deconfirmed: rekordy.filter(rekord => rekord.status === "DECONFIRMED").length,
+      errors: rekordy.filter(rekord => rekord.error).length,
+      duplicates: przygotowane.duplicates,
+      candidateRecords: potwierdzone.filter(rekord => kluczeDoDodania.has(NARZEDZIA_ARKUSZA.recordKey(rekord))),
+      queueItems: przygotowane.items
+    };
+  }
+
+  async function dodajPodgladDoKolejki() {
+    if (!state.manualPreview) return;
+    const dane = await storageGet(["eventisImportQueue"]);
+    const obecnaKolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : state.eventisImportQueue;
+    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(state.manualPreview.records,obecnaKolejka);
+    if (!przygotowane.items.length) return toast("Brak nowych potwierdzonych pozycji do dodania do kolejki.");
+    state.eventisImportQueue = [...obecnaKolejka,...przygotowane.items];
+    await storageSet({eventisImportQueue:state.eventisImportQueue});
+    state.manualPreview = utworzPodgladImportu(state.manualPreview.records,state.manualPreview.rawText);
+    await audit("MANUAL_EVENTIS_QUEUE_ADDED",{records:przygotowane.items.length,duplicates:przygotowane.duplicates});
+    render();
+    toast(`Dodano do kolejki Eventis: ${przygotowane.items.length}.`);
+  }
+
   async function saveManualSnapshot(records, rawText) {
     const snapshot = { importedAt:new Date().toISOString(),hash:String(rawText.length)+":"+normalize(rawText).slice(0,64),records,rawText };
     await storageSet({manualSheetSnapshot:snapshot});
-    state.manualRecords=records; state.manualMatches=matchManualRecordsToCurrent(records);
+    state.manualRecords=records; state.manualMatches=matchManualRecordsToCurrent(records); state.manualPreview=utworzPodgladImportu(records,rawText);
     await audit("MANUAL_SHEET_SNAPSHOT_IMPORTED",{records:records.length});
+  }
+
+  async function zapiszKolejke() {
+    await storageSet({eventisImportQueue:state.eventisImportQueue});
+  }
+
+  function dopasowaniaKolejkiDoBiezacegoTytulu() {
+    return state.eventisImportQueue
+      .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status))
+      .map(element => ({
+        element,
+        similarity:titleSimilarity(state.eventisTitle,element.title),
+        terminy:NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,state.sourceTerms)
+      }))
+      .filter(dopasowanie => dopasowanie.similarity >= .58);
+  }
+
+  async function ponowKolejke(id) {
+    state.eventisImportQueue=state.eventisImportQueue.map(element => element.id===id
+      ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE)
+      : element);
+    await zapiszKolejke();
+    render();
+  }
+
+  async function wprowadzTerminyZKolejki() {
+    if (!state.mappingVerifiedThisSession) return toast("Najpierw zweryfikuj zgodność źródła szkolenia.");
+    if (!state.source || !state.sourceTerms.length) return toast("Najpierw załaduj źródło SEMPER/IIST.");
+    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
+    const jednoznaczne=dopasowania.filter(dopasowanie => dopasowanie.terminy.length===1);
+    const nierozwiazane=dopasowania.filter(dopasowanie => dopasowanie.terminy.length!==1);
+    if (nierozwiazane.length) {
+      state.eventisImportQueue=state.eventisImportQueue.map(element => {
+        const dopasowanie=nierozwiazane.find(kandydat=>kandydat.element.id===element.id);
+        return dopasowanie
+          ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,dopasowanie.terminy.length ? "Znaleziono kilka odpowiadających terminów w danych SEMPER/IIST." : "Nie znaleziono odpowiadającego terminu w danych SEMPER/IIST. Sprawdź datę, lokalizację albo źródło szkolenia.")
+          : element;
+      });
+      await zapiszKolejke();
+      render();
+      return toast("Nie wszystkie pozycje mają jednoznaczny termin w danych SEMPER/IIST.");
+    }
+    if (!jednoznaczne.length) return toast("Brak pasujących pozycji kolejki dla tego szkolenia.");
+    const istniejąceKlucze=new Set(getExistingTerms().map(existingKey));
+    const elementyJuzIstniejace=jednoznaczne.filter(dopasowanie=>istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
+    const doWprowadzenia=jednoznaczne.filter(dopasowanie=>!istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
+    const zaktualizowanePoIstniejacych=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
+    state.eventisImportQueue=state.eventisImportQueue.map(element=>zaktualizowanePoIstniejacych.has(element.id)
+      ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
+      : element);
+    if (!doWprowadzenia.length) {
+      await zapiszKolejke();
+      render();
+      return toast("Wszystkie dopasowane terminy już istnieją w Eventis.");
+    }
+    try {
+      const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
+      const result=await addSelectedTerms(unikalneTerminy(termy));
+      await fillEventDetailsIfAdd(state.source,result.added);
+      const idsDoOczekiwania=doWprowadzenia.map(dopasowanie=>dopasowanie.element.id);
+      const idsZakonczone=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
+      const idsOczekujace=new Set(result.added.length ? idsDoOczekiwania : []);
+      state.eventisImportQueue=state.eventisImportQueue.map(element=>{
+        if(idsZakonczone.has(element.id)) return element;
+        if(idsOczekujace.has(element.id)) return NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS);
+        return element;
+      });
+      await zapiszKolejke();
+      await createPendingOperation(result.added,Array.from(idsOczekujace));
+      state.status="FORM_FILLED";
+      state.formularzZmieniony=true;
+      render();
+      toast(`${elementyJuzIstniejace.length ? `${elementyJuzIstniejace.length} terminów już istnieje. ` : ""}Formularz uzupełniony terminami z kolejki. Zapisz Eventis ręcznie po kontroli.`);
+    } catch (blad) {
+      state.status="ERROR"; state.lastError=blad.message; render();
+    }
+  }
+
+  function unikalneTerminy(termy) {
+    const widziane=new Set();
+    return termy.filter(termin=>{
+      const klucz=existingKey(termin);
+      if(widziane.has(klucz)) return false;
+      widziane.add(klucz);
+      return true;
+    });
   }
 
   function deconfirmedExistingMatches() {
@@ -1318,15 +1449,25 @@
   function renderManualCard() {
     const matches=state.manualMatches||[];
     const deconf=deconfirmedExistingMatches();
+    const podglad=state.manualPreview;
+    const listaPodgladu=podglad?.records||[];
     return `<div class="esync-card">
-      <details ${matches.length?'open':''}><summary><b>Awaryjny import POTWIERDZONE / ODPOTWIERDZONE</b></summary>
+      <details ${(matches.length||podglad)?'open':''}><summary><b>Awaryjny import POTWIERDZONE / ODPOTWIERDZONE</b></summary>
       <div class="esync-small esync-muted" style="margin:6px 0">Fallback na wypadek problemów z Google Sheets. Dane są zapisywane lokalnie jako snapshot.</div>
       <textarea id="esync-manual-paste" class="esync-textarea" placeholder="Wklej rekordy z arkusza…"></textarea>
-      <button id="esync-parse-manual" class="esync-btn" style="width:100%;margin-top:5px">Analizuj i zapisz snapshot</button>
+      <button id="esync-parse-manual" class="esync-btn" style="width:100%;margin-top:5px">Analizuj wklejenie</button>
+      ${podglad?`<div class="esync-manual-preview"><div class="esync-section-title"><span>Podgląd importu</span><span class="esync-small">bez zapisu do kolejki</span></div><div class="esync-import-summary"><span>Wykryto rekordów: <b>${podglad.records.length}</b></span><span>Do dodania: <b>${podglad.queueItems.length}</b></span><span>Odpotwierdzone: <b>${podglad.deconfirmed}</b></span><span>Duplikaty: <b>${podglad.duplicates}</b></span><span>Błędy: <b>${podglad.errors}</b></span></div><button id="esync-add-import-queue" class="esync-btn primary" style="width:100%;margin:6px 0" ${podglad.queueItems.length?'':'disabled'}>Dodaj ${podglad.queueItems.length} pozycji do kolejki Eventis</button>${listaPodgladu.map(rekord=>`<div class="esync-import-row"><div><span class="esync-badge ${rekord.status==='CONFIRMED'?'green':'red'}">${rekord.status==='CONFIRMED'?'CONFIRMED':'DECONFIRMED'}</span><div class="esync-term-main">${esc(rekord.title||'(brak tytułu)')}</div><div class="esync-term-sub">${esc(rekord.start||'?')}${rekord.end&&rekord.end!==rekord.start?` → ${esc(rekord.end)}`:''} · ${esc(rekord.city||'?')}${rekord.participants!=null?` · ${esc(rekord.participants)} uczestn.`:''}</div>${rekord.error?`<div class="esync-small esync-danger">${esc(rekord.error)}</div>`:''}</div><span class="esync-small">${rekord.status==='DECONFIRMED'?'pominięty przy dodawaniu':''}</span></div>`).join('')}</div>`:''}
       ${matches.length?`<div class="esync-divider"></div><b class="esync-small">Rekordy pasujące do bieżącego szkolenia:</b>${matches.slice(0,8).map(r=>`<div class="esync-term"><div><div class="esync-term-main">${r.status==="CONFIRMED"?'✓ POTWIERDZONE':'↘ ODPOTWIERDZONE'} · ${esc(r.start||'?')}${r.end&&r.end!==r.start?` → ${esc(r.end)}`:''} · ${esc(r.city||'?')}</div><div class="esync-term-sub">${r.error?`BŁĄD: ${esc(r.error)}`:`Dopasowanie tytułu ${Math.round((r.similarity||0)*100)}%`}</div></div><span class="esync-badge ${r.status==='CONFIRMED'?'green':'red'}">${r.status==='CONFIRMED'?'MA BYĆ':'USUŃ'}</span></div>`).join('')}`:''}
       ${deconf.length?`<div class="esync-danger"><b>Wykryto ODPOTWIERDZONE terminy obecne w Eventis</b>${deconf.map(x=>`<button class="esync-btn danger" data-highlight-remove="${esc(x.event.id)}" style="width:100%;margin-top:5px">Podświetl ${esc(x.record.start)} · ${esc(x.record.city)}</button>`).join('')}<div class="esync-small" style="margin-top:5px">v0.1 tylko podświetla dokładny termin do usunięcia. Automatyczne usuwanie dodamy po potwierdzeniu stabilnego selektora Eventis i reguły „minimum jeden termin”.</div></div>`:''}
       </details>
     </div>`;
+  }
+
+  function renderKolejkaCard() {
+    const podsumowanie=NARZEDZIA_KOLEJKI.podsumujKolejke(state.eventisImportQueue);
+    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
+    const gotowe=dopasowania.filter(dopasowanie=>dopasowanie.terminy.length===1);
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${dopasowania.length?`<div class="esync-small" style="margin-top:7px"><b>Pasujące do bieżącego szkolenia</b></div>${dopasowania.map(dopasowanie=>`<div class="esync-import-row"><div><div class="esync-term-main">${esc(dopasowanie.element.title)}</div><div class="esync-term-sub">${esc(dopasowanie.element.start)}${dopasowanie.element.end!==dopasowanie.element.start?` → ${esc(dopasowanie.element.end)}`:''} · ${esc(dopasowanie.element.city)}${dopasowanie.element.participants!=null?` · ${esc(dopasowanie.element.participants)} uczestn.`:''} · podobieństwo ${Math.round(dopasowanie.similarity*100)}%</div>${dopasowanie.element.errorMessage?`<div class="esync-small esync-danger">${esc(dopasowanie.element.errorMessage)}</div>`:''}</div>${dopasowanie.element.status===NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD?`<button class="esync-btn warn" data-queue-retry="${esc(dopasowanie.element.id)}">Ponów</button>`:''}</div>`).join('')} ${state.mappingVerifiedThisSession&&gotowe.length?`<button id="esync-add-queue-terms" class="esync-btn good" style="width:100%;margin-top:7px">Wprowadź terminy z kolejki (${gotowe.length})</button>`:''}`:`<div class="esync-small esync-muted" style="margin-top:7px">Na tym ogłoszeniu nie znaleziono oczekujących pozycji o podobnym tytule.</div>`}</div>`;
   }
 
   async function renderOutboxStatus() {
@@ -1340,7 +1481,7 @@
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderKolejkaCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
@@ -1359,6 +1500,9 @@
     $("#esync-add-missing")?.addEventListener("click",onAddMissing);
     $("#esync-queue-existing")?.addEventListener("click",queueExistingTerms);
     $("#esync-confirm-save")?.addEventListener("click",()=>confirmPendingSaved("USER_CONFIRM"));
+    $("#esync-add-import-queue")?.addEventListener("click",dodajPodgladDoKolejki);
+    $("#esync-add-queue-terms")?.addEventListener("click",wprowadzTerminyZKolejki);
+    $$('[data-queue-retry]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>ponowKolejke(btn.dataset.queueRetry)));
     $("#esync-panel-action")?.addEventListener("click",wykonajAkcjePanelu);
     $$('[data-choice-url]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>chooseSearchResult(btn.dataset.choiceUrl)));
     $("#esync-parse-manual")?.addEventListener("click",async()=>{

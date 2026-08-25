@@ -34,6 +34,7 @@
         "shared/wyszukiwanie.js",
         "shared/terminy.js",
         "shared/arkusz.js",
+        "shared/kolejka-eventis.js",
         "content/eventis.js"
       ],
       "css": ["content/eventis.css", "content/akcja-panelu.css", "content/porownanie-tytulow.css"],

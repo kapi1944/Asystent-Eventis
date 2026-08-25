@@ -21,11 +21,12 @@ async function wykonajAkcjeMostuArkusza(akcja) {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox"]);
+  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox", "eventisImportQueue"]);
   if (!current.settings) await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
   if (!current.mappings) await chrome.storage.local.set({ mappings: {} });
   if (!current.auditLog) await chrome.storage.local.set({ auditLog: [] });
   if (!current.sheetOutbox) await chrome.storage.local.set({ sheetOutbox: [] });
+  if (!current.eventisImportQueue) await chrome.storage.local.set({ eventisImportQueue: [] });
 });
 
 async function fetchText({ url, method = "GET", body = null, headers = {}, timeoutMs = 15000 }) {
