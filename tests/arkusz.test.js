@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const narzedzia = require("../shared/arkusz");
+const kolejka = require("../shared/kolejka-eventis");
 
 test("ujednolicony rekord arkusza zachowuje metadane wiersza i wartości źródłowe", () => {
   const rekord = narzedzia.utworzRekordArkusza({
@@ -162,4 +163,121 @@ test("parser odrzuca pusty tytuł i nieprawidłową datę bez blokowania poprawn
   assert.equal(analiza.records[0].error,undefined);
   assert.equal(analiza.records[1].error,"Nie rozpoznano tytułu");
   assert.equal(analiza.records[2].error,"Nieprawidłowy zakres dat");
+});
+
+test("lista terminów rozpoznaje zakres dat i ONLINE", () => {
+  const analiza = narzedzia.analizujListeTerminow(
+    "2026-09-28 do 2026-09-29 | ONLINE",
+    {title:"Prawo budowlane w praktyce"}
+  );
+  assert.equal(analiza.errors.length,0);
+  assert.equal(analiza.records.length,1);
+  assert.equal(analiza.records[0].start,"2026-09-28");
+  assert.equal(analiza.records[0].end,"2026-09-29");
+  assert.equal(analiza.records[0].city,"Online");
+  assert.equal(analiza.records[0].status,"CONFIRMED");
+  assert.equal(analiza.records[0].title,"Prawo budowlane w praktyce");
+  assert.equal(analiza.records[0].normalizedTitle,"prawo budowlane w praktyce");
+});
+
+test("lista terminów ustawia tę samą datę końcową dla jednego dnia", () => {
+  const analiza = narzedzia.analizujListeTerminow("2026-09-28 | ONLINE",{title:"Prawo pracy"});
+  assert.equal(analiza.errors.length,0);
+  assert.equal(analiza.records[0].start,analiza.records[0].end);
+});
+
+test("lista terminów zachowuje dowolną lokalizację stacjonarną", () => {
+  const analiza = narzedzia.analizujListeTerminow(
+    "2026-10-01 do 2026-10-02 | Warszawa",
+    {title:"Prawo pracy"}
+  );
+  assert.equal(analiza.errors.length,0);
+  assert.equal(analiza.records[0].city,"Warszawa");
+});
+
+test("lista terminów obsługuje wiele wierszy, separatory i warianty zakresu", () => {
+  const analiza = narzedzia.analizujListeTerminow([
+    "2026-09-28 do 2026-09-29 | ONLINE",
+    "2026-10-01 - 2026-10-02, Warszawa",
+    "2026-10-15; ONLINE",
+    "2026-11-05 – 2026-11-06 | Gdańsk"
+  ].join("\n"),{title:"Prawo budowlane w praktyce"});
+  assert.equal(analiza.records.length,4);
+  assert.equal(analiza.errors.length,0);
+  assert.deepEqual(analiza.records.map(rekord => rekord.city),["Online","Warszawa","Online","Gdańsk"]);
+});
+
+test("błędny wiersz listy terminów nie blokuje poprawnego", () => {
+  const analiza = narzedzia.analizujListeTerminow([
+    "2026-09-28 do 2026-09-29 | ONLINE",
+    "bzdura"
+  ].join("\n"),{title:"Prawo pracy"});
+  assert.equal(analiza.records.length,1);
+  assert.equal(analiza.errors.length,1);
+  assert.equal(analiza.errors[0].lineNumber,2);
+});
+
+test("lista terminów odrzuca odwrócony zakres dat", () => {
+  const analiza = narzedzia.analizujListeTerminow(
+    "2026-10-10 do 2026-10-01 | ONLINE",
+    {title:"Prawo pracy"}
+  );
+  assert.equal(analiza.records.length,0);
+  assert.equal(analiza.errors.length,1);
+  assert.equal(analiza.errors[0].error,"Data zakończenia poprzedza datę rozpoczęcia");
+});
+
+test("lista terminów wymaga lokalizacji", () => {
+  const bezWartosci = narzedzia.analizujListeTerminow("2026-10-10 |",{title:"Prawo pracy"});
+  const bezSeparatora = narzedzia.analizujListeTerminow("2026-10-10",{title:"Prawo pracy"});
+  assert.equal(bezWartosci.records.length,0);
+  assert.equal(bezWartosci.errors[0].error,"Brak lokalizacji");
+  assert.equal(bezSeparatora.records.length,0);
+  assert.equal(bezSeparatora.errors[0].error,"Brak lokalizacji");
+});
+
+test("lista terminów normalizuje różną wielkość liter ONLINE", () => {
+  for (const lokalizacja of ["ONLINE","Online","online"]) {
+    const analiza = narzedzia.analizujListeTerminow(`2026-10-15 | ${lokalizacja}`,{title:"Prawo pracy"});
+    assert.equal(analiza.errors.length,0);
+    assert.equal(analiza.records[0].city,"Online");
+  }
+});
+
+test("rekordy listy terminów pozostają rozróżnialne dla SEMPER i IIST", () => {
+  const analiza = narzedzia.analizujListeTerminow("2026-10-15 | ONLINE",{title:"Prawo pracy"});
+  const semper = kolejka.przygotujElementyKolejki(analiza.records,[],{organization:"SEMPER"}).items[0];
+  const iist = kolejka.przygotujElementyKolejki(analiza.records,[],{organization:"IIST"}).items[0];
+  assert.equal(semper.organization,"SEMPER");
+  assert.equal(iist.organization,"IIST");
+  assert.equal(semper.status,"PENDING");
+  assert.ok(semper.id);
+  assert.equal(semper.recordKey,iist.recordKey);
+  assert.notEqual(kolejka.kluczKolejki(semper.organization,semper.recordKey),kolejka.kluczKolejki(iist.organization,iist.recordKey));
+});
+
+test("lista terminów odrzuca niepoprawne daty i brak tytułu", () => {
+  const niepoprawneDaty = narzedzia.analizujListeTerminow([
+    "2026-99-10 | ONLINE",
+    "2026-10-10 do 2026-02-30 | Warszawa"
+  ].join("\n"),{title:"Prawo pracy"});
+  const bezTytulu = narzedzia.analizujListeTerminow("2026-10-15 | ONLINE",{title:" "});
+  assert.equal(niepoprawneDaty.records.length,0);
+  assert.equal(niepoprawneDaty.errors.length,2);
+  assert.equal(niepoprawneDaty.errors[0].error,"Nieprawidłowa data rozpoczęcia");
+  assert.equal(niepoprawneDaty.errors[1].error,"Nieprawidłowa data zakończenia");
+  assert.equal(bezTytulu.records.length,0);
+  assert.equal(bezTytulu.errors[0].error,"Brak tytułu szkolenia");
+});
+
+test("częściowe dopasowanie tytułu nie obejmuje innego szkolenia", () => {
+  const szkolenieA = narzedzia.analizujListeTerminow([
+    "2026-10-01 | ONLINE",
+    "2026-10-02 | Warszawa"
+  ].join("\n"),{title:"Szkolenie A"}).records;
+  const szkolenieB = narzedzia.analizujListeTerminow("2026-10-03 | ONLINE",{title:"Szkolenie B"}).records;
+  const dopasowane = narzedzia.matchManualRecordsToCurrent([...szkolenieA,...szkolenieB],"Szkolenie A");
+
+  assert.equal(dopasowane.length,2);
+  assert.ok(dopasowane.every(rekord => rekord.title === "Szkolenie A"));
 });

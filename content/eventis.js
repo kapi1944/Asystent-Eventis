@@ -1006,7 +1006,7 @@
   }
 
   async function potwierdzOperacjeOczekujaca(operacja, terms, queueItemIds = []) {
-    const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+    const { pendingOperations = {}, eventisImportQueue = [] } = await storageGet(["pendingOperations","eventisImportQueue"]);
     const key = kluczStorageOperacji(operacja);
     if (pendingOperations[key]?.operationId !== operacja.operationId) {
       throw new Error("Operacja importu utraciła ownership przed potwierdzeniem formularza.");
@@ -1019,8 +1019,11 @@
       status:"WAITING_FOR_SAVE"
     };
     pendingOperations[key]=potwierdzona;
-    await storageSet({pendingOperations});
+    const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
+    const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.oznaczElementyOczekujaceOperacji(aktualnaKolejka,potwierdzona);
+    await storageSet({pendingOperations,eventisImportQueue:zaktualizowanaKolejka});
     state.pendingOperation=potwierdzona;
+    state.eventisImportQueue=zaktualizowanaKolejka;
     return potwierdzona;
   }
 
@@ -1134,7 +1137,7 @@
     return NARZEDZIA_ARKUSZA.matchManualRecordsToCurrent(records,state.eventisTitle);
   }
 
-  function utworzPodgladImportu(rekordy, rawText = "") {
+  function utworzPodgladImportu(rekordy, rawText = "", bledyWalidacji = []) {
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,state.eventisImportQueue,{organization:state.organization});
     const kluczeDoDodania = new Set(przygotowane.items.map(element => element.recordKey));
     const potwierdzone = rekordy.filter(rekord => rekord.status === "CONFIRMED" && !rekord.error);
@@ -1143,7 +1146,8 @@
       records: rekordy,
       confirmed: potwierdzone.length,
       deconfirmed: rekordy.filter(rekord => rekord.status === "DECONFIRMED").length,
-      errors: rekordy.filter(rekord => rekord.error).length,
+      errors: rekordy.filter(rekord => rekord.error).length + bledyWalidacji.length,
+      bledyWalidacji,
       duplicates: przygotowane.duplicates,
       candidateRecords: potwierdzone.filter(rekord => kluczeDoDodania.has(NARZEDZIA_ARKUSZA.recordKey(rekord))),
       queueItems: przygotowane.items
@@ -1158,21 +1162,27 @@
     if (!przygotowane.items.length) return toast("Brak nowych potwierdzonych pozycji do dodania do kolejki.");
     state.eventisImportQueue = [...obecnaKolejka,...przygotowane.items];
     await storageSet({eventisImportQueue:state.eventisImportQueue});
-    state.manualPreview = utworzPodgladImportu(state.manualPreview.records,state.manualPreview.rawText);
+    state.manualPreview = utworzPodgladImportu(state.manualPreview.records,state.manualPreview.rawText,state.manualPreview.bledyWalidacji);
     await audit("MANUAL_EVENTIS_QUEUE_ADDED",{records:przygotowane.items.length,duplicates:przygotowane.duplicates});
     render();
     toast(`Dodano do kolejki Eventis: ${przygotowane.items.length}.`);
   }
 
-  async function saveManualSnapshot(records, rawText) {
+  async function saveManualSnapshot(records, rawText, bledyWalidacji = []) {
     const snapshot = { importedAt:new Date().toISOString(),hash:String(rawText.length)+":"+normalize(rawText).slice(0,64),records,rawText };
     await storageSet({manualSheetSnapshot:snapshot});
-    state.manualRecords=records; state.manualMatches=matchManualRecordsToCurrent(records); state.manualPreview=utworzPodgladImportu(records,rawText);
+    state.manualRecords=records;
+    state.manualMatches=matchManualRecordsToCurrent(records);
+    state.manualPreview=utworzPodgladImportu(records,rawText,bledyWalidacji);
     await audit("MANUAL_SHEET_SNAPSHOT_IMPORTED",{records:records.length});
   }
 
-  async function zapiszKolejke() {
+  async function zaktualizujBiezacaKolejke(modyfikator) {
+    const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
+    const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
+    state.eventisImportQueue=modyfikator(aktualnaKolejka);
     await storageSet({eventisImportQueue:state.eventisImportQueue});
+    return state.eventisImportQueue;
   }
 
   async function odswiezKolejke() {
@@ -1192,11 +1202,9 @@
   }
 
   async function ponowKolejke(id) {
-    await odswiezKolejke();
-    state.eventisImportQueue=state.eventisImportQueue.map(element => element.id===id
+    await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element => element.id===id
       ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE),operationId:null}
-      : element);
-    await zapiszKolejke();
+      : element));
     render();
   }
 
@@ -1209,16 +1217,15 @@
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu().filter(dopasowanie => !dozwolone || dozwolone.has(dopasowanie.element.id));
     const {jednoznaczne,nierozwiazane,duplikatyTerminow}=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania);
     if (nierozwiazane.length || duplikatyTerminow.length) {
-      state.eventisImportQueue=state.eventisImportQueue.map(element => {
+      await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element => {
         const dopasowanie=nierozwiazane.find(kandydat=>kandydat.element.id===element.id);
         const duplikat=duplikatyTerminow.some(kandydat=>kandydat.element.id===element.id);
         return dopasowanie
           ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,dopasowanie.terminy.length ? "Znaleziono kilka odpowiadających terminów w danych SEMPER/IIST." : "Nie znaleziono odpowiadającego terminu w danych SEMPER/IIST. Sprawdź datę, lokalizację albo źródło szkolenia.")
           : duplikat
-            ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"DUPLICATE_SOURCE_TERM"}
+            ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,"Ten sam termin źródłowy jest już powiązany z innym elementem kolejki.")
             : element;
-      });
-      await zapiszKolejke();
+      }));
     }
     if (!jednoznaczne.length) {
       render();
@@ -1228,17 +1235,18 @@
     const elementyJuzIstniejace=jednoznaczne.filter(dopasowanie=>istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
     const doWprowadzenia=jednoznaczne.filter(dopasowanie=>!istniejąceKlucze.has(existingKey(dopasowanie.terminy[0])));
     const zaktualizowanePoIstniejacych=new Set(elementyJuzIstniejace.map(dopasowanie=>dopasowanie.element.id));
-    state.eventisImportQueue=state.eventisImportQueue.map(element=>zaktualizowanePoIstniejacych.has(element.id)
-      ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
-      : element);
     if (!doWprowadzenia.length) {
-      await zapiszKolejke();
+      await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element=>
+        element.organization===state.organization && zaktualizowanePoIstniejacych.has(element.id)
+          ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
+          : element));
       render();
       return toast("Wszystkie dopasowane terminy już istnieją w Eventis.");
     }
+    let planOperacji=null;
     try {
       const termy=doWprowadzenia.map(dopasowanie=>dopasowanie.terminy[0]);
-      const planOperacji=utworzPlanOperacji(unikalneTerminy(termy),doWprowadzenia.map(dopasowanie=>dopasowanie.element.id));
+      planOperacji=utworzPlanOperacji(unikalneTerminy(termy),doWprowadzenia.map(dopasowanie=>dopasowanie.element.id));
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
         async operacja => {
@@ -1256,14 +1264,19 @@
         render();
         return toast("Żaden termin kolejki nie został dodany do formularza.");
       }
-      state.eventisImportQueue=NARZEDZIA_KOLEJKI.oznaczElementyOczekujaceOperacji(state.eventisImportQueue,operacja);
-      await zapiszKolejke();
+      if (zaktualizowanePoIstniejacych.size) {
+        await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element=>
+          element.organization===state.organization && zaktualizowanePoIstniejacych.has(element.id)
+            ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
+            : element));
+      }
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       render();
       const liczbaProblemow=nierozwiazane.length+duplikatyTerminow.length;
       toast(`Przygotowano terminów: ${powiazanie.terms.length}.${liczbaProblemow ? ` Pozycje wymagające sprawdzenia: ${liczbaProblemow}.` : ""} Zapisz Eventis ręcznie po kontroli.`);
     } catch (blad) {
+      if (planOperacji) await zwolnijNiepotwierdzonyClaim(planOperacji);
       state.status="ERROR"; state.lastError=blad.message; render();
     }
   }
@@ -1641,11 +1654,11 @@
     const podglad=state.manualPreview;
     const listaPodgladu=podglad?.records||[];
     return `<div class="esync-card">
-      <details ${(matches.length||podglad)?'open':''}><summary><b>Awaryjny import POTWIERDZONE / ODPOTWIERDZONE</b></summary>
-      <div class="esync-small esync-muted" style="margin:6px 0">Fallback na wypadek problemów z Google Sheets. Dane są zapisywane lokalnie jako snapshot.</div>
-      <textarea id="esync-manual-paste" class="esync-textarea" placeholder="Wklej rekordy z arkusza…"></textarea>
-      <button id="esync-parse-manual" class="esync-btn" style="width:100%;margin-top:5px">Analizuj wklejenie</button>
-      ${podglad?`<div class="esync-manual-preview"><div class="esync-section-title"><span>Podgląd importu</span><span class="esync-small">bez zapisu do kolejki</span></div><div class="esync-import-summary"><span>Wykryto rekordów: <b>${podglad.records.length}</b></span><span>Do dodania: <b>${podglad.queueItems.length}</b></span><span>Odpotwierdzone: <b>${podglad.deconfirmed}</b></span><span>Duplikaty: <b>${podglad.duplicates}</b></span><span>Błędy: <b>${podglad.errors}</b></span></div><button id="esync-add-import-queue" class="esync-btn primary" style="width:100%;margin:6px 0" ${podglad.queueItems.length?'':'disabled'}>Dodaj ${podglad.queueItems.length} pozycji do kolejki Eventis</button>${listaPodgladu.map(rekord=>`<div class="esync-import-row"><div><span class="esync-badge ${rekord.status==='CONFIRMED'?'green':'red'}">${rekord.status==='CONFIRMED'?'CONFIRMED':'DECONFIRMED'}</span><div class="esync-term-main">${esc(rekord.title||'(brak tytułu)')}</div><div class="esync-term-sub">${esc(rekord.start||'?')}${rekord.end&&rekord.end!==rekord.start?` → ${esc(rekord.end)}`:''} · ${esc(rekord.city||'?')}${rekord.participants!=null?` · ${esc(rekord.participants)} uczestn.`:''}</div>${rekord.error?`<div class="esync-small esync-danger">${esc(rekord.error)}</div>`:''}</div><span class="esync-small">${rekord.status==='DECONFIRMED'?'pominięty przy dodawaniu':''}</span></div>`).join('')}</div>`:''}
+      <details ${(matches.length||podglad)?'open':''}><summary><b>Ręczny import do kolejki Eventis</b></summary>
+      <div class="esync-small esync-muted" style="margin:6px 0">Wklej pełne rekordy arkusza albo samą listę terminów dla bieżącego tytułu „${esc(getEventisTitle()||state.eventisTitle||'(brak tytułu)')}”.</div>
+      <textarea id="esync-manual-paste" class="esync-textarea" placeholder="2026-09-28 do 2026-09-29 | ONLINE"></textarea>
+      <div class="esync-grid2" style="margin-top:5px"><button id="esync-parse-manual" class="esync-btn">Pełne rekordy</button><button id="esync-analizuj-liste-terminow" class="esync-btn primary">Lista terminów</button></div>
+      ${podglad?`<div class="esync-manual-preview"><div class="esync-section-title"><span>Podgląd importu</span><span class="esync-small">bez zapisu do kolejki</span></div><div class="esync-import-summary"><span>Wykryto rekordów: <b>${podglad.records.length}</b></span><span>Do dodania: <b>${podglad.queueItems.length}</b></span><span>Odpotwierdzone: <b>${podglad.deconfirmed}</b></span><span>Duplikaty: <b>${podglad.duplicates}</b></span><span>Błędy: <b>${podglad.errors}</b></span></div><button id="esync-add-import-queue" class="esync-btn primary" style="width:100%;margin:6px 0" ${podglad.queueItems.length?'':'disabled'}>Dodaj ${podglad.queueItems.length} pozycji do kolejki Eventis</button>${listaPodgladu.map(rekord=>`<div class="esync-import-row"><div><span class="esync-badge ${rekord.status==='CONFIRMED'?'green':'red'}">${rekord.status==='CONFIRMED'?'CONFIRMED':'DECONFIRMED'}</span><div class="esync-term-main">${esc(rekord.title||'(brak tytułu)')}</div><div class="esync-term-sub">${esc(rekord.start||'?')}${rekord.end&&rekord.end!==rekord.start?` → ${esc(rekord.end)}`:''} · ${esc(rekord.city||'?')}${rekord.participants!=null?` · ${esc(rekord.participants)} uczestn.`:''}</div>${rekord.error?`<div class="esync-small esync-danger">${esc(rekord.error)}</div>`:''}</div><span class="esync-small">${rekord.status==='DECONFIRMED'?'pominięty przy dodawaniu':''}</span></div>`).join('')}${(podglad.bledyWalidacji||[]).map(blad=>`<div class="esync-small esync-danger">Wiersz ${esc(blad.lineNumber)}: ${esc(blad.error)}</div>`).join('')}</div>`:''}
       ${matches.length?`<div class="esync-divider"></div><b class="esync-small">Rekordy pasujące do bieżącego szkolenia:</b>${matches.slice(0,8).map(r=>`<div class="esync-term"><div><div class="esync-term-main">${r.status==="CONFIRMED"?'✓ POTWIERDZONE':'↘ ODPOTWIERDZONE'} · ${esc(r.start||'?')}${r.end&&r.end!==r.start?` → ${esc(r.end)}`:''} · ${esc(r.city||'?')}</div><div class="esync-term-sub">${r.error?`BŁĄD: ${esc(r.error)}`:`Dopasowanie tytułu ${Math.round((r.similarity||0)*100)}%`}</div></div><span class="esync-badge ${r.status==='CONFIRMED'?'green':'red'}">${r.status==='CONFIRMED'?'MA BYĆ':'USUŃ'}</span></div>`).join('')}`:''}
       ${deconf.length?`<div class="esync-danger"><b>Wykryto ODPOTWIERDZONE terminy obecne w Eventis</b>${deconf.map(x=>`<button class="esync-btn danger" data-highlight-remove="${esc(x.event.id)}" style="width:100%;margin-top:5px">Podświetl ${esc(x.record.start)} · ${esc(x.record.city)}</button>`).join('')}<div class="esync-small" style="margin-top:5px">v0.1 tylko podświetla dokładny termin do usunięcia. Automatyczne usuwanie dodamy po potwierdzeniu stabilnego selektora Eventis i reguły „minimum jeden termin”.</div></div>`:''}
       </details>
@@ -1701,6 +1714,14 @@
       const records=parseManualPaste(raw);
       if(!records.length)return toast("Nie znaleziono rekordów POTWIERDZONE SZKOLENIE ani ODPOTWIERDZONE.");
       await saveManualSnapshot(records,raw);render();toast(`Rozpoznano ${records.length} rekordów.`);
+    });
+    $("#esync-analizuj-liste-terminow")?.addEventListener("click",async()=>{
+      const raw=$("#esync-manual-paste")?.value||"";
+      const analiza=NARZEDZIA_ARKUSZA.analizujListeTerminow(raw,{title:getEventisTitle()||state.eventisTitle});
+      if(!analiza.records.length&&!analiza.errors.length)return toast("Wklej co najmniej jeden termin.");
+      await saveManualSnapshot(analiza.records,raw,analiza.errors);
+      render();
+      toast(`Rozpoznano ${analiza.records.length} terminów. Błędy: ${analiza.errors.length}.`);
     });
     $$('[data-highlight-remove]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>highlightDeconfirmedTerm(btn.dataset.highlightRemove)));
   }

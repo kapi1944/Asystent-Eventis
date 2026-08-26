@@ -133,6 +133,9 @@
   }
 
   function ocenZgodnoscTytulow(tytulEventis, tytulZrodlowy) {
+    const znormalizowanyEventis = normalizujTytul(tytulEventis);
+    const znormalizowanyZrodlowy = normalizujTytul(tytulZrodlowy);
+    if (znormalizowanyEventis && znormalizowanyEventis === znormalizowanyZrodlowy) return 1;
     const listaA = istotneSlowa(tytulEventis);
     const listaB = istotneSlowa(tytulZrodlowy);
     const zbiorA = new Set(listaA);

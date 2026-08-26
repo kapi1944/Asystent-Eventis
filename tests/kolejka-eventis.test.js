@@ -3,6 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const kolejka = require("../shared/kolejka-eventis");
+const arkusz = require("../shared/arkusz");
 
 const rekord = {status:"CONFIRMED",title:"Prawo pracy",normalizedTitle:"prawo pracy",start:"2026-09-28",end:"2026-09-29",city:"Warszawa",participants:8,rawText:"źródło"};
 
@@ -109,4 +110,101 @@ test("pending operation z event/add nie jest wybierana przy niejednoznacznym tyt
     "SEMPER|new:2":{id:"druga",organization:"SEMPER",eventisId:"new:2",eventisTitle:"Prawo pracy"}
   };
   assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","123","Prawo pracy"),null);
+});
+
+test("cztery terminy przechodzą zbiorczo przez PENDING, WAITING_FOR_SAVE i DONE", () => {
+  const tytul = "TEST KOLEJKA ZBIORCZA";
+  const analiza = arkusz.analizujListeTerminow([
+    "2026-09-28 do 2026-09-29 | ONLINE",
+    "2026-10-01 do 2026-10-02 | ONLINE",
+    "2026-10-15 | Warszawa",
+    "2026-11-05 do 2026-11-06 | Gdańsk"
+  ].join("\n"),{title:tytul});
+  const przygotowane = kolejka.przygotujElementyKolejki(analiza.records,[],{organization:"SEMPER"});
+  const elementySemper = przygotowane.items.map((element,indeks) => ({...element,id:`semper-${indeks + 1}`}));
+  const obcyTytul = {...elementySemper[0],id:"obcy-tytul",title:"Inne szkolenie",normalizedTitle:"inne szkolenie",recordKey:"obcy-klucz"};
+  const elementIist = {...elementySemper[0],id:"iist-1",organization:"IIST"};
+  const terminyZrodlowe = analiza.records.map(rekord => ({
+    sourceStart:rekord.start,
+    sourceEnd:rekord.end,
+    start:rekord.start,
+    end:rekord.end,
+    city:rekord.city,
+    price:1200
+  }));
+  const dopasowania = elementySemper.map(element => ({
+    element,
+    terminy:kolejka.dopasujElementKolejkiDoTerminow(element,terminyZrodlowe)
+  }));
+  const rozdzielone = kolejka.rozdzielDopasowaniaKolejki(dopasowania);
+  const powiazanie = kolejka.powiazDodaneTerminy(rozdzielone.jednoznaczne,terminyZrodlowe);
+  const operacja = {
+    operationId:"operacja-zbiorcza",
+    operationScopeKey:"SEMPER|add:dokument-1",
+    organization:"SEMPER",
+    eventisIdAtStart:null,
+    eventisTitleAtStart:tytul,
+    queueItemIds:powiazanie.queueItemIds,
+    status:"WAITING_FOR_SAVE"
+  };
+
+  assert.equal(przygotowane.items.length,4);
+  assert.deepEqual(elementySemper.map(element => element.status),["PENDING","PENDING","PENDING","PENDING"]);
+  assert.equal(rozdzielone.jednoznaczne.length,4);
+  assert.deepEqual(powiazanie.queueItemIds,["semper-1","semper-2","semper-3","semper-4"]);
+  assert.equal(powiazanie.terms.length,4);
+
+  const oczekujace = kolejka.oznaczElementyOczekujaceOperacji([...elementySemper,obcyTytul,elementIist],operacja);
+  assert.deepEqual(oczekujace.slice(0,4).map(element => element.status),["WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE"]);
+  assert.equal(oczekujace[4].status,"PENDING");
+  assert.equal(oczekujace[5].status,"PENDING");
+
+  const operacje = {[operacja.operationScopeKey]:operacja};
+  const poReloadzie = kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","987",tytul);
+  assert.equal(poReloadzie,operacja);
+  assert.deepEqual(oczekujace.slice(0,4).map(element => element.status),["WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE"]);
+
+  const zakonczone = kolejka.rozliczElementyOperacji(oczekujace,poReloadzie,"DONE");
+  assert.deepEqual(zakonczone.slice(0,4).map(element => element.status),["DONE","DONE","DONE","DONE"]);
+  assert.equal(zakonczone[4].status,"PENDING");
+  assert.equal(zakonczone[5].status,"PENDING");
+});
+
+test("ponowne wklejenie aktywnej listy daje zero nowych i cztery duplikaty", () => {
+  const analiza = arkusz.analizujListeTerminow([
+    "2026-09-28 do 2026-09-29 | ONLINE",
+    "2026-10-01 do 2026-10-02 | ONLINE",
+    "2026-10-15 | Warszawa",
+    "2026-11-05 do 2026-11-06 | Gdańsk"
+  ].join("\n"),{title:"TEST KOLEJKA ZBIORCZA"});
+  const pierwszyImport = kolejka.przygotujElementyKolejki(analiza.records,[],{organization:"SEMPER"});
+  const drugiImport = kolejka.przygotujElementyKolejki(analiza.records,pierwszyImport.items,{organization:"SEMPER"});
+
+  assert.equal(drugiImport.items.length,0);
+  assert.equal(drugiImport.duplicates,4);
+});
+
+test("aktualna operacja event/add z wieloma queueItemIds jest odnajdywana po event/edit", () => {
+  const operacja = {
+    operationId:"operacja-nowego-ogloszenia",
+    operationScopeKey:"SEMPER|add:dokument-2",
+    organization:"SEMPER",
+    eventisIdAtStart:null,
+    eventisTitleAtStart:"Prawo budowlane",
+    queueItemIds:["q1","q2","q3"]
+  };
+  const operacje = {[operacja.operationScopeKey]:operacja};
+
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","321","Prawo budowlane"),operacja);
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"IIST","321","Prawo budowlane"),null);
+  assert.equal(operacja.queueItemIds.length,3);
+});
+
+test("ERROR można przywrócić do PENDING bez zmiany tożsamości rekordu", () => {
+  const element = {id:"blad-1",organization:"SEMPER",status:"ERROR",errorMessage:"Błąd zapisu"};
+  const ponowiony = {...kolejka.zmienStatusElementu(element,"PENDING"),operationId:null};
+
+  assert.equal(ponowiony.id,"blad-1");
+  assert.equal(ponowiony.status,"PENDING");
+  assert.equal(ponowiony.errorMessage,"");
 });

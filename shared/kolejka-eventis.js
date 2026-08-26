@@ -163,7 +163,9 @@
     const identyfikatory = new Set(operacja?.queueItemIds || []);
     if (!identyfikatory.size || !operacja?.operationId) return kolejka;
     return kolejka.map(element =>
-      element.organization === operacja.organization && identyfikatory.has(element.id)
+      element.organization === operacja.organization
+        && identyfikatory.has(element.id)
+        && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status)
         ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId }
         : element
     );
@@ -188,8 +190,9 @@
     const tytul = normalizujTytul(eventisTitle);
     const kandydaci = Object.values(operacje).filter(operacja =>
       operacja?.organization === organizacja
-      && String(operacja.eventisId || "").startsWith("new:")
-      && normalizujTytul(operacja.eventisTitle) === tytul
+      && (String(operacja.operationScopeKey || "").startsWith(`${organizacja}|add:`)
+        || String(operacja.eventisIdAtStart ?? operacja.eventisId ?? "").startsWith("new:"))
+      && normalizujTytul(operacja.eventisTitleAtStart || operacja.eventisTitle) === tytul
     );
     return kandydaci.length === 1 ? kandydaci[0] : null;
   }

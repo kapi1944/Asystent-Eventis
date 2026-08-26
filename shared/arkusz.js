@@ -163,6 +163,74 @@
     return analizujReczneWklejenie(tekst).records;
   }
 
+  function czyObslugiwanyZakresDatListyTerminow(wartosc) {
+    return /^(\d{4}-\d{2}-\d{2})(?:\s*(?:do|-|–)\s*(\d{4}-\d{2}-\d{2}))?$/i
+      .test(String(wartosc || "").trim());
+  }
+
+  function utworzBladListyTerminow(numerWiersza, surowy, komunikat) {
+    return { lineNumber:numerWiersza, rawText:surowy, error:komunikat };
+  }
+
+  function analizujListeTerminow(tekst, kontekst = {}) {
+    const tytul = oczyscLinie(kontekst.title);
+    const rekordy = [];
+    const bledy = [];
+    String(tekst || "").split(/\r?\n/).forEach((surowy, indeks) => {
+      const linia = oczyscLinie(surowy);
+      if (!linia) return;
+      const numerWiersza = indeks + 1;
+      if (!normalizuj(tytul)) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Brak tytułu szkolenia"));
+        return;
+      }
+
+      const czesci = linia.match(/^([^|,;]*)([|,;])([^|,;]*)$/);
+      if (!czesci) {
+        const komunikat = czyObslugiwanyZakresDatListyTerminow(linia)
+          ? "Brak lokalizacji"
+          : "Nie rozpoznano daty rozpoczęcia lub separatora lokalizacji";
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,komunikat));
+        return;
+      }
+
+      if (!czyObslugiwanyZakresDatListyTerminow(czesci[1])) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Nie rozpoznano daty rozpoczęcia lub zakresu dat"));
+        return;
+      }
+      const zakresDat = NARZEDZIA_TERMINOW.dateRangeFromText(czesci[1]);
+      if (!czyPoprawnaData(zakresDat.start)) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Nieprawidłowa data rozpoczęcia"));
+        return;
+      }
+      if (!czyPoprawnaData(zakresDat.end)) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Nieprawidłowa data zakończenia"));
+        return;
+      }
+      if (zakresDat.end < zakresDat.start) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Data zakończenia poprzedza datę rozpoczęcia"));
+        return;
+      }
+
+      const lokalizacjaSurowa = oczyscLinie(czesci[3]);
+      if (!lokalizacjaSurowa) {
+        bledy.push(utworzBladListyTerminow(numerWiersza,surowy,"Brak lokalizacji"));
+        return;
+      }
+      const miasto = normalizuj(lokalizacjaSurowa) === "online" ? "Online" : lokalizacjaSurowa;
+      rekordy.push(utworzRekordArkusza({
+        status:STATUSY_REKORDU_ARKUSZA.POTWIERDZONY,
+        title:tytul,
+        start:zakresDat.start,
+        end:zakresDat.end,
+        city:miasto,
+        participants:null,
+        rawText:surowy
+      }));
+    });
+    return { records:rekordy, errors:bledy };
+  }
+
   function dopasujRekordyReczneDoBiezacego(rekordy, biezacyTytul) {
     return (rekordy || [])
       .map(rekord => ({
@@ -194,6 +262,7 @@
     parseManualRecordLine: parsujLinieRekorduRecznego,
     parseManualPaste: parsujReczneWklejenie,
     analizujReczneWklejenie,
+    analizujListeTerminow,
     matchManualRecordsToCurrent: dopasujRekordyReczneDoBiezacego,
     recordKey: kluczSemantycznyRekordu
   };

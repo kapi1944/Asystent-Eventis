@@ -34,6 +34,11 @@ test("scoring wysoko ocenia zgodny tytuł i nie zawyża dwóch wspólnych słów
   assert.ok(narzedzia.ocenZgodnoscTytulow("Limit 130 000 zł w zamówieniach publicznych","Limit 170 000 zł w zamówieniach publicznych") < 0.8);
 });
 
+test("dokładnie zgodny krótki tytuł ma pierwszeństwo przed scoringiem słów", () => {
+  assert.equal(narzedzia.ocenZgodnoscTytulow("Szkolenie A","Szkolenie A"),1);
+  assert.equal(narzedzia.ocenZgodnoscTytulow("Szkolenie A","Szkolenie B"),0);
+});
+
 test("rozpoznawanie URL SEMPER przyjmuje details i odrzuca menu", () => {
   assert.equal(narzedzia.czySzczegolySemper("https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,123.html"),true);
   assert.equal(narzedzia.czySzczegolySemper("https://szkolenia-semper.pl/component/trainings/details/prawo,123,html"),true);
