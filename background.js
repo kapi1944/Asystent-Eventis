@@ -1,7 +1,8 @@
-importScripts("shared/config.js","shared/operacje-eventis.js","background/sheet-bridge-client.js");
+importScripts("shared/config.js","shared/operacje-eventis.js","shared/otwieranie-wydarzen-eventis.js","background/sheet-bridge-client.js");
 
 const DEFAULT_SETTINGS = globalThis.EventisSyncConfig.DEFAULT_SETTINGS;
 const KLIENT_MOSTU_ARKUSZA = globalThis.KlientMostuArkuszaEventis;
+const OTWIERANIE_WYDARZEN = globalThis.OtwieranieWydarzenEventis;
 const kolejkiClaimowOperacji = new Map();
 
 async function wykonajClaimSeryjnie(kluczClaimu, akcja) {
@@ -33,33 +34,42 @@ async function wykonajAkcjeMostuArkusza(akcja) {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox", "eventisImportQueue", "eventisAutomaticBatches"]);
+  const current = await chrome.storage.local.get(["settings", "mappings", "auditLog", "sheetOutbox", "eventisImportQueue", "eventisAutomaticBatches", "eventisOpeningSessions"]);
   if (!current.settings) await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
   if (!current.mappings) await chrome.storage.local.set({ mappings: {} });
   if (!current.auditLog) await chrome.storage.local.set({ auditLog: [] });
   if (!current.sheetOutbox) await chrome.storage.local.set({ sheetOutbox: [] });
   if (!current.eventisImportQueue) await chrome.storage.local.set({ eventisImportQueue: [] });
   if (!current.eventisAutomaticBatches) await chrome.storage.local.set({ eventisAutomaticBatches: {} });
+  if (!current.eventisOpeningSessions) await chrome.storage.local.set({ eventisOpeningSessions: {} });
 });
 
-function bezpiecznyUrlEdycjiEventis(wartosc) {
-  try {
-    const url = new URL(String(wartosc || ""));
-    if (url.protocol !== "https:" || url.username || url.password || !/(^|\.)eventis\.pl$/i.test(url.hostname)) return "";
-    if (!/^\/event\/edit(?:\/|$)/i.test(url.pathname)) return "";
-    return url.href;
-  } catch (_) {
-    return "";
-  }
+async function otwarteAdresyEventis() {
+  const karty = await chrome.tabs.query({});
+  return karty.map(karta => karta.url || "");
 }
 
-async function otworzKartyEdycjiEventis(adresy = []) {
-  const poprawne = [...new Set(adresy.map(bezpiecznyUrlEdycjiEventis).filter(Boolean))];
-  if (!poprawne.length) return { ok:false, error:"Brak prawidłowych adresów kart Eventis." };
-  for (let indeks = 0; indeks < poprawne.length; indeks++) {
-    await chrome.tabs.create({url:poprawne[indeks],active:indeks === 0});
+async function przygotujPlanOtwieraniaEventis(pozycje) {
+  return OTWIERANIE_WYDARZEN.utworzPlanOtwierania(pozycje,await otwarteAdresyEventis());
+}
+
+function identyfikatorSesjiOtwarcia() {
+  return globalThis.crypto?.randomUUID?.() || `otwarcie-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function otworzPlanEventis(pozycje, organizacja) {
+  const plan = await przygotujPlanOtwieraniaEventis(pozycje);
+  if (!plan.doOtwarcia.length) return {ok:true,...plan,opened:0,sessionId:null};
+  const sessionId = identyfikatorSesjiOtwarcia();
+  const {eventisOpeningSessions = {}} = await chrome.storage.local.get(["eventisOpeningSessions"]);
+  const zadania = plan.doOtwarcia;
+  await chrome.storage.local.set({eventisOpeningSessions:{...eventisOpeningSessions,[sessionId]:OTWIERANIE_WYDARZEN.utworzSesjeOtwarcia(sessionId,organizacja,zadania)}});
+  for (let indeks = 0; indeks < zadania.length; indeks++) {
+    const url = new URL(zadania[indeks].eventUrl);
+    url.searchParams.set("esyncSession",sessionId);
+    await chrome.tabs.create({url:url.href,active:indeks === 0});
   }
-  return { ok:true, opened:poprawne.length };
+  return {ok:true,...plan,opened:zadania.length,sessionId};
 }
 
 async function fetchText({ url, method = "GET", body = null, headers = {}, timeoutMs = 15000 }) {
@@ -232,8 +242,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
-      case "OPEN_EVENTIS_TABS": {
-        sendResponse(await otworzKartyEdycjiEventis(message.urls));
+      case "PREPARE_EVENTIS_OPENING": {
+        sendResponse({ok:true,...await przygotujPlanOtwieraniaEventis(message.plan)});
+        break;
+      }
+      case "OPEN_EVENTIS_PLAN": {
+        sendResponse(await otworzPlanEventis(message.plan,message.organization));
         break;
       }
       case "CLOSE_TAB": {

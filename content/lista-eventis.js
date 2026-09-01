@@ -28,6 +28,7 @@
     rozstrzygniecia:[],
     decyzje:{},
     magazynMapowan:null,
+    planOtwarcia:null,
     liczbaBledow:0,
     liczbaDuplikatow:0,
     komunikat:""
@@ -132,6 +133,25 @@
     await zapiszMagazynMapowan();
   }
 
+  function finalnyPlanOtwarcia() {
+    return NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie));
+  }
+
+  async function odswiezPlanOtwarcia() {
+    const odpowiedz = await chrome.runtime.sendMessage({type:"PREPARE_EVENTIS_OPENING",plan:finalnyPlanOtwarcia().pozycje});
+    if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się przygotować planu otwarcia.");
+    stan.planOtwarcia = odpowiedz;
+  }
+
+  async function otworzGotoweKarty() {
+    const plan = finalnyPlanOtwarcia();
+    const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:plan.pozycje,organization:stan.organizacja});
+    if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
+    stan.komunikat = odpowiedz.opened ? `Otwarto ${odpowiedz.opened} kart w sesji ${odpowiedz.sessionId}.` : "Nie otwarto nowych kart: wszystkie są już otwarte albo plan jest pusty.";
+    await odswiezPlanOtwarcia();
+    renderuj();
+  }
+
   async function analizujWklejonyTekst() {
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
@@ -166,6 +186,7 @@
       if (rozstrzygniecie.status !== "AUTO_MATCH") continue;
       await zapiszRozstrzygniecie(rozstrzygniecie,rozstrzygniecie.reason === "EXACT_MATCH" ? "exact" : "fuzzy");
     }
+    await odswiezPlanOtwarcia();
     stan.komunikat = "";
     renderuj();
   }
@@ -188,11 +209,13 @@
       return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Wybierz dokładnie jedno wydarzenie Eventis.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>'}${kandydaci}${wybrano}${pominieto}${recznyUrl}${szukaj}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
     }).join("");
     const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
-    const plan = NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie));
+    const plan = finalnyPlanOtwarcia();
+    const planOtwarcia = stan.planOtwarcia;
     const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
       ? `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} → ${esc(pozycja.selectedCandidate.url)}</div>`
       : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("");
-    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Gotowe do otwarcia: <b>${plan.gotoweDoOtwarcia}</b></span><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div><div class="esync-small esync-muted">Ten etap tylko tworzy plan — nie otwiera kart.</div></div>`;
+    const podsumowanieOtwarcia = planOtwarcia ? `<div class="esync-import-summary"><span>Gotowe: <b>${planOtwarcia.gotowe}</b></span><span>Już otwarte: <b>${planOtwarcia.juzOtwarte.length}</b></span><span>Do otwarcia: <b>${planOtwarcia.doOtwarcia.length}</b></span><span>Pominięte: <b>${plan.pozycje.filter(pozycja => pozycja.status === "SKIPPED").length}</b></span></div>${planOtwarcia.konflikty.length ? `<div class="esync-warning esync-small">Konflikty mapowań: ${planOtwarcia.konflikty.length}. Ten sam event nie zostanie otwarty drugi raz.</div>` : ""}<button id="esync-otworz-karty" class="esync-btn good" style="width:100%;margin-top:6px" ${planOtwarcia.doOtwarcia.length ? "" : "disabled"}>OTWÓRZ ${planOtwarcia.doOtwarcia.length} KART EVENTIS</button>` : '<div class="esync-small esync-muted">Sprawdzanie już otwartych kart…</div>';
+    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
   }
 
   function renderuj() {
@@ -208,6 +231,7 @@
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
     $("#esync-lista-analizuj")?.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message)));
+    $("#esync-otworz-karty")?.addEventListener("click",() => otworzGotoweKarty().catch(blad => pokazKomunikat(blad.message)));
     $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === pole.dataset.wyborKlucz);
       const wybor = NARZEDZIA_LISTY.wybierzKandydataRozstrzygniecia(zrodlo,pole.value);
@@ -215,13 +239,15 @@
         stan.decyzje[pole.dataset.wyborKlucz] = wybor;
         await zapiszRozstrzygniecie(wybor,"manual");
       }
+      await odswiezPlanOtwarcia();
       renderuj();
     }).catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",() => {
+    $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
       if (zrodlo) stan.decyzje[przycisk.dataset.pominTytul] = NARZEDZIA_LISTY.pominRozstrzygniecie(zrodlo);
+      await odswiezPlanOtwarcia();
       renderuj();
-    }));
+    }).catch(blad => pokazKomunikat(blad.message)));
     $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",async () => {
       const klucz = przycisk.dataset.zatwierdzUrl;
       const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
@@ -230,6 +256,7 @@
       if (!wybor) return pokazKomunikat("Podaj bezpieczny adres edycji wydarzenia Eventis.");
       stan.decyzje[klucz] = wybor;
       await zapiszRozstrzygniecie(wybor,"manual");
+      await odswiezPlanOtwarcia();
       renderuj();
     }).catch(blad => pokazKomunikat(blad.message)));
     $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",async () => {
@@ -242,6 +269,7 @@
       const ponownyResolver = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul:zrodlo.sourceTitle,normalizedTitle:zrodlo.normalizedSourceTitle},stan.ogloszenia,zrodlo.organization);
       stan.rozstrzygniecia[indeks] = {...ponownyResolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"CHANGE_MAPPING"};
       delete stan.decyzje[klucz];
+      await odswiezPlanOtwarcia();
       renderuj();
     }).catch(blad => pokazKomunikat(blad.message)));
     $$('[data-ponow-wyszukiwanie]').forEach(przycisk => przycisk.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message))));
