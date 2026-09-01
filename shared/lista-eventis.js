@@ -8,6 +8,69 @@
   const PROG_DOPASOWANIA = 0.72;
   const MINIMALNA_PRZEWAGA = 0.08;
   const CZAS_WAZNOSCI_SERII_MS = 2 * 60 * 60 * 1000;
+  const STATUSY_RESOLVERA = Object.freeze({
+    AUTO_MATCH:"AUTO_MATCH",
+    AMBIGUOUS:"AMBIGUOUS",
+    NOT_FOUND:"NOT_FOUND"
+  });
+
+  function porownajKandydatow(pierwszy, drugi) {
+    return drugi.score - pierwszy.score
+      || pierwszy.normalizedTitle.localeCompare(drugi.normalizedTitle,"pl")
+      || String(pierwszy.eventId).localeCompare(String(drugi.eventId),"pl",{numeric:true})
+      || pierwszy.url.localeCompare(drugi.url);
+  }
+
+  function kandydaciEventis(ogloszenia = [], organizacja, normalizedSourceTitle) {
+    const wedlugId = new Map();
+    for (const ogloszenie of ogloszenia) {
+      if (!ogloszenie?.eventisId || !ogloszenie.url) continue;
+      if (ogloszenie.organization && ogloszenie.organization !== organizacja) continue;
+      const tytuly = Array.isArray(ogloszenie.tytuly) ? ogloszenie.tytuly : [ogloszenie.tytul];
+      for (const tytul of tytuly) {
+        const normalizedTitle = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul);
+        if (!normalizedTitle) continue;
+        const score = NARZEDZIA_WYSZUKIWANIA.ocenWynikWyszukiwania(normalizedSourceTitle,normalizedTitle);
+        const kandydat = {
+          eventId:String(ogloszenie.eventisId),
+          url:ogloszenie.url,
+          title:tytul,
+          normalizedTitle,
+          score,
+          matchType:normalizedTitle === normalizedSourceTitle ? "EXACT" : "FUZZY"
+        };
+        const poprzedni = wedlugId.get(kandydat.eventId);
+        if (!poprzedni || porownajKandydatow(kandydat,poprzedni) < 0) wedlugId.set(kandydat.eventId,kandydat);
+      }
+    }
+    return [...wedlugId.values()].sort(porownajKandydatow);
+  }
+
+  function rozwiazGrupeTytulu(grupa, ogloszenia = [], organizacja, opcje = {}) {
+    const sourceTitle = grupa?.tytul || grupa?.title || "";
+    const normalizedSourceTitle = grupa?.normalizedTitle || NARZEDZIA_WYSZUKIWANIA.normalizujTytul(sourceTitle);
+    const prog = Number(opcje.prog ?? PROG_DOPASOWANIA);
+    const przewaga = Number(opcje.minimalnaPrzewaga ?? MINIMALNA_PRZEWAGA);
+    const candidates = kandydaciEventis(ogloszenia,organizacja,normalizedSourceTitle);
+    const exactMatches = candidates.filter(kandydat => kandydat.matchType === "EXACT");
+
+    if (exactMatches.length === 1) {
+      return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:exactMatches[0],candidates,reason:"EXACT_MATCH",confidence:1};
+    }
+    if (exactMatches.length > 1) {
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"MULTIPLE_EXACT_MATCHES",confidence:1};
+    }
+
+    const najlepszy = candidates[0];
+    const drugi = candidates[1];
+    if (!najlepszy || najlepszy.score < prog) {
+      return {status:STATUSY_RESOLVERA.NOT_FOUND,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"NO_SUFFICIENT_FUZZY_MATCH",confidence:najlepszy?.score || 0};
+    }
+    if (drugi && najlepszy.score - drugi.score < przewaga) {
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"FUZZY_MATCHES_TOO_CLOSE",confidence:najlepszy.score};
+    }
+    return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:najlepszy,candidates,reason:"STRONG_FUZZY_MATCH",confidence:najlepszy.score};
+  }
 
   function pobierzIdEventisZUrl(wartosc) {
     try {
@@ -43,17 +106,13 @@
   }
 
   function dopasujKolejkeDoOgloszen(elementy = [], ogloszenia = [], organizacja, opcje = {}) {
-    const prog = Number(opcje.prog ?? PROG_DOPASOWANIA);
-    const przewaga = Number(opcje.minimalnaPrzewaga ?? MINIMALNA_PRZEWAGA);
     const propozycje = pogrupujElementyKolejki(elementy,organizacja).map(grupa => {
-      const wyniki = ogloszenia
-        .filter(ogloszenie => ogloszenie.eventisId && ogloszenie.url)
-        .map(ogloszenie => ({ ogloszenie, wynik:najlepszyWynikDlaOgloszenia(grupa.tytul,ogloszenie) }))
-        .sort((a,b) => b.wynik - a.wynik);
-      const najlepszy = wyniki[0];
-      const drugi = wyniki[1];
-      const jednoznaczne = !!najlepszy && najlepszy.wynik >= prog && (!drugi || najlepszy.wynik - drugi.wynik >= przewaga);
-      return { grupa, wyniki, najlepszy, jednoznaczne };
+      const resolver = rozwiazGrupeTytulu(grupa,ogloszenia,organizacja,opcje);
+      const wyniki = resolver.candidates.map(kandydat => ({
+        ogloszenie:{eventisId:kandydat.eventId,url:kandydat.url,tytul:kandydat.title},
+        wynik:kandydat.score
+      }));
+      return {grupa,resolver,wyniki,najlepszy:wyniki[0],jednoznaczne:resolver.status === STATUSY_RESOLVERA.AUTO_MATCH};
     });
 
     const wedlugOgloszenia = new Map();
@@ -80,8 +139,9 @@
         nierozpoznane.push({
           tytul:propozycja.grupa.tytul,
           elementy:propozycja.grupa.elementy,
-          powod:kolizja ? "COLLISION" : propozycja.najlepszy?.wynik >= prog ? "AMBIGUOUS" : "NO_MATCH",
-          najlepszyWynik:propozycja.najlepszy?.wynik || 0
+          powod:kolizja ? "COLLISION" : propozycja.resolver.status === STATUSY_RESOLVERA.AMBIGUOUS ? "AMBIGUOUS" : "NO_MATCH",
+          najlepszyWynik:propozycja.resolver.confidence,
+          resolver:propozycja.resolver
         });
       }
     }
@@ -134,8 +194,10 @@
     PROG_DOPASOWANIA,
     MINIMALNA_PRZEWAGA,
     CZAS_WAZNOSCI_SERII_MS,
+    STATUSY_RESOLVERA,
     pobierzIdEventisZUrl,
     pogrupujElementyKolejki,
+    rozwiazGrupeTytulu,
     dopasujKolejkeDoOgloszen,
     czyMapowanieGotoweDoAutomatyzacji,
     utworzSerieAutomatyczna,
