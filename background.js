@@ -67,6 +67,7 @@ async function otworzPlanEventis(pozycje, organizacja) {
   for (let indeks = 0; indeks < zadania.length; indeks++) {
     const url = new URL(zadania[indeks].eventUrl);
     url.searchParams.set("esyncSession",sessionId);
+    url.searchParams.set("esyncTask",String(zadania[indeks].eventId));
     await chrome.tabs.create({url:url.href,active:indeks === 0});
   }
   return {ok:true,...plan,opened:zadania.length,sessionId};

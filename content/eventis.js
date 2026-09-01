@@ -18,6 +18,8 @@
   const NARZEDZIA_OPERACJI = globalThis.NarzedziaOperacjiEventis;
   const NARZEDZIA_LISTY = globalThis.NarzedziaListyEventis;
   const NARZEDZIA_POL_RICH_TEXT = globalThis.NarzedziaPolRichTextEventis;
+  const NARZEDZIA_OTWIERANIA = globalThis.OtwieranieWydarzenEventis;
+  const MAPOWANIA_WYDARZEN = globalThis.MapowaniaWydarzenEventis;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
   if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
@@ -27,6 +29,7 @@
   if (!NARZEDZIA_OPERACJI) throw new Error("Nie załadowano obsługi operacji Eventis.");
   if (!NARZEDZIA_LISTY) throw new Error("Nie załadowano obsługi listy Eventis.");
   if (!NARZEDZIA_POL_RICH_TEXT) throw new Error("Nie załadowano obsługi pól rich-text.");
+  if (!NARZEDZIA_OTWIERANIA || !MAPOWANIA_WYDARZEN) throw new Error("Nie załadowano obsługi sesji otwierania Eventis.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
@@ -69,6 +72,7 @@
     eventisImportQueue: [],
     pendingOperation: null,
     pendingLooksSaved: false,
+    weryfikacjaOtwartejKarty: null,
     formularzZmieniony: false,
     poczatkowyOdciskFormularza: "",
     analizaTerminowWykonana: false,
@@ -767,6 +771,48 @@
     el.dispatchEvent(new Event("change",{bubbles:true}));
   }
 
+  async function zweryfikujKarteSesjiOtwarcia() {
+    const parametry = new URLSearchParams(location.search);
+    const sessionId = parametry.get("esyncSession") || "";
+    const taskId = parametry.get("esyncTask") || "";
+    if (!sessionId && !taskId) return null;
+    const dane = await storageGet(["eventisOpeningSessions",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+    const sesje = dane.eventisOpeningSessions || {};
+    const sesja = sesje[sessionId] || null;
+    const zadanie = sesja?.tasks?.find(element => String(element.taskId || element.eventId) === String(taskId));
+    const magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+    const mapowanie = zadanie ? MAPOWANIA_WYDARZEN.pobierzMapowanie(magazynMapowan,zadanie.organization || sesja.organization,zadanie.normalizedSourceTitle) : null;
+    const wynik = NARZEDZIA_OTWIERANIA.zweryfikujOtwartaKarte(sesja,{
+      sessionId,
+      taskId,
+      organization:state.organization,
+      eventUrl:location.href,
+      eventTitle:getEventisTitle()
+    },mapowanie);
+    state.weryfikacjaOtwartejKarty=wynik;
+    if (sesja) {
+      sesje[sessionId]=NARZEDZIA_OTWIERANIA.zapiszWynikWeryfikacjiSesji(sesja,wynik);
+      await storageSet({eventisOpeningSessions:sesje});
+    }
+    if (wynik.invalidMapping && zadanie) {
+      const zaktualizowanyMagazyn = MAPOWANIA_WYDARZEN.oznaczMapowanieNieprawidlowe(magazynMapowan,zadanie.organization || sesja.organization,zadanie.normalizedSourceTitle);
+      await storageSet({[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]:zaktualizowanyMagazyn});
+    }
+    await audit("OPENING_SESSION_PAGE_VERIFIED",{sessionId,taskId,status:wynik.status,reason:wynik.reason});
+    return wynik;
+  }
+
+  function renderujWeryfikacjeOtwartejKarty() {
+    const wynik = state.weryfikacjaOtwartejKarty;
+    if (!wynik) return "";
+    const poprawna = wynik.status === "VERIFIED";
+    const klasa = poprawna ? "esync-success" : "esync-danger";
+    const opis = poprawna
+      ? `VERIFIED · sesja ${wynik.sessionId} · grupa „${wynik.task?.sourceTitle || ""}” · Eventis #${wynik.eventId}`
+      : `${wynik.status} · ${wynik.reason}. Automatyczne wprowadzanie danych z tej sesji zostało zatrzymane.`;
+    return `<div class="esync-card ${klasa}"><b>Weryfikacja otwartej karty</b><div class="esync-small">${esc(opis)}</div></div>`;
+  }
+
   async function ustawPoleRichText(pole, html, dodatkoweDane = {}) {
     const wynik = await chrome.runtime.sendMessage({type:"SET_RICH_FIELD",name:pole,html,...dodatkoweDane});
     if (wynik?.ok) return wynik;
@@ -898,6 +944,9 @@
   }
 
   async function addSelectedTerms(terms) {
+    if (state.weryfikacjaOtwartejKarty && state.weryfikacjaOtwartejKarty.status !== "VERIFIED") {
+      throw new Error("Karta sesji nie przeszła weryfikacji. Formularz nie został zmieniony.");
+    }
     const existing = getExistingTerms();
     const keys = new Set(existing.map(existingKey));
     const toAdd = terms.filter(t=>!keys.has(existingKey(t)));
@@ -1684,7 +1733,7 @@
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderKolejkaCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderKolejkaCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
@@ -1758,6 +1807,7 @@
 
   async function init() {
     await loadSettingsAndState();
+    await zweryfikujKarteSesjiOtwarcia();
     render();
     obserwujZmianyFormularza();
     observeTitleChanges();

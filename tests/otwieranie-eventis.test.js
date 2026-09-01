@@ -53,4 +53,33 @@ test("sesja zachowuje kontekst SEMPER lub IIST po serializacji storage", () => {
   assert.equal(odtworzona.organization,"IIST");
   assert.equal(odtworzona.tasks[0].organization,"IIST");
   assert.equal(odtworzona.tasks[0].eventId,"1");
+  assert.equal(odtworzona.tasks[0].taskId,"1");
+  assert.equal(odtworzona.tasks[0].status,"PENDING");
+});
+
+test("karta zgodna z zadaniem sesji i cache otrzymuje VERIFIED", () => {
+  const sesja = narzedzia.utworzSesjeOtwarcia("sesja-1","SEMPER",[pozycja(1)]);
+  const mapowanie = {organization:"SEMPER",eventId:"1",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:"Tytuł wydarzenia"};
+  const wynik = narzedzia.zweryfikujOtwartaKarte(sesja,{sessionId:"sesja-1",taskId:"1",organization:"SEMPER",eventUrl:"https://eventis.pl/event/edit/1?esyncSession=sesja-1&esyncTask=1",eventTitle:"Tytuł wydarzenia"},mapowanie);
+  assert.equal(wynik.status,"VERIFIED");
+  assert.equal(wynik.invalidMapping,false);
+});
+
+test("inna karta lub organizacja daje INVALID bez unieważniania cache", () => {
+  const sesja = narzedzia.utworzSesjeOtwarcia("sesja-1","SEMPER",[pozycja(1)]);
+  const mapowanie = {organization:"SEMPER",eventId:"1",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:"Tytuł wydarzenia"};
+  const wynik = narzedzia.zweryfikujOtwartaKarte(sesja,{sessionId:"sesja-1",taskId:"1",organization:"IIST",eventUrl:"https://eventis.pl/event/edit/2",eventTitle:"Tytuł wydarzenia"},mapowanie);
+  assert.equal(wynik.status,"INVALID");
+  assert.equal(wynik.invalidMapping,false);
+});
+
+test("tytuł strony niezgodny z cache daje MISMATCH i wskazuje cache do unieważnienia", () => {
+  const sesja = narzedzia.utworzSesjeOtwarcia("sesja-1","SEMPER",[pozycja(1)]);
+  const mapowanie = {organization:"SEMPER",eventId:"1",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:"Prawo pracy"};
+  const wynik = narzedzia.zweryfikujOtwartaKarte(sesja,{sessionId:"sesja-1",taskId:"1",organization:"SEMPER",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:"Prawo podatkowe"},mapowanie);
+  assert.equal(wynik.status,"MISMATCH");
+  assert.equal(wynik.invalidMapping,true);
+  const zapisana = narzedzia.zapiszWynikWeryfikacjiSesji(sesja,wynik,"2026-09-01T12:00:00.000Z");
+  assert.equal(zapisana.tasks[0].status,"MISMATCH");
+  assert.equal(zapisana.tasks[0].actualEventTitle,"Prawo podatkowe");
 });

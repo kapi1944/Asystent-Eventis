@@ -52,16 +52,56 @@
       organization:organizacja,
       createdAt,
       tasks:zadania.map(zadanie => ({
+        taskId:String(zadanie.eventId || zadanie.selectedCandidate?.eventId),
         sourceTitle:zadanie.sourceTitle,
         normalizedSourceTitle:zadanie.normalizedSourceTitle,
         organization:zadanie.organization || organizacja,
         eventId:zadanie.eventId || zadanie.selectedCandidate?.eventId,
-        eventUrl:zadanie.eventUrl || zadanie.selectedCandidate?.url
+        eventUrl:zadanie.eventUrl || zadanie.selectedCandidate?.url,
+        status:"PENDING"
       }))
     };
   }
 
-  const interfejs = {bezpiecznyUrlEdycjiEventis,eventIdZUrl,utworzPlanOtwierania,utworzSesjeOtwarcia};
+  function zweryfikujOtwartaKarte(sesja, daneKarty, mapowanie) {
+    const identyfikatorSesji = String(daneKarty?.sessionId || "");
+    const identyfikatorZadania = String(daneKarty?.taskId || "");
+    const organizacja = String(daneKarty?.organization || "").toUpperCase();
+    const rzeczywistyEventId = eventIdZUrl(daneKarty?.eventUrl);
+    const rzeczywistyTytul = String(daneKarty?.eventTitle || "").replace(/\s+/g," ").trim();
+    const zadanie = sesja?.tasks?.find(element => String(element.taskId || element.eventId) === identyfikatorZadania);
+    const wynikBazowy = {sessionId:identyfikatorSesji,taskId:identyfikatorZadania,organization:organizacja,eventId:rzeczywistyEventId,eventTitle:rzeczywistyTytul};
+    if (!sesja || sesja.sessionId !== identyfikatorSesji || !zadanie) {
+      return {...wynikBazowy,status:"INVALID",reason:"SESSION_TASK_NOT_FOUND",task:null,invalidMapping:false};
+    }
+    const organizacjaZadania = String(zadanie.organization || sesja.organization || "").toUpperCase();
+    const oczekiwanyEventId = String(zadanie.eventId || "");
+    const oczekiwanyUrl = bezpiecznyUrlEdycjiEventis(zadanie.eventUrl);
+    if (!organizacja || organizacja !== organizacjaZadania || !rzeczywistyEventId || rzeczywistyEventId !== oczekiwanyEventId || eventIdZUrl(oczekiwanyUrl) !== oczekiwanyEventId) {
+      return {...wynikBazowy,status:"INVALID",reason:"PAGE_ID_OR_ORGANIZATION_INVALID",task:zadanie,invalidMapping:false};
+    }
+    if (!mapowanie || String(mapowanie.organization || "").toUpperCase() !== organizacjaZadania
+      || String(mapowanie.eventId || "") !== oczekiwanyEventId || eventIdZUrl(mapowanie.eventUrl) !== oczekiwanyEventId) {
+      return {...wynikBazowy,status:"INVALID",reason:"MAPPING_INVALID",task:zadanie,invalidMapping:!!mapowanie};
+    }
+    const normalizujTytul = wartosc => String(wartosc || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9ąćęłńóśźż]+/gi," ").replace(/\s+/g," ").trim();
+    if (!rzeczywistyTytul || normalizujTytul(rzeczywistyTytul) !== normalizujTytul(mapowanie.eventTitle)) {
+      return {...wynikBazowy,status:"MISMATCH",reason:"EVENT_TITLE_MISMATCH",task:zadanie,invalidMapping:true};
+    }
+    return {...wynikBazowy,status:"VERIFIED",reason:"PAGE_AND_MAPPING_VERIFIED",task:zadanie,invalidMapping:false};
+  }
+
+  function zapiszWynikWeryfikacjiSesji(sesja, wynik, teraz = new Date().toISOString()) {
+    if (!sesja || !wynik?.taskId) return sesja;
+    return {
+      ...sesja,
+      tasks:(sesja.tasks || []).map(zadanie => String(zadanie.taskId || zadanie.eventId) === String(wynik.taskId)
+        ? {...zadanie,status:wynik.status,verificationReason:wynik.reason,verifiedAt:teraz,actualEventId:wynik.eventId,actualEventTitle:wynik.eventTitle}
+        : zadanie)
+    };
+  }
+
+  const interfejs = {bezpiecznyUrlEdycjiEventis,eventIdZUrl,utworzPlanOtwierania,utworzSesjeOtwarcia,zweryfikujOtwartaKarte,zapiszWynikWeryfikacjiSesji};
   globalny.OtwieranieWydarzenEventis = interfejs;
   if (typeof module !== "undefined" && module.exports) module.exports = interfejs;
 })(typeof globalThis !== "undefined" ? globalThis : this);

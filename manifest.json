@@ -39,6 +39,7 @@
         "shared/operacje-eventis.js",
         "shared/lista-eventis.js",
         "shared/mapowania-wydarzen-eventis.js",
+        "shared/otwieranie-wydarzen-eventis.js",
         "shared/pola-rich-text.js",
         "content/eventis.js"
       ],
