@@ -85,3 +85,12 @@ test("tytuł strony niezgodny z cache daje MISMATCH i wskazuje cache do unieważ
   assert.equal(zapisana.tasks[0].status,"MISMATCH");
   assert.equal(zapisana.tasks[0].actualEventTitle,"Prawo podatkowe");
 });
+
+test("chwilowy brak tytułu strony nie unieważnia cache", () => {
+  const sesja = narzedzia.utworzSesjeOtwarcia("sesja-1","SEMPER",[pozycja(1)]);
+  const mapowanie = {organization:"SEMPER",eventId:"1",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:"Prawo pracy"};
+  const wynik = narzedzia.zweryfikujOtwartaKarte(sesja,{sessionId:"sesja-1",taskId:"1",organization:"SEMPER",eventUrl:"https://eventis.pl/event/edit/1",eventTitle:""},mapowanie);
+  assert.equal(wynik.status,"INVALID");
+  assert.equal(wynik.reason,"PAGE_TITLE_MISSING");
+  assert.equal(wynik.invalidMapping,false);
+});

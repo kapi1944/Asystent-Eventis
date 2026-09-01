@@ -86,7 +86,10 @@
       return {...wynikBazowy,status:"INVALID",reason:"MAPPING_INVALID",task:zadanie,invalidMapping:!!mapowanie};
     }
     const normalizujTytul = wartosc => String(wartosc || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9ąćęłńóśźż]+/gi," ").replace(/\s+/g," ").trim();
-    if (!rzeczywistyTytul || normalizujTytul(rzeczywistyTytul) !== normalizujTytul(mapowanie.eventTitle)) {
+    if (!rzeczywistyTytul) {
+      return {...wynikBazowy,status:"INVALID",reason:"PAGE_TITLE_MISSING",task:zadanie,invalidMapping:false};
+    }
+    if (normalizujTytul(rzeczywistyTytul) !== normalizujTytul(mapowanie.eventTitle)) {
       return {...wynikBazowy,status:"MISMATCH",reason:"EVENT_TITLE_MISMATCH",task:zadanie,invalidMapping:true};
     }
     return {...wynikBazowy,status:"VERIFIED",reason:"PAGE_AND_MAPPING_VERIFIED",task:zadanie,invalidMapping:false};

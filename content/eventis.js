@@ -799,6 +799,7 @@
     const zadanie = sesja?.tasks?.find(element => String(element.taskId || element.eventId) === String(taskId));
     const magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     const mapowanie = zadanie ? MAPOWANIA_WYDARZEN.pobierzMapowanie(magazynMapowan,zadanie.organization || sesja.organization,zadanie.normalizedSourceTitle) : null;
+    for (let proba=0;proba<10 && !getEventisTitle();proba++) await sleep(100);
     const wynik = NARZEDZIA_OTWIERANIA.zweryfikujOtwartaKarte(sesja,{
       sessionId,
       taskId,
