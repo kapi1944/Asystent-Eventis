@@ -108,6 +108,7 @@ test("rozliczenie pending operation zmienia tylko powiązane elementy właściwe
   const wynik = kolejka.rozliczElementyOperacji(elementy,operacja,"ERROR","Nieudany zapis");
   assert.equal(wynik[0].status,"ERROR");
   assert.equal(wynik[0].errorMessage,"Nieudany zapis");
+  assert.ok(wynik[0].saveErrorAt);
   assert.equal(wynik[1].status,"WAITING_FOR_SAVE");
   assert.equal(wynik[2].status,"PENDING");
 });
@@ -193,6 +194,7 @@ test("cztery terminy przechodzą zbiorczo przez PENDING, WAITING_FOR_SAVE i DONE
   assert.deepEqual(oczekujace.slice(0,4).map(element => element.status),["WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE","WAITING_FOR_SAVE"]);
   assert.equal(oczekujace[4].status,"PENDING");
   assert.equal(oczekujace[5].status,"PENDING");
+  assert.ok(oczekujace[0].filledAt);
 
   const operacje = {[operacja.operationScopeKey]:operacja};
   const poReloadzie = kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","987",tytul);
@@ -203,6 +205,8 @@ test("cztery terminy przechodzą zbiorczo przez PENDING, WAITING_FOR_SAVE i DONE
   assert.deepEqual(zakonczone.slice(0,4).map(element => element.status),["DONE","DONE","DONE","DONE"]);
   assert.equal(zakonczone[4].status,"PENDING");
   assert.equal(zakonczone[5].status,"PENDING");
+  assert.equal(zakonczone[0].completionReason,"SAVED");
+  assert.ok(zakonczone[0].savedAt);
 });
 
 test("ponowne wklejenie aktywnej listy daje zero nowych i cztery duplikaty", () => {

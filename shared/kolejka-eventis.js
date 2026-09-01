@@ -215,7 +215,7 @@
       element.organization === operacja.organization
         && identyfikatory.has(element.id)
         && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status)
-        ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId }
+        ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId, filledAt:new Date().toISOString() }
         : element
     );
   }
@@ -227,7 +227,11 @@
       element.organization === operacja.organization
         && identyfikatory.has(element.id)
         && (!operacja.operationId || element.operationId === operacja.operationId)
-        ? zmienStatusElementu(element,status,komunikatBledu)
+        ? {
+          ...zmienStatusElementu(element,status,komunikatBledu),
+          ...(status === STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE ? {completionReason:"SAVED",savedAt:new Date().toISOString()} : {}),
+          ...(status === STATUSY_KOLEJKI_EVENTIS.BLAD ? {saveErrorAt:new Date().toISOString()} : {})
+        }
         : element
     );
   }

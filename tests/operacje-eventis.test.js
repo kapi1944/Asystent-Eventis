@@ -140,3 +140,11 @@ test("nowa operacja nie rozlicza starego WAITING_FOR_SAVE bez ownership", () => 
 
   assert.equal(wynik[0].status,"WAITING_FOR_SAVE");
 });
+
+test("wysłanie formularza ma osobny stan przed potwierdzeniem zapisu", () => {
+  const operacja = {operationId:"operacja-1",status:"WAITING_FOR_SAVE"};
+  const wyslana = operacje.oznaczWyslanieZapisu(operacja,"2026-09-01T14:00:00.000Z");
+  assert.equal(wyslana.status,"SAVE_SUBMITTED");
+  assert.equal(wyslana.saveRequestedAt,"2026-09-01T14:00:00.000Z");
+  assert.equal(operacje.oznaczWyslanieZapisu({...operacja,status:"CLAIMED"}),null);
+});

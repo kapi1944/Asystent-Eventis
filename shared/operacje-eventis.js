@@ -33,7 +33,12 @@
     return { ok:true, operacja:wynikClaimu.operacja, wynik:await mutujFormularz(wynikClaimu.operacja) };
   }
 
-  const interfejs = { utworzOperationId, kluczClaimuOperacji, uzyskajClaimOperacji, wykonajPoUzyskaniuClaimu };
+  function oznaczWyslanieZapisu(operacja, teraz = new Date().toISOString()) {
+    if (!operacja || operacja.status !== "WAITING_FOR_SAVE") return null;
+    return {...operacja,status:"SAVE_SUBMITTED",saveRequestedAt:teraz};
+  }
+
+  const interfejs = { utworzOperationId, kluczClaimuOperacji, uzyskajClaimOperacji, wykonajPoUzyskaniuClaimu, oznaczWyslanieZapisu };
   globalny.NarzedziaOperacjiEventis = interfejs;
   if (typeof module !== "undefined" && module.exports) module.exports = interfejs;
 })(typeof globalThis !== "undefined" ? globalThis : this);

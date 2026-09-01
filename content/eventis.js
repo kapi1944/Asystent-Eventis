@@ -748,10 +748,26 @@
       || null;
   }
 
-  function zapiszFormularzZPanelu() {
+  async function zapiszFormularzZPanelu() {
     if (!state.formularzZmieniony) return;
     const formularz = $("#eventForm");
     if (!formularz) return toast("Nie znaleziono formularza Eventis.");
+    if (state.pendingOperation?.status === "SAVE_SUBMITTED") return toast("Żądanie zapisu zostało już wysłane. Oczekuję na wynik Eventis.");
+    if (state.pendingOperation?.status === "WAITING_FOR_SAVE") {
+      const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+      const klucz = kluczStorageOperacji(state.pendingOperation);
+      const aktualnaOperacja = pendingOperations[klucz];
+      if (identyfikatorOperacji(aktualnaOperacja) !== identyfikatorOperacji(state.pendingOperation)) {
+        return toast("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
+      }
+      const wyslanaOperacja = NARZEDZIA_OPERACJI.oznaczWyslanieZapisu(aktualnaOperacja);
+      if (!wyslanaOperacja) return toast("Operacja nie jest gotowa do zapisu.");
+      pendingOperations[klucz]=wyslanaOperacja;
+      await storageSet({pendingOperations});
+      state.pendingOperation=wyslanaOperacja;
+      state.status="SAVE_SUBMITTED";
+      render();
+    }
     const przyciskZapisu = znajdzPrzyciskZapisu();
     if (przyciskZapisu) przyciskZapisu.click();
     else formularz.requestSubmit();
@@ -760,7 +776,7 @@
   function wykonajAkcjePanelu() {
     const przycisk = $("#esync-panel-action");
     if (przycisk?.dataset.action === "close") chrome.runtime.sendMessage({type:"CLOSE_TAB"});
-    else zapiszFormularzZPanelu();
+    else zapiszFormularzZPanelu().catch(blad=>toast(`Nie udało się rozpocząć zapisu: ${blad.message}`));
   }
 
   function setValue(el,val) {
@@ -1080,7 +1096,8 @@
       expectedTerms:terms.map(przygotujTerminDoKolejki),
       queueItemIds:[...queueItemIds],
       skipSheetOutbox:queueItemIds.length>0,
-      status:"WAITING_FOR_SAVE"
+      status:"WAITING_FOR_SAVE",
+      filledAt:new Date().toISOString()
     };
     pendingOperations[key]=potwierdzona;
     const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
@@ -1151,7 +1168,7 @@
     await storageSet({pendingOperations,sheetOutbox,eventisImportQueue:zaktualizowanaKolejka});
     state.eventisImportQueue=zaktualizowanaKolejka;
     await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:terminyOperacji(op)});
-    state.pendingOperation=null; state.pendingLooksSaved=false;
+    state.pendingOperation=null; state.pendingLooksSaved=false; state.status="SAVED";
     toast(op.queueItemIds?.length ? "Zapis Eventis potwierdzony. Pozycje kolejki oznaczono jako zakończone." : "Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
     render();
   }
@@ -1169,6 +1186,8 @@
     state.eventisImportQueue=zaktualizowanaKolejka;
     state.pendingOperation=null;
     state.pendingLooksSaved=false;
+    state.status="SAVE_ERROR";
+    state.lastError=komunikat;
     await audit("EVENTIS_SAVE_FAILED",{terms:terminyOperacji(op),queueItemIds:op.queueItemIds || []});
     render();
     toast("Nieudany zapis rozliczono. Powiązane pozycje kolejki można ponowić.");
@@ -1737,9 +1756,14 @@
   }
 
   function renderPendingCard(){
-    if(!state.pendingOperation) return "";
-    if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID) return `<div class="esync-card"><div class="esync-warning"><b>⏳ Oczekiwanie na ręczny zapis Eventis</b><div class="esync-small">Po zapisaniu i przeładowaniu strony rozszerzenie zweryfikuje obecność nowych terminów.</div></div></div>`;
-    if(state.pendingLooksSaved) return `<div class="esync-card"><div class="esync-warning"><b>⚠ Terminy są widoczne po ponownym otwarciu strony</b><div class="esync-small">Nie wykryłem jednoznacznego komunikatu sukcesu Eventis. Jeżeli zapis rzeczywiście się udał, potwierdź ręcznie.</div><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam: Eventis zapisał zmiany</button></div></div>`;
+    if(!state.pendingOperation) {
+      if(state.status==="SAVED") return `<div class="esync-card"><div class="esync-success"><b>✓ Zapis Eventis potwierdzony</b><div class="esync-small">Powiązane terminy mają status DONE.</div></div></div>`;
+      if(state.status==="SAVE_ERROR") return `<div class="esync-card"><div class="esync-danger"><b>✕ Błąd zapisu Eventis</b><div class="esync-small">${esc(state.lastError||"Zapis nie został potwierdzony.")}</div></div></div>`;
+      return "";
+    }
+    if(state.pendingLooksSaved) return `<div class="esync-card"><div class="esync-warning"><b>⚠ Formularz zawiera oczekiwane terminy, zapis wymaga potwierdzenia</b><div class="esync-small">Nie wykryłem jednoznacznego komunikatu sukcesu Eventis. Jeżeli zapis rzeczywiście się udał, potwierdź ręcznie.</div><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam: Eventis zapisał zmiany</button></div></div>`;
+    if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID && state.pendingOperation.status==="WAITING_FOR_SAVE") return `<div class="esync-card"><div class="esync-warning"><b>1/2 Formularz wypełniony — jeszcze niezapisany</b><div class="esync-small">Sprawdź dane i użyj przycisku „Zapisz kartę”. Rozszerzenie nie zapisze ich bez Twojej decyzji.</div></div></div>`;
+    if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID && state.pendingOperation.status==="SAVE_SUBMITTED") return `<div class="esync-card"><div class="esync-info"><b>2/2 Żądanie zapisu wysłane</b><div class="esync-small">Oczekiwanie na odpowiedź lub przeładowanie strony Eventis. To nie jest jeszcze potwierdzenie zapisu.</div><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Zapis nie przeszedł — oznacz błąd</button></div></div>`;
     return `<div class="esync-card"><div class="esync-danger"><b>Nie potwierdzono zapisu</b><div class="esync-small">Istnieje oczekująca operacja, ale nie wszystkie dodane terminy są obecne w formularzu po ponownym otwarciu.</div><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Oznacz zapis jako nieudany</button></div></div>`;
   }
 
@@ -1780,7 +1804,7 @@
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderKolejkaCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${!zamknijKarte&&!state.formularzZmieniony?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}${renderKolejkaCard()}${renderManualCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
