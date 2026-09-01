@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SEMPER / IIST Eventis Sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wspomaga bezpieczną synchronizację potwierdzonych terminów szkoleń SEMPER/IIST z ogłoszeniami Eventis.",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -48,12 +48,15 @@
     },
     {
       "matches": [
+        "https://eventis.pl/company*",
+        "https://*.eventis.pl/company*",
         "https://eventis.pl/company/listevents*",
         "https://*.eventis.pl/company/listevents*"
       ],
       "js": [
         "shared/config.js",
         "shared/wyszukiwanie.js",
+        "shared/terminy.js",
         "shared/arkusz.js",
         "shared/kolejka-eventis.js",
         "shared/lista-eventis.js",
