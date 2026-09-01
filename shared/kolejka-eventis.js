@@ -73,7 +73,7 @@
     const nowe = [];
     let pominieteDuplikaty = 0;
     for (const rekord of rekordy || []) {
-      if (rekord.status !== "CONFIRMED" || rekord.error) continue;
+      if (!["CONFIRMED","DECONFIRMED"].includes(rekord.status) || rekord.error) continue;
       const recordKey = NARZEDZIA_ARKUSZA.recordKey(rekord);
       const klucz = kluczKolejki(organizacja,recordKey);
       if (klucze.has(klucz)) {
@@ -89,6 +89,19 @@
 
   function filtrujKolejkeOrganizacji(kolejka = [], organizacja) {
     return (kolejka || []).filter(element => element.organization === organizacja);
+  }
+
+  function przypiszElementyDoZadania(kolejka = [], zadanie, organizacja) {
+    const identyfikatory = new Set(zadanie?.queueItemIds || zadanie?.identyfikatoryKolejki || []);
+    const tytulGrupy = String(zadanie?.normalizedSourceTitle || "");
+    if (!identyfikatory.size || !tytulGrupy || zadanie?.status !== "VERIFIED") return [];
+    return (kolejka || []).filter(element =>
+      element.organization === organizacja
+      && identyfikatory.has(element.id)
+      && String(element.normalizedTitle || "") === tytulGrupy
+      && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status)
+      && ["CONFIRMED","DECONFIRMED"].includes(element.recordStatus)
+    );
   }
 
   function podsumujKolejke(kolejka = []) {
@@ -203,6 +216,7 @@
     utworzElementKolejki,
     przygotujElementyKolejki,
     filtrujKolejkeOrganizacji,
+    przypiszElementyDoZadania,
     podsumujKolejke,
     dopasujElementKolejkiDoTerminow,
     rozdzielDopasowaniaKolejki,

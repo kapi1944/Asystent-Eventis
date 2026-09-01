@@ -7,7 +7,7 @@ const arkusz = require("../shared/arkusz");
 
 const rekord = {status:"CONFIRMED",title:"Prawo pracy",normalizedTitle:"prawo pracy",start:"2026-09-28",end:"2026-09-29",city:"Warszawa",participants:8,rawText:"źródło"};
 
-test("kolejka przyjmuje tylko potwierdzone rekordy i pomija duplikaty semantyczne", () => {
+test("kolejka przyjmuje potwierdzone i odpotwierdzone rekordy oraz pomija duplikaty semantyczne", () => {
   const pierwszy = kolejka.przygotujElementyKolejki([rekord,{...rekord}],[],{organization:"SEMPER",now:"2026-08-25T10:00:00.000Z"});
   assert.equal(pierwszy.items.length,1);
   assert.equal(pierwszy.duplicates,1);
@@ -15,6 +15,21 @@ test("kolejka przyjmuje tylko potwierdzone rekordy i pomija duplikaty semantyczn
   assert.equal(pierwszy.items[0].status,"PENDING");
   assert.equal(pierwszy.items[0].organization,"SEMPER");
   assert.equal(pierwszy.items[0].price,undefined);
+  const odpotwierdzony = kolejka.przygotujElementyKolejki([{...rekord,status:"DECONFIRMED"}],pierwszy.items,{organization:"SEMPER"});
+  assert.equal(odpotwierdzony.items.length,1);
+  assert.equal(odpotwierdzony.items[0].recordStatus,"DECONFIRMED");
+});
+
+test("zweryfikowane zadanie otrzymuje tylko własną grupę i organizację", () => {
+  const elementy = [
+    {id:"wlasny-potwierdzony",organization:"SEMPER",normalizedTitle:"prawo pracy",recordStatus:"CONFIRMED",status:"PENDING"},
+    {id:"wlasny-odpotwierdzony",organization:"SEMPER",normalizedTitle:"prawo pracy",recordStatus:"DECONFIRMED",status:"ERROR"},
+    {id:"obcy-tytul",organization:"SEMPER",normalizedTitle:"prawo podatkowe",recordStatus:"CONFIRMED",status:"PENDING"},
+    {id:"obca-organizacja",organization:"IIST",normalizedTitle:"prawo pracy",recordStatus:"CONFIRMED",status:"PENDING"}
+  ];
+  const zadanie = {status:"VERIFIED",normalizedSourceTitle:"prawo pracy",queueItemIds:elementy.map(element => element.id)};
+  assert.deepEqual(kolejka.przypiszElementyDoZadania(elementy,zadanie,"SEMPER").map(element => element.id),["wlasny-potwierdzony","wlasny-odpotwierdzony"]);
+  assert.deepEqual(kolejka.przypiszElementyDoZadania(elementy,{...zadanie,status:"MISMATCH"},"SEMPER"),[]);
 });
 
 test("SEMPER i IIST mają niezależne klucze oraz rekordy kolejki", () => {

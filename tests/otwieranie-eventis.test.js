@@ -10,7 +10,8 @@ function pozycja(numer, organizacja = "SEMPER") {
     normalizedSourceTitle:`tytul ${numer}`,
     organization:organizacja,
     status:"READY",
-    selectedCandidate:{eventId:String(numer),url:`https://eventis.pl/event/edit/${numer}`}
+    selectedCandidate:{eventId:String(numer),url:`https://eventis.pl/event/edit/${numer}`},
+    queueItemIds:[`kolejka-${numer}`]
   };
 }
 
@@ -55,6 +56,7 @@ test("sesja zachowuje kontekst SEMPER lub IIST po serializacji storage", () => {
   assert.equal(odtworzona.tasks[0].eventId,"1");
   assert.equal(odtworzona.tasks[0].taskId,"1");
   assert.equal(odtworzona.tasks[0].status,"PENDING");
+  assert.deepEqual(odtworzona.tasks[0].queueItemIds,["kolejka-1"]);
 });
 
 test("karta zgodna z zadaniem sesji i cache otrzymuje VERIFIED", () => {

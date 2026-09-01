@@ -122,9 +122,9 @@
         ? rozstrzygniecie.selectedCandidate
         : [STATUSY_RESOLVERA.AUTO_MATCH,"KNOWN_MAPPING"].includes(rozstrzygniecie.status) ? rozstrzygniecie.selectedCandidate : null;
       if (wybrany) {
-        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"READY",selectedCandidate:wybrany});
+        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"READY",selectedCandidate:wybrany,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else if (rozstrzygniecie.manualStatus === "SKIPPED") {
-        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"SKIPPED",selectedCandidate:null});
+        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"SKIPPED",selectedCandidate:null,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else {
         nierozstrzygniete++;
       }

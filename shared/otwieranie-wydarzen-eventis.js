@@ -58,6 +58,7 @@
         organization:zadanie.organization || organizacja,
         eventId:zadanie.eventId || zadanie.selectedCandidate?.eventId,
         eventUrl:zadanie.eventUrl || zadanie.selectedCandidate?.url,
+        queueItemIds:[...(zadanie.queueItemIds || zadanie.identyfikatoryKolejki || [])],
         status:"PENDING"
       }))
     };

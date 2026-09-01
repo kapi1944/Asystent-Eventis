@@ -73,6 +73,7 @@
     pendingOperation: null,
     pendingLooksSaved: false,
     weryfikacjaOtwartejKarty: null,
+    przypisaneElementyKolejki: [],
     formularzZmieniony: false,
     poczatkowyOdciskFormularza: "",
     analizaTerminowWykonana: false,
@@ -790,6 +791,9 @@
       eventTitle:getEventisTitle()
     },mapowanie);
     state.weryfikacjaOtwartejKarty=wynik;
+    state.przypisaneElementyKolejki = wynik.status === "VERIFIED"
+      ? NARZEDZIA_KOLEJKI.przypiszElementyDoZadania(state.eventisImportQueue,{...zadanie,status:wynik.status},state.organization)
+      : [];
     if (sesja) {
       sesje[sessionId]=NARZEDZIA_OTWIERANIA.zapiszWynikWeryfikacjiSesji(sesja,wynik);
       await storageSet({eventisOpeningSessions:sesje});
@@ -1230,6 +1234,9 @@
     const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
     const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
     state.eventisImportQueue=modyfikator(aktualnaKolejka);
+    if (state.weryfikacjaOtwartejKarty?.status === "VERIFIED") {
+      state.przypisaneElementyKolejki=NARZEDZIA_KOLEJKI.przypiszElementyDoZadania(state.eventisImportQueue,{...state.weryfikacjaOtwartejKarty.task,status:"VERIFIED"},state.organization);
+    }
     await storageSet({eventisImportQueue:state.eventisImportQueue});
     return state.eventisImportQueue;
   }
@@ -1237,17 +1244,23 @@
   async function odswiezKolejke() {
     const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
     state.eventisImportQueue=Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
+    if (state.weryfikacjaOtwartejKarty?.status === "VERIFIED") {
+      state.przypisaneElementyKolejki=NARZEDZIA_KOLEJKI.przypiszElementyDoZadania(state.eventisImportQueue,{...state.weryfikacjaOtwartejKarty.task,status:"VERIFIED"},state.organization);
+    }
   }
 
   function dopasowaniaKolejkiDoBiezacegoTytulu() {
-    return NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
+    const elementy = state.weryfikacjaOtwartejKarty
+      ? state.przypisaneElementyKolejki
+      : NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
+        .filter(element => String(element.normalizedTitle || "") === normalize(state.eventisTitle));
+    return elementy
       .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status))
       .map(element => ({
         element,
         similarity:titleSimilarity(state.eventisTitle,element.title),
         terminy:NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,state.sourceTerms)
-      }))
-      .filter(dopasowanie => dopasowanie.similarity >= .58);
+      }));
   }
 
   async function ponowKolejke(id) {
@@ -1263,7 +1276,10 @@
     if (!await sprawdzBrakOczekujacejOperacji()) return;
     await odswiezKolejke();
     const dozwolone = identyfikatoryDozwolone ? new Set(identyfikatoryDozwolone) : null;
-    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu().filter(dopasowanie => !dozwolone || dozwolone.has(dopasowanie.element.id));
+    const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu().filter(dopasowanie =>
+      dopasowanie.element.recordStatus === "CONFIRMED"
+      && (!dozwolone || dozwolone.has(dopasowanie.element.id))
+    );
     const {jednoznaczne,nierozwiazane,duplikatyTerminow}=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania);
     if (nierozwiazane.length || duplikatyTerminow.length) {
       await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element => {
@@ -1718,8 +1734,9 @@
     const kolejkaOrganizacji=NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization);
     const podsumowanie=NARZEDZIA_KOLEJKI.podsumujKolejke(kolejkaOrganizacji);
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu();
-    const gotowe=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowania).jednoznaczne;
-    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${dopasowania.length?`<div class="esync-small" style="margin-top:7px"><b>Pasujące do bieżącego szkolenia</b></div>${dopasowania.map(dopasowanie=>`<div class="esync-import-row"><div><div class="esync-term-main">${esc(dopasowanie.element.title)}</div><div class="esync-term-sub">${esc(dopasowanie.element.start)}${dopasowanie.element.end!==dopasowanie.element.start?` → ${esc(dopasowanie.element.end)}`:''} · ${esc(dopasowanie.element.city)}${dopasowanie.element.participants!=null?` · ${esc(dopasowanie.element.participants)} uczestn.`:''} · podobieństwo ${Math.round(dopasowanie.similarity*100)}%</div>${dopasowanie.element.errorMessage?`<div class="esync-small esync-danger">${esc(dopasowanie.element.errorMessage)}</div>`:''}</div>${dopasowanie.element.status===NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD?`<button class="esync-btn warn" data-queue-retry="${esc(dopasowanie.element.id)}">Ponów</button>`:''}</div>`).join('')} ${state.mappingVerifiedThisSession&&gotowe.length?`<button id="esync-add-queue-terms" class="esync-btn good" style="width:100%;margin-top:7px">Wprowadź terminy z kolejki (${gotowe.length})</button>`:''}`:`<div class="esync-small esync-muted" style="margin-top:7px">Na tym ogłoszeniu nie znaleziono oczekujących pozycji o podobnym tytule.</div>`}</div>`;
+    const potwierdzone=dopasowania.filter(dopasowanie=>dopasowanie.element.recordStatus === "CONFIRMED");
+    const gotowe=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(potwierdzone).jednoznaczne;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${dopasowania.length?`<div class="esync-small" style="margin-top:7px"><b>Przypisane wyłącznie do tej grupy tytułu</b></div>${dopasowania.map(dopasowanie=>`<div class="esync-import-row"><div><div class="esync-term-main"><span class="esync-badge ${dopasowanie.element.recordStatus==='CONFIRMED'?'green':'red'}">${dopasowanie.element.recordStatus}</span> ${esc(dopasowanie.element.title)}</div><div class="esync-term-sub">${esc(dopasowanie.element.start)}${dopasowanie.element.end!==dopasowanie.element.start?` → ${esc(dopasowanie.element.end)}`:''} · ${esc(dopasowanie.element.city)}${dopasowanie.element.participants!=null?` · ${esc(dopasowanie.element.participants)} uczestn.`:''}</div>${dopasowanie.element.errorMessage?`<div class="esync-small esync-danger">${esc(dopasowanie.element.errorMessage)}</div>`:''}</div>${dopasowanie.element.status===NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD?`<button class="esync-btn warn" data-queue-retry="${esc(dopasowanie.element.id)}">Ponów</button>`:''}</div>`).join('')} ${state.mappingVerifiedThisSession&&gotowe.length?`<button id="esync-add-queue-terms" class="esync-btn good" style="width:100%;margin-top:7px">Wprowadź terminy z kolejki (${gotowe.length})</button>`:''}`:`<div class="esync-small esync-muted" style="margin-top:7px">Ta karta nie ma przypisanych aktywnych pozycji swojej grupy.</div>`}</div>`;
   }
 
   async function renderOutboxStatus() {

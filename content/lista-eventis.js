@@ -86,7 +86,7 @@
   }
 
   function elementyDotyczaceRekordow(kolejka, rekordy) {
-    const klucze = new Set(rekordy.filter(rekord => rekord.status === "CONFIRMED" && !rekord.error).map(NARZEDZIA_ARKUSZA.recordKey));
+    const klucze = new Set(rekordy.filter(rekord => ["CONFIRMED","DECONFIRMED"].includes(rekord.status) && !rekord.error).map(NARZEDZIA_ARKUSZA.recordKey));
     return kolejka.filter(element => element.organization === stan.organizacja && klucze.has(element.recordKey));
   }
 
@@ -145,6 +145,7 @@
 
   async function otworzGotoweKarty() {
     const plan = finalnyPlanOtwarcia();
+    await chrome.storage.local.set({eventisImportQueue:stan.kolejka});
     const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:plan.pozycje,organization:stan.organizacja});
     if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
     stan.komunikat = odpowiedz.opened ? `Otwarto ${odpowiedz.opened} kart w sesji ${odpowiedz.sessionId}.` : "Nie otwarto nowych kart: wszystkie są już otwarte albo plan jest pusty.";
@@ -157,14 +158,14 @@
     const surowyTekst = pole?.value.trim() || "";
     if (!surowyTekst) return pokazKomunikat("Wklej listę potwierdzonych szkoleń.");
     const rekordy = NARZEDZIA_ARKUSZA.parseManualPaste(surowyTekst);
-    if (!rekordy.length) return pokazKomunikat("Nie znaleziono wierszy POTWIERDZONE SZKOLENIE.");
+    if (!rekordy.length) return pokazKomunikat("Nie znaleziono wierszy POTWIERDZONE SZKOLENIE ani ODPOTWIERDZONE.");
     const dane = await chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     const kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,kolejka,{organization:stan.organizacja});
     const kolejkaPodgladu = [...kolejka,...przygotowane.items];
     stan.surowyTekst = surowyTekst;
     stan.rekordy = rekordy;
-    stan.kolejka = kolejka;
+    stan.kolejka = kolejkaPodgladu;
     stan.mapowania = dane.mappings || {};
     stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ogloszenia = pobierzOgloszeniaZListy();
@@ -176,10 +177,10 @@
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
     stan.nierozpoznane = wynik.nierozpoznane;
     stan.rozstrzygniecia = [
-      ...wynik.dopasowane.map(dopasowanie => dopasowanie.resolver),
+      ...wynik.dopasowane.map(dopasowanie => ({...dopasowanie.resolver,queueItemIds:dopasowanie.elementy.map(element => element.id)})),
       ...wynik.nierozpoznane.map(pozycja => pozycja.powod === "COLLISION"
-        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION"}
-        : pozycja.resolver)
+        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION",queueItemIds:pozycja.elementy.map(element => element.id)}
+        : {...pozycja.resolver,queueItemIds:pozycja.elementy.map(element => element.id)})
     ];
     stan.decyzje = {};
     for (const rozstrzygniecie of stan.rozstrzygniecia) {

@@ -112,11 +112,12 @@ test("kolejność kandydatów resolvera jest deterministyczna", () => {
 });
 
 test("AUTO_MATCH trafia do planu bez ręcznego wyboru", () => {
-  const resolver = rozwiaz("Prawo pracy",[ogloszenie(101,"Prawo pracy")]);
+  const resolver = {...rozwiaz("Prawo pracy",[ogloszenie(101,"Prawo pracy")]),queueItemIds:["q1","q2"]};
   const plan = narzedzia.utworzPlanOtwarcia([resolver]);
   assert.equal(plan.gotoweDoOtwarcia,1);
   assert.equal(plan.nierozstrzygniete,0);
   assert.equal(plan.pozycje[0].selectedCandidate.eventId,"101");
+  assert.deepEqual(plan.pozycje[0].queueItemIds,["q1","q2"]);
 });
 
 test("AMBIGUOUS wymaga jednego wyboru i zastępuje poprzedni wybór", () => {
