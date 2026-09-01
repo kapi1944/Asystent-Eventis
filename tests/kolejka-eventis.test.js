@@ -127,6 +127,26 @@ test("pending operation z event/add nie jest wybierana przy niejednoznacznym tyt
   assert.equal(kolejka.znajdzOperacjeDlaStrony(operacje,"SEMPER","123","Prawo pracy"),null);
 });
 
+test("terminy już istniejące i duplikaty wejścia nie są ponownie wprowadzane", () => {
+  const istniejacy = {start:"2026-10-01",city:"Warszawa"};
+  const nowy = {start:"2026-10-02",city:"Online"};
+  const wynik = kolejka.rozdzielTerminyDoWprowadzenia([istniejacy,nowy,{...nowy}],[istniejacy]);
+  assert.deepEqual(wynik.doWprowadzenia,[nowy]);
+  assert.deepEqual(wynik.pominiete,[istniejacy,{...nowy}]);
+});
+
+test("błąd jednego terminu nie blokuje wypełnienia następnego", () => {
+  const terminy = [{start:"2026-10-01"},{start:"2026-10-02"},{start:"2026-10-03"}];
+  const wypelnione = [];
+  const wynik = kolejka.wypelnijTerminyOsobno(terminy,["formularz-1","formularz-2","formularz-3"],(formularz,termin) => {
+    if (termin.start === "2026-10-02") throw new Error("Błąd drugiego terminu");
+    wypelnione.push(formularz);
+  });
+  assert.deepEqual(wypelnione,["formularz-1","formularz-3"]);
+  assert.deepEqual(wynik.dodane,[terminy[0],terminy[2]]);
+  assert.equal(wynik.bledy[0].komunikat,"Błąd drugiego terminu");
+});
+
 test("cztery terminy przechodzą zbiorczo przez PENDING, WAITING_FOR_SAVE i DONE", () => {
   const tytul = "TEST KOLEJKA ZBIORCZA";
   const analiza = arkusz.analizujListeTerminow([

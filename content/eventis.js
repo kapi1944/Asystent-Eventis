@@ -924,22 +924,35 @@
   function fillTerm(form,term) {
     const id = form.id.split("_").pop();
     const typeSelect = $(`#eventdate_is_online_${id}`) || form.querySelector(`select[name="eventDate[${id}][is_online]"]`);
+    const dataPoczatkowa = $(`#eventdate_datestart_${id}`) || form.querySelector(`input[name="eventDate[${id}][date_start]"]`);
+    const dataKoncowa = $(`#eventdate_dateend_${id}`) || form.querySelector(`input[name="eventDate[${id}][date_end]"]`);
+    const potwierdzenie = form.querySelector(`select[name="eventDate[${id}][is_guaranteed]"]`);
+    const stawkaVat = form.querySelector(`input[name="eventDate[${id}][prices][0][taxRate]"]`);
+    const cena = form.querySelector(`input[name*="[price]"]`);
+    const opisOnline = form.querySelector(`textarea[name="eventDate[${id}][online_description]"]`);
+    const informacja = form.querySelector(`input[name="eventDate[${id}][info]"]`);
+    const region = form.querySelector(`select[name="eventDate[${id}][region_id]"]`);
+    const miasto = form.querySelector(`input[name="eventDate[${id}][city]"]`);
+    const wymaganePola = [typeSelect,dataPoczatkowa,dataKoncowa,potwierdzenie,stawkaVat,cena,term.city === "Online" ? opisOnline : informacja,term.city === "Online" ? opisOnline : region,term.city === "Online" ? opisOnline : miasto];
+    if (!term.start || !term.end || !term.city || term.price == null) throw new Error("Termin ma niepełne dane daty, lokalizacji lub ceny.");
+    if (term.city !== "Online" && REGIONS[term.city] == null) throw new Error(`Brak mapowania regionu Eventis dla miasta „${term.city}”.`);
+    if (wymaganePola.some(pole => !pole)) throw new Error("Formularz terminu Eventis nie zawiera wszystkich wymaganych pól.");
     if (term.city === "Online") {
       setValue(typeSelect,"1");
-      setValue(form.querySelector(`textarea[name="eventDate[${id}][online_description]"]`),"-");
+      setValue(opisOnline,"-");
     } else {
       setValue(typeSelect,"");
-      setValue(form.querySelector(`input[name="eventDate[${id}][info]"]`),term.city);
-      setValue(form.querySelector(`select[name="eventDate[${id}][region_id]"]`),REGIONS[term.city] ?? "");
-      setValue(form.querySelector(`input[name="eventDate[${id}][city]"]`),term.city);
+      setValue(informacja,term.city);
+      setValue(region,REGIONS[term.city]);
+      setValue(miasto,term.city);
     }
-    setValue($(`#eventdate_datestart_${id}`) || form.querySelector(`input[name="eventDate[${id}][date_start]"]`),term.start);
-    setValue($(`#eventdate_dateend_${id}`) || form.querySelector(`input[name="eventDate[${id}][date_end]"]`),term.end);
-    setValue(form.querySelector(`select[name="eventDate[${id}][is_guaranteed]"]`),"1");
+    setValue(dataPoczatkowa,term.start);
+    setValue(dataKoncowa,term.end);
+    setValue(potwierdzenie,"1");
     const packageName=form.querySelector(`input[name="eventDate[${id}][prices][0][price_name]"]`);
     if (packageName) setValue(packageName,term.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne");
-    setValue(form.querySelector(`input[name="eventDate[${id}][prices][0][taxRate]"]`),"23");
-    setValue(form.querySelector(`input[name*="[price]"]`),term.price);
+    setValue(stawkaVat,"23");
+    setValue(cena,term.price);
     form.querySelectorAll(".event_price_contains").forEach(c=>{
       c.checked = term.city === "Online" ? ["1","2","3"].includes(c.value) : ["1","2","3","4","5"].includes(c.value);
       c.dispatchEvent(new Event("change",{bubbles:true}));
@@ -951,21 +964,19 @@
     if (state.weryfikacjaOtwartejKarty && state.weryfikacjaOtwartejKarty.status !== "VERIFIED") {
       throw new Error("Karta sesji nie przeszła weryfikacji. Formularz nie został zmieniony.");
     }
-    const existing = getExistingTerms();
-    const keys = new Set(existing.map(existingKey));
-    const toAdd = terms.filter(t=>!keys.has(existingKey(t)));
-    if (!toAdd.length) return {added:[],skipped:terms};
+    const rozdzielenie = NARZEDZIA_KOLEJKI.rozdzielTerminyDoWprowadzenia(terms,getExistingTerms());
+    const toAdd = rozdzielenie.doWprowadzenia;
+    if (!toAdd.length) return {dodane:[],pominiete:rozdzielenie.pominiete,bledy:[]};
     const addButton = findAddTermButton();
-    if (!addButton) throw new Error("Nie znaleziono przycisku dodawania terminu w formularzu Eventis.");
+    if (!addButton) return {dodane:[],pominiete:rozdzielenie.pominiete,bledy:toAdd.map(termin => ({termin,komunikat:"Nie znaleziono przycisku dodawania terminu w formularzu Eventis."}))};
     const before = $$('[id^="li_eventdate_"]');
     const need = MODE === "edit" ? toAdd.length : Math.max(0,toAdd.length-before.length);
     for (let i=0;i<need;i++) { addButton.click(); await sleep(120); }
     await sleep(850);
     const forms = $$('[id^="li_eventdate_"]');
     const targets = MODE === "edit" ? forms.slice(-toAdd.length) : forms.slice(0,toAdd.length);
-    if (targets.length < toAdd.length) throw new Error("Eventis nie utworzył wymaganej liczby formularzy terminów.");
-    targets.forEach((form,i)=>fillTerm(form,toAdd[i]));
-    return {added:toAdd,skipped:terms.filter(t=>keys.has(existingKey(t)))};
+    const wynikWypelnienia=NARZEDZIA_KOLEJKI.wypelnijTerminyOsobno(toAdd,targets,fillTerm);
+    return {...wynikWypelnienia,pominiete:rozdzielenie.pominiete};
   }
 
   async function fillEventDetailsIfAdd(source, terms) {
@@ -1315,15 +1326,24 @@
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
         async operacja => {
-          const result=await addSelectedTerms(unikalneTerminy(termy));
-          const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,result.added);
-          if (!powiazanie.terms.length) return {result,powiazanie,operacja};
+          const wynikWprowadzenia=await addSelectedTerms(unikalneTerminy(termy));
+          if (wynikWprowadzenia.bledy.length) {
+            const bledyWedlugTerminu=new Map(wynikWprowadzenia.bledy.map(blad => [existingKey(blad.termin),blad.komunikat]));
+            const bledyWedlugElementu=new Map(doWprowadzenia
+              .filter(dopasowanie=>bledyWedlugTerminu.has(existingKey(dopasowanie.terminy[0])))
+              .map(dopasowanie=>[dopasowanie.element.id,bledyWedlugTerminu.get(existingKey(dopasowanie.terminy[0]))]));
+            await zaktualizujBiezacaKolejke(kolejka=>kolejka.map(element=>bledyWedlugElementu.has(element.id)
+              ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,bledyWedlugElementu.get(element.id))
+              : element));
+          }
+          const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,wynikWprowadzenia.dodane);
+          if (!powiazanie.terms.length) return {wynikWprowadzenia,powiazanie,operacja};
           const potwierdzonaOperacja=await potwierdzOperacjeOczekujaca(operacja,powiazanie.terms,powiazanie.queueItemIds);
-          return {result,powiazanie,operacja:potwierdzonaOperacja};
+          return {wynikWprowadzenia,powiazanie,operacja:potwierdzonaOperacja};
         }
       );
       if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
-      const {powiazanie,operacja}=wykonanie.wynik;
+      const {wynikWprowadzenia,powiazanie,operacja}=wykonanie.wynik;
       if (!powiazanie.terms.length) {
         await zwolnijNiepotwierdzonyClaim(operacja);
         render();
@@ -1338,7 +1358,7 @@
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       render();
-      const liczbaProblemow=nierozwiazane.length+duplikatyTerminow.length;
+      const liczbaProblemow=nierozwiazane.length+duplikatyTerminow.length+wynikWprowadzenia.bledy.length;
       toast(`Przygotowano terminów: ${powiazanie.terms.length}.${liczbaProblemow ? ` Pozycje wymagające sprawdzenia: ${liczbaProblemow}.` : ""} Zapisz Eventis ręcznie po kontroli.`);
     } catch (blad) {
       if (planOperacji) await zwolnijNiepotwierdzonyClaim(planOperacji);
@@ -1435,7 +1455,12 @@
   async function uruchomAutomatycznaKolejkeJesliGotowa() {
     if (MODE !== "edit") return;
     const dane = await storageGet(["eventisAutomaticBatches","eventisImportQueue"]);
-    const znalezione = NARZEDZIA_LISTY.znajdzAktywneZadanie(dane.eventisAutomaticBatches,state.organization,state.eventisId);
+    const zadanieSesji = state.weryfikacjaOtwartejKarty?.status === "VERIFIED"
+      ? {identyfikatoryKolejki:state.weryfikacjaOtwartejKarty.task?.queueItemIds || []}
+      : null;
+    const znalezione = zadanieSesji
+      ? {seria:{identyfikatorSerii:state.weryfikacjaOtwartejKarty.sessionId},zadanie:zadanieSesji}
+      : NARZEDZIA_LISTY.znajdzAktywneZadanie(dane.eventisAutomaticBatches,state.organization,state.eventisId);
     if (!znalezione) return;
     const aktywneId = new Set((dane.eventisImportQueue || [])
       .filter(element => element.organization === state.organization && ["PENDING","ERROR"].includes(element.status))
@@ -1583,20 +1608,25 @@
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
         async operacja => {
-          const result=await addSelectedTerms(chosen);
-          await fillEventDetailsIfAdd(state.source,chosen);
-          await potwierdzOperacjeOczekujaca(operacja,result.added);
-          return result;
+          const wynikWprowadzenia=await addSelectedTerms(chosen);
+          if (!wynikWprowadzenia.dodane.length) return wynikWprowadzenia;
+          await fillEventDetailsIfAdd(state.source,wynikWprowadzenia.dodane);
+          await potwierdzOperacjeOczekujaca(operacja,wynikWprowadzenia.dodane);
+          return wynikWprowadzenia;
         }
       );
       if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
-      const result=wykonanie.wynik;
-      await audit("FORM_FILLED",{terms:result.added.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price}))});
+      const wynikWprowadzenia=wykonanie.wynik;
+      if (!wynikWprowadzenia.dodane.length) {
+        await zwolnijNiepotwierdzonyClaim(planOperacji);
+        return toast(wynikWprowadzenia.bledy[0]?.komunikat || "Żaden termin nie został dodany do formularza.");
+      }
+      await audit("FORM_FILLED",{terms:wynikWprowadzenia.dodane.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price})),errors:wynikWprowadzenia.bledy});
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       compareTerms();
       render();
-      toast("Formularz uzupełniony. Sprawdź go wizualnie i zapisz ręcznie w Eventis.");
+      toast(`Formularz uzupełniony: ${wynikWprowadzenia.dodane.length}. Błędy terminów: ${wynikWprowadzenia.bledy.length}. Sprawdź go i zapisz ręcznie.`);
     }catch(e){state.status="ERROR";state.lastError=e.message;render();toast(e.message);}
   }
 

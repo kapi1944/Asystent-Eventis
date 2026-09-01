@@ -131,6 +131,42 @@
     return [termin.start,normalizujMiasto(termin.city)].join("|");
   }
 
+  function rozdzielTerminyDoWprowadzenia(terminy = [], istniejaceTerminy = []) {
+    const zajeteKlucze = new Set((istniejaceTerminy || []).map(kluczTerminuEventis));
+    const doWprowadzenia = [];
+    const pominiete = [];
+    for (const termin of terminy || []) {
+      const klucz = kluczTerminuEventis(termin);
+      if (!klucz || zajeteKlucze.has(klucz)) {
+        pominiete.push(termin);
+        continue;
+      }
+      zajeteKlucze.add(klucz);
+      doWprowadzenia.push(termin);
+    }
+    return {doWprowadzenia,pominiete};
+  }
+
+  function wypelnijTerminyOsobno(terminy = [], formularze = [], wypelnij) {
+    const dodane = [];
+    const bledy = [];
+    for (let indeks=0;indeks<terminy.length;indeks++) {
+      const termin = terminy[indeks];
+      const formularz = formularze[indeks];
+      if (!formularz) {
+        bledy.push({termin,komunikat:"Eventis nie utworzył formularza dla tego terminu."});
+        continue;
+      }
+      try {
+        wypelnij(formularz,termin);
+        dodane.push(termin);
+      } catch (blad) {
+        bledy.push({termin,komunikat:blad?.message || "Nie udało się wypełnić terminu."});
+      }
+    }
+    return {dodane,bledy};
+  }
+
   function rozdzielDopasowaniaKolejki(dopasowania = []) {
     const jednoznaczne = [];
     const nierozwiazane = [];
@@ -219,6 +255,8 @@
     przypiszElementyDoZadania,
     podsumujKolejke,
     dopasujElementKolejkiDoTerminow,
+    rozdzielTerminyDoWprowadzenia,
+    wypelnijTerminyOsobno,
     rozdzielDopasowaniaKolejki,
     powiazDodaneTerminy,
     zmienStatusElementu,
