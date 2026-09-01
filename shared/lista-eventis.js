@@ -21,7 +21,7 @@
       || pierwszy.url.localeCompare(drugi.url);
   }
 
-  function kandydaciEventis(ogloszenia = [], organizacja, normalizedSourceTitle) {
+  function kandydaciEventis(ogloszenia = [], organizacja, normalizedSourceTitle, sourceTitle = normalizedSourceTitle) {
     const wedlugId = new Map();
     for (const ogloszenie of ogloszenia) {
       if (!ogloszenie?.eventisId || !ogloszenie.url) continue;
@@ -39,6 +39,8 @@
           score,
           matchType:normalizedTitle === normalizedSourceTitle ? "EXACT" : "FUZZY"
         };
+        const zgodnoscWariantu = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscWariantuLokalizacyjnego(sourceTitle,tytul);
+        if (zgodnoscWariantu.wymagany) kandydat.zgodnoscWariantu = zgodnoscWariantu;
         const poprzedni = wedlugId.get(kandydat.eventId);
         if (!poprzedni || porownajKandydatow(kandydat,poprzedni) < 0) wedlugId.set(kandydat.eventId,kandydat);
       }
@@ -51,25 +53,32 @@
     const normalizedSourceTitle = grupa?.normalizedTitle || NARZEDZIA_WYSZUKIWANIA.normalizujTytul(sourceTitle);
     const prog = Number(opcje.prog ?? PROG_DOPASOWANIA);
     const przewaga = Number(opcje.minimalnaPrzewaga ?? MINIMALNA_PRZEWAGA);
-    const candidates = kandydaciEventis(ogloszenia,organizacja,normalizedSourceTitle);
-    const exactMatches = candidates.filter(kandydat => kandydat.matchType === "EXACT");
+    const candidates = kandydaciEventis(ogloszenia,organizacja,normalizedSourceTitle,sourceTitle);
+    const wariant = NARZEDZIA_WYSZUKIWANIA.rozpoznajWariantLokalizacyjnyTrzydniowy(sourceTitle);
+    const kandydaciDoAutoWyboru = wariant
+      ? candidates.filter(kandydat => kandydat.zgodnoscWariantu?.status === "ZGODNY")
+      : candidates;
+    const exactMatches = kandydaciDoAutoWyboru.filter(kandydat => kandydat.matchType === "EXACT");
 
     if (exactMatches.length === 1) {
-      return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:exactMatches[0],candidates,reason:"EXACT_MATCH",confidence:1};
+      return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:exactMatches[0],candidates,reason:"EXACT_MATCH",confidence:1,wariantLokalizacji:wariant?.locationVariant || ""};
     }
     if (exactMatches.length > 1) {
-      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"MULTIPLE_EXACT_MATCHES",confidence:1};
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"MULTIPLE_EXACT_MATCHES",confidence:1,wariantLokalizacji:wariant?.locationVariant || ""};
     }
 
-    const najlepszy = candidates[0];
-    const drugi = candidates[1];
+    const najlepszy = kandydaciDoAutoWyboru[0];
+    const drugi = kandydaciDoAutoWyboru[1];
+    if (wariant && !kandydaciDoAutoWyboru.length) {
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"LOCATION_VARIANT_UNCONFIRMED",confidence:candidates[0]?.score || 0,wariantLokalizacji:wariant.locationVariant};
+    }
     if (!najlepszy || najlepszy.score < prog) {
-      return {status:STATUSY_RESOLVERA.NOT_FOUND,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"NO_SUFFICIENT_FUZZY_MATCH",confidence:najlepszy?.score || 0};
+      return {status:STATUSY_RESOLVERA.NOT_FOUND,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"NO_SUFFICIENT_FUZZY_MATCH",confidence:najlepszy?.score || 0,wariantLokalizacji:wariant?.locationVariant || ""};
     }
     if (drugi && najlepszy.score - drugi.score < przewaga) {
-      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"FUZZY_MATCHES_TOO_CLOSE",confidence:najlepszy.score};
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"FUZZY_MATCHES_TOO_CLOSE",confidence:najlepszy.score,wariantLokalizacji:wariant?.locationVariant || ""};
     }
-    return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:najlepszy,candidates,reason:"STRONG_FUZZY_MATCH",confidence:najlepszy.score};
+    return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:najlepszy,candidates,reason:"STRONG_FUZZY_MATCH",confidence:najlepszy.score,wariantLokalizacji:wariant?.locationVariant || ""};
   }
 
   function wybierzKandydataRozstrzygniecia(rozstrzygniecie, eventId) {

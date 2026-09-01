@@ -63,6 +63,52 @@ test("resolver nie wybiera arbitralnie podobnych fuzzy matchy", () => {
   assert.equal(wynik.selectedCandidate,null);
 });
 
+test("3-dniowe szkolenie automatycznie wybiera wyłącznie zgodny wariant miejscowości", () => {
+  const wynik = rozwiaz("Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem",[
+    ogloszenie(101,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem"),
+    ogloszenie(102,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Kołobrzegu"),
+    ogloszenie(103,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Gdańsku")
+  ]);
+  assert.equal(wynik.status,"AUTO_MATCH");
+  assert.equal(wynik.selectedCandidate.eventId,"101");
+  assert.equal(wynik.wariantLokalizacji,"zakopanem");
+  assert.equal(wynik.candidates.find(kandydat => kandydat.eventId === "102").zgodnoscWariantu.status,"KONFLIKT");
+});
+
+test("3-dniowy konflikt wariantu blokuje nawet wynik podobieństwa 100%", () => {
+  const wynik = rozwiaz("Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem",[
+    ogloszenie(102,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Kołobrzegu")
+  ]);
+  assert.equal(wynik.status,"AMBIGUOUS");
+  assert.equal(wynik.reason,"LOCATION_VARIANT_UNCONFIRMED");
+  assert.equal(wynik.selectedCandidate,null);
+});
+
+test("3-dniowy kandydat bez potwierdzonego miasta wymaga ręcznego wyboru", () => {
+  const wynik = rozwiaz("Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem",[
+    ogloszenie(101,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie")
+  ]);
+  assert.equal(wynik.status,"AMBIGUOUS");
+  assert.equal(wynik.reason,"LOCATION_VARIANT_UNCONFIRMED");
+});
+
+test("odmieniona nazwa miasta nie powoduje fałszywego automatycznego przypisania", () => {
+  const wynik = rozwiaz("Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem",[
+    ogloszenie(101,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopane")
+  ]);
+  assert.equal(wynik.status,"AMBIGUOUS");
+  assert.equal(wynik.selectedCandidate,null);
+});
+
+test("dwa zgodne warianty 3-dniowe wymagają ręcznego wyboru", () => {
+  const wynik = rozwiaz("Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem",[
+    ogloszenie(101,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem"),
+    ogloszenie(102,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem")
+  ]);
+  assert.equal(wynik.status,"AMBIGUOUS");
+  assert.equal(wynik.reason,"MULTIPLE_EXACT_MATCHES");
+});
+
 test("resolver zwraca NOT_FOUND bez wystarczająco dobrego wyniku", () => {
   const wynik = rozwiaz("Podatek VAT dla księgowych",[ogloszenie(101,"Prawo pracy w przedsiębiorstwie")]);
   assert.equal(wynik.status,"NOT_FOUND");
@@ -196,6 +242,29 @@ test("kolejna seria korzysta z cache przed resolverem", () => {
     znajdzMapowanie:grupa => mapowania.resolverZMapowania(mapowania.pobierzMapowanie(magazyn,"SEMPER",grupa.klucz))
   });
   assert.equal(wynik.dopasowane[0].resolver.status,"KNOWN_MAPPING");
+  assert.equal(wynik.dopasowane[0].ogloszenie.eventisId,"101");
+});
+
+test("pamięć 3-dniowego wariantu nie stosuje zapisanego linku innej miejscowości", () => {
+  const magazyn = mapowania.zapiszMapowanie(null,daneMapowania("SEMPER","Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem","101"));
+  const wpis = mapowania.pobierzBezpieczneMapowanie(magazyn,"SEMPER","Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem","Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Kołobrzegu");
+  assert.equal(wpis,null);
+});
+
+test("pamięć zapisuje oddzielne powiązania dla wariantów miejscowości 3-dniowego szkolenia", () => {
+  const zakopane = "Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem";
+  const kolobrzeg = "Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Kołobrzegu";
+  const pierwszy = mapowania.zapiszMapowanie(null,daneMapowania("SEMPER",zakopane,"101"));
+  const drugi = mapowania.zapiszMapowanie(pierwszy,daneMapowania("SEMPER",kolobrzeg,"102"));
+  assert.equal(Object.keys(drugi.entries).length,2);
+  assert.equal(mapowania.pobierzMapowanie(drugi,"SEMPER",zakopane).eventId,"101");
+  assert.equal(mapowania.pobierzMapowanie(drugi,"SEMPER",kolobrzeg).eventId,"102");
+});
+
+test("termin ONLINE nie zmienia wariantu źródłowego 3-dniowego ogłoszenia", () => {
+  const wynik = narzedzia.dopasujKolejkeDoOgloszen([
+    {...element("q1","Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem"),city:"ONLINE"}
+  ],[ogloszenie(101,"Eksploatacja obiektów budowlanych - 3-dniowe szkolenie w Zakopanem")],"SEMPER");
   assert.equal(wynik.dopasowane[0].ogloszenie.eventisId,"101");
 });
 

@@ -72,6 +72,13 @@
     return wpis?.status === "ACTIVE" ? wpis : null;
   }
 
+  function pobierzBezpieczneMapowanie(magazyn, organizacja, normalizedTitle, sourceTitle) {
+    const wpis = pobierzMapowanie(magazyn,organizacja,normalizedTitle);
+    if (!wpis) return null;
+    const zgodnosc = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscWariantuLokalizacyjnego(sourceTitle || normalizedTitle,wpis.eventTitle);
+    return zgodnosc.wymagany && zgodnosc.status !== "ZGODNY" ? null : wpis;
+  }
+
   function zapiszMapowanie(magazyn, dane, teraz = new Date().toISOString()) {
     const wynik = normalizujMagazynMapowan(magazyn);
     const normalizedTitle = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(dane?.normalizedTitle || dane?.sourceTitle);
@@ -116,6 +123,7 @@
     kluczMapowania,
     normalizujMagazynMapowan,
     pobierzMapowanie,
+    pobierzBezpieczneMapowanie,
     zapiszMapowanie,
     oznaczMapowanieNieprawidlowe,
     usunMapowanie,

@@ -40,6 +40,33 @@
       .trim();
   }
 
+  function rozpoznajWariantLokalizacyjnyTrzydniowy(tytul) {
+    const pelnyTytul = oczyscLinie(tytul);
+    if (!/\b3\s*[-–—]?\s*(?:dniowe|dniowy|dniowa|dni)\b/i.test(pelnyTytul)) return null;
+    const dopasowanie = pelnyTytul.match(/\b(?:w|we)\s+([\p{L}][\p{L}-]*)(?=\s*(?:[.,;:!?…]|$))/iu);
+    if (!dopasowanie) return null;
+    const wariantLokalizacji = normalizujTytul(dopasowanie[1]);
+    if (!wariantLokalizacji) return null;
+    return {
+      normalizedFullTitle:normalizujTytul(pelnyTytul),
+      baseTitle:normalizujTytul(pelnyTytul.slice(0,dopasowanie.index)),
+      locationVariant:wariantLokalizacji
+    };
+  }
+
+  function ocenZgodnoscWariantuLokalizacyjnego(tytulZrodlowy, tytulKandydata) {
+    const zrodlo = rozpoznajWariantLokalizacyjnyTrzydniowy(tytulZrodlowy);
+    if (!zrodlo) return {wymagany:false,status:"NIE_DOTYCZY",wariantLokalizacji:""};
+    const kandydat = rozpoznajWariantLokalizacyjnyTrzydniowy(tytulKandydata);
+    if (!kandydat) return {wymagany:true,status:"NIEPEWNY",wariantLokalizacji:zrodlo.locationVariant};
+    return {
+      wymagany:true,
+      status:kandydat.locationVariant === zrodlo.locationVariant ? "ZGODNY" : "KONFLIKT",
+      wariantLokalizacji:zrodlo.locationVariant,
+      wariantKandydata:kandydat.locationVariant
+    };
+  }
+
   function tytulPrzedPierwszymSeparatorem(tytul) {
     const czysty = oczyscLinie(tytul);
     const chroniony = czysty
@@ -300,6 +327,8 @@
   const api = {
     oczyscLinie,
     normalizujTytul,
+    rozpoznajWariantLokalizacyjnyTrzydniowy,
+    ocenZgodnoscWariantuLokalizacyjnego,
     tytulPrzedPierwszymSeparatorem,
     istotneSlowa,
     zbiorTokenow,
