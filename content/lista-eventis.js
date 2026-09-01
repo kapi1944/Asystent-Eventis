@@ -10,7 +10,8 @@
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
   const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
   const NARZEDZIA_LISTY = globalThis.NarzedziaListyEventis;
-  if (!KONFIGURACJA || !NARZEDZIA_WYSZUKIWANIA || !NARZEDZIA_ARKUSZA || !NARZEDZIA_KOLEJKI || !NARZEDZIA_LISTY) {
+  const MAPOWANIA_WYDARZEN = globalThis.MapowaniaWydarzenEventis;
+  if (!KONFIGURACJA || !NARZEDZIA_WYSZUKIWANIA || !NARZEDZIA_ARKUSZA || !NARZEDZIA_KOLEJKI || !NARZEDZIA_LISTY || !MAPOWANIA_WYDARZEN) {
     throw new Error("Nie załadowano modułów kolejki listy Eventis.");
   }
 
@@ -26,6 +27,7 @@
     nierozpoznane:[],
     rozstrzygniecia:[],
     decyzje:{},
+    magazynMapowan:null,
     liczbaBledow:0,
     liczbaDuplikatow:0,
     komunikat:""
@@ -111,13 +113,32 @@
     };
   }
 
+  async function zapiszMagazynMapowan() {
+    await chrome.storage.local.set({[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]:stan.magazynMapowan});
+  }
+
+  async function zapiszRozstrzygniecie(rozstrzygniecie, resolutionSource) {
+    const kandydat = rozstrzygniecie?.selectedCandidate;
+    if (!kandydat) return;
+    stan.magazynMapowan = MAPOWANIA_WYDARZEN.zapiszMapowanie(stan.magazynMapowan,{
+      organization:rozstrzygniecie.organization,
+      normalizedTitle:rozstrzygniecie.normalizedSourceTitle,
+      sourceTitle:rozstrzygniecie.sourceTitle,
+      eventId:kandydat.eventId,
+      eventUrl:kandydat.url,
+      eventTitle:kandydat.title,
+      resolutionSource
+    });
+    await zapiszMagazynMapowan();
+  }
+
   async function analizujWklejonyTekst() {
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
     if (!surowyTekst) return pokazKomunikat("Wklej listę potwierdzonych szkoleń.");
     const rekordy = NARZEDZIA_ARKUSZA.parseManualPaste(surowyTekst);
     if (!rekordy.length) return pokazKomunikat("Nie znaleziono wierszy POTWIERDZONE SZKOLENIE.");
-    const dane = await chrome.storage.local.get(["eventisImportQueue","mappings"]);
+    const dane = await chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     const kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,kolejka,{organization:stan.organizacja});
     const kolejkaPodgladu = [...kolejka,...przygotowane.items];
@@ -125,10 +146,13 @@
     stan.rekordy = rekordy;
     stan.kolejka = kolejka;
     stan.mapowania = dane.mappings || {};
+    stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ogloszenia = pobierzOgloszeniaZListy();
     stan.liczbaBledow = rekordy.filter(rekord => rekord.error).length;
     stan.liczbaDuplikatow = przygotowane.duplicates;
-    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(kolejkaPodgladu,rekordy),stan.ogloszenia,stan.organizacja);
+    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(kolejkaPodgladu,rekordy),stan.ogloszenia,stan.organizacja,{
+      znajdzMapowanie:grupa => MAPOWANIA_WYDARZEN.resolverZMapowania(MAPOWANIA_WYDARZEN.pobierzMapowanie(stan.magazynMapowan,stan.organizacja,grupa.klucz))
+    });
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
     stan.nierozpoznane = wynik.nierozpoznane;
     stan.rozstrzygniecia = [
@@ -138,6 +162,10 @@
         : pozycja.resolver)
     ];
     stan.decyzje = {};
+    for (const rozstrzygniecie of stan.rozstrzygniecia) {
+      if (rozstrzygniecie.status !== "AUTO_MATCH") continue;
+      await zapiszRozstrzygniecie(rozstrzygniecie,rozstrzygniecie.reason === "EXACT_MATCH" ? "exact" : "fuzzy");
+    }
     stan.komunikat = "";
     renderuj();
   }
@@ -145,9 +173,11 @@
   function renderujWyniki() {
     if (!stan.rekordy.length) return "";
     const automatyczne = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "AUTO_MATCH").length;
+    const znaneMapowania = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "KNOWN_MAPPING");
     const wymagajaWyboru = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "AMBIGUOUS").length;
     const nieZnaleziono = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "NOT_FOUND").length;
     const wymagajaceRozstrzygniecia = stan.rozstrzygniecia.filter(pozycja => pozycja.status !== "AUTO_MATCH").map((pozycja, indeks) => {
+      if (pozycja.status === "KNOWN_MAPPING") return "";
       const aktualna = aktualneRozstrzygniecie(pozycja);
       const liczby = liczbyTerminow(pozycja);
       const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
@@ -157,11 +187,12 @@
       const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
       return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Wybierz dokładnie jedno wydarzenie Eventis.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>'}${kandydaci}${wybrano}${pominieto}${recznyUrl}${szukaj}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
     }).join("");
+    const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
     const plan = NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie));
     const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
       ? `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} → ${esc(pozycja.selectedCandidate.url)}</div>`
       : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("");
-    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span><span>Duplikaty: <b>${stan.liczbaDuplikatow}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Gotowe do otwarcia: <b>${plan.gotoweDoOtwarcia}</b></span><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div><div class="esync-small esync-muted">Ten etap tylko tworzy plan — nie otwiera kart i nie zapisuje zmian.</div></div>`;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Gotowe do otwarcia: <b>${plan.gotoweDoOtwarcia}</b></span><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div><div class="esync-small esync-muted">Ten etap tylko tworzy plan — nie otwiera kart.</div></div>`;
   }
 
   function renderuj() {
@@ -177,26 +208,42 @@
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
     $("#esync-lista-analizuj")?.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",() => {
+    $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === pole.dataset.wyborKlucz);
       const wybor = NARZEDZIA_LISTY.wybierzKandydataRozstrzygniecia(zrodlo,pole.value);
-      if (wybor) stan.decyzje[pole.dataset.wyborKlucz] = wybor;
+      if (wybor) {
+        stan.decyzje[pole.dataset.wyborKlucz] = wybor;
+        await zapiszRozstrzygniecie(wybor,"manual");
+      }
       renderuj();
-    }));
+    }).catch(blad => pokazKomunikat(blad.message)));
     $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",() => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
       if (zrodlo) stan.decyzje[przycisk.dataset.pominTytul] = NARZEDZIA_LISTY.pominRozstrzygniecie(zrodlo);
       renderuj();
     }));
-    $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",() => {
+    $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",async () => {
       const klucz = przycisk.dataset.zatwierdzUrl;
       const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
       const wybor = NARZEDZIA_LISTY.wybierzRecznyUrlEventis(zrodlo,pole?.value || "");
       if (!wybor) return pokazKomunikat("Podaj bezpieczny adres edycji wydarzenia Eventis.");
       stan.decyzje[klucz] = wybor;
+      await zapiszRozstrzygniecie(wybor,"manual");
       renderuj();
-    }));
+    }).catch(blad => pokazKomunikat(blad.message)));
+    $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",async () => {
+      const klucz = przycisk.dataset.zmienMapowanie;
+      const indeks = stan.rozstrzygniecia.findIndex(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
+      const zrodlo = stan.rozstrzygniecia[indeks];
+      if (!zrodlo) return;
+      stan.magazynMapowan = MAPOWANIA_WYDARZEN.usunMapowanie(stan.magazynMapowan,zrodlo.organization,zrodlo.normalizedSourceTitle);
+      await zapiszMagazynMapowan();
+      const ponownyResolver = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul:zrodlo.sourceTitle,normalizedTitle:zrodlo.normalizedSourceTitle},stan.ogloszenia,zrodlo.organization);
+      stan.rozstrzygniecia[indeks] = {...ponownyResolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"CHANGE_MAPPING"};
+      delete stan.decyzje[klucz];
+      renderuj();
+    }).catch(blad => pokazKomunikat(blad.message)));
     $$('[data-ponow-wyszukiwanie]').forEach(przycisk => przycisk.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message))));
   }
 

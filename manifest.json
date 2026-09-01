@@ -38,6 +38,7 @@
         "shared/kolejka-eventis.js",
         "shared/operacje-eventis.js",
         "shared/lista-eventis.js",
+        "shared/mapowania-wydarzen-eventis.js",
         "shared/pola-rich-text.js",
         "content/eventis.js"
       ],
@@ -55,6 +56,7 @@
         "shared/arkusz.js",
         "shared/kolejka-eventis.js",
         "shared/lista-eventis.js",
+        "shared/mapowania-wydarzen-eventis.js",
         "content/lista-eventis.js"
       ],
       "css": ["content/eventis.css"],

@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const narzedzia = require("../shared/lista-eventis");
+const mapowania = require("../shared/mapowania-wydarzen-eventis");
 
 function element(id, tytul, organizacja = "SEMPER") {
   return {
@@ -159,6 +160,67 @@ test("widok listy ucieka od nieufnych tytułów przed wstawieniem do innerHTML",
   const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
   assert.match(kod,/\$\{esc\(pozycja\.sourceTitle\)\}/);
   assert.match(kod,/\$\{esc\(kandydat\.title\)\}/);
+});
+
+function daneMapowania(organizacja = "SEMPER", tytul = "Prawo pracy", eventId = "101") {
+  return {organization:organizacja,normalizedTitle:tytul,sourceTitle:tytul,eventId,eventUrl:`https://eventis.pl/event/edit/${eventId}`,eventTitle:`Wydarzenie ${eventId}`,resolutionSource:"manual"};
+}
+
+test("ręczne mapowanie zapisuje się bez duplikatu dla tego samego klucza", () => {
+  const pierwszy = mapowania.zapiszMapowanie(null,daneMapowania(),"2026-09-01T10:00:00.000Z");
+  const drugi = mapowania.zapiszMapowanie(pierwszy,daneMapowania("SEMPER","Prawo pracy","102"),"2026-09-02T10:00:00.000Z");
+  const wpisy = Object.values(drugi.entries);
+  assert.equal(wpisy.length,1);
+  assert.equal(wpisy[0].eventId,"102");
+  assert.equal(wpisy[0].createdAt,"2026-09-01T10:00:00.000Z");
+});
+
+test("exact i fuzzy zachowują źródło rozstrzygnięcia", () => {
+  const exact = mapowania.zapiszMapowanie(null,{...daneMapowania(),resolutionSource:"exact"});
+  const fuzzy = mapowania.zapiszMapowanie(exact,{...daneMapowania("SEMPER","Inny tytuł","102"),resolutionSource:"fuzzy"});
+  assert.equal(mapowania.pobierzMapowanie(exact,"SEMPER","Prawo pracy").resolutionSource,"exact");
+  assert.equal(mapowania.pobierzMapowanie(fuzzy,"SEMPER","Inny tytuł").resolutionSource,"fuzzy");
+});
+
+test("SEMPER i IIST mają niezależne wpisy cache", () => {
+  const magazyn = mapowania.zapiszMapowanie(mapowania.zapiszMapowanie(null,daneMapowania("SEMPER")),daneMapowania("IIST"));
+  assert.equal(Object.keys(magazyn.entries).length,2);
+  assert.equal(mapowania.pobierzMapowanie(magazyn,"SEMPER","Prawo pracy").organization,"SEMPER");
+  assert.equal(mapowania.pobierzMapowanie(magazyn,"IIST","Prawo pracy").organization,"IIST");
+});
+
+test("kolejna seria korzysta z cache przed resolverem", () => {
+  const magazyn = mapowania.zapiszMapowanie(null,daneMapowania());
+  const wynik = narzedzia.dopasujKolejkeDoOgloszen([element("q1","Prawo pracy")],[],"SEMPER",{
+    znajdzMapowanie:grupa => mapowania.resolverZMapowania(mapowania.pobierzMapowanie(magazyn,"SEMPER",grupa.klucz))
+  });
+  assert.equal(wynik.dopasowane[0].resolver.status,"KNOWN_MAPPING");
+  assert.equal(wynik.dopasowane[0].ogloszenie.eventisId,"101");
+});
+
+test("update, invalidate i delete obsługują pojedyncze mapowanie", () => {
+  const zapisane = mapowania.zapiszMapowanie(null,daneMapowania());
+  const nieprawidlowe = mapowania.oznaczMapowanieNieprawidlowe(zapisane,"SEMPER","Prawo pracy","2026-09-03T10:00:00.000Z");
+  assert.equal(mapowania.pobierzMapowanie(nieprawidlowe,"SEMPER","Prawo pracy"),null);
+  assert.equal(Object.values(nieprawidlowe.entries)[0].status,"INVALID");
+  const usuniete = mapowania.usunMapowanie(nieprawidlowe,"SEMPER","Prawo pracy");
+  assert.equal(Object.keys(usuniete.entries).length,0);
+});
+
+test("zmiana tytułu nie nadpisuje innego rekordu cache", () => {
+  const pierwszy = mapowania.zapiszMapowanie(null,daneMapowania("SEMPER","Prawo pracy","101"));
+  const drugi = mapowania.zapiszMapowanie(pierwszy,daneMapowania("SEMPER","Prawo podatkowe","102"));
+  assert.equal(mapowania.pobierzMapowanie(drugi,"SEMPER","Prawo pracy").eventId,"101");
+  assert.equal(mapowania.pobierzMapowanie(drugi,"SEMPER","Prawo podatkowe").eventId,"102");
+});
+
+test("migracja pomija niepełne legacy wpisy bez blokowania poprawnych", () => {
+  const magazyn = mapowania.normalizujMagazynMapowan([
+    {organization:"SEMPER",normalizedTitle:"Brak URL",eventId:"1"},
+    {...daneMapowania("IIST","Kurs VAT","333"),updatedAt:"2026-09-01T10:00:00.000Z"}
+  ]);
+  assert.equal(Object.keys(magazyn.entries).length,1);
+  assert.equal(mapowania.pobierzMapowanie(magazyn,"IIST","Kurs VAT").eventId,"333");
 });
 
 test("identyfikator Eventis jest odczytywany wyłącznie z bezpiecznego adresu edycji", () => {

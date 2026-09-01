@@ -120,7 +120,7 @@
     for (const rozstrzygniecie of rozstrzygniecia) {
       const wybrany = rozstrzygniecie.manualStatus === "MANUAL_MATCH"
         ? rozstrzygniecie.selectedCandidate
-        : rozstrzygniecie.status === STATUSY_RESOLVERA.AUTO_MATCH ? rozstrzygniecie.selectedCandidate : null;
+        : [STATUSY_RESOLVERA.AUTO_MATCH,"KNOWN_MAPPING"].includes(rozstrzygniecie.status) ? rozstrzygniecie.selectedCandidate : null;
       if (wybrany) {
         pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,status:"READY",selectedCandidate:wybrany});
       } else if (rozstrzygniecie.manualStatus === "SKIPPED") {
@@ -154,12 +154,16 @@
 
   function dopasujKolejkeDoOgloszen(elementy = [], ogloszenia = [], organizacja, opcje = {}) {
     const propozycje = pogrupujElementyKolejki(elementy,organizacja).map(grupa => {
-      const resolver = rozwiazGrupeTytulu(grupa,ogloszenia,organizacja,opcje);
-      const wyniki = resolver.candidates.map(kandydat => ({
+      const zCache = typeof opcje.znajdzMapowanie === "function" ? opcje.znajdzMapowanie(grupa,organizacja) : null;
+      const resolver = zCache
+        ? {...zCache,sourceTitle:grupa.tytul,normalizedSourceTitle:grupa.klucz,organization:organizacja}
+        : rozwiazGrupeTytulu(grupa,ogloszenia,organizacja,opcje);
+      const kandydaci = resolver.candidates?.length ? resolver.candidates : resolver.selectedCandidate ? [resolver.selectedCandidate] : [];
+      const wyniki = kandydaci.map(kandydat => ({
         ogloszenie:{eventisId:kandydat.eventId,url:kandydat.url,tytul:kandydat.title},
         wynik:kandydat.score
       }));
-      return {grupa,resolver,wyniki,najlepszy:wyniki[0],jednoznaczne:resolver.status === STATUSY_RESOLVERA.AUTO_MATCH};
+      return {grupa,resolver,wyniki,najlepszy:wyniki[0],jednoznaczne:[STATUSY_RESOLVERA.AUTO_MATCH,"KNOWN_MAPPING"].includes(resolver.status)};
     });
 
     const wedlugOgloszenia = new Map();
