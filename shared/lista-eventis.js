@@ -72,6 +72,16 @@
     return {status:STATUSY_RESOLVERA.AUTO_MATCH,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:najlepszy,candidates,reason:"STRONG_FUZZY_MATCH",confidence:najlepszy.score};
   }
 
+  function wybierzKandydataRozstrzygniecia(rozstrzygniecie, eventId) {
+    const kandydat = (rozstrzygniecie?.candidates || []).find(pozycja => String(pozycja.eventId) === String(eventId));
+    if (!kandydat) return null;
+    return {...rozstrzygniecie,selectedCandidate:kandydat,manualStatus:"MANUAL_MATCH"};
+  }
+
+  function pominRozstrzygniecie(rozstrzygniecie) {
+    return {...rozstrzygniecie,selectedCandidate:null,manualStatus:"SKIPPED"};
+  }
+
   function pobierzIdEventisZUrl(wartosc) {
     try {
       const url = new URL(String(wartosc || ""), "https://eventis.pl/");
@@ -83,6 +93,43 @@
     } catch (_) {
       return "";
     }
+  }
+
+  function utworzKandydataZUrlEventis(wartosc, sourceTitle) {
+    const eventId = pobierzIdEventisZUrl(wartosc);
+    if (!eventId) return null;
+    const url = new URL(String(wartosc),"https://eventis.pl/").href;
+    return {
+      eventId,
+      url,
+      title:String(sourceTitle || ""),
+      normalizedTitle:NARZEDZIA_WYSZUKIWANIA.normalizujTytul(sourceTitle),
+      score:0,
+      matchType:"MANUAL_URL"
+    };
+  }
+
+  function wybierzRecznyUrlEventis(rozstrzygniecie, wartosc) {
+    const kandydat = utworzKandydataZUrlEventis(wartosc,rozstrzygniecie?.sourceTitle);
+    return kandydat ? {...rozstrzygniecie,selectedCandidate:kandydat,manualStatus:"MANUAL_MATCH"} : null;
+  }
+
+  function utworzPlanOtwarcia(rozstrzygniecia = []) {
+    const pozycje = [];
+    let nierozstrzygniete = 0;
+    for (const rozstrzygniecie of rozstrzygniecia) {
+      const wybrany = rozstrzygniecie.manualStatus === "MANUAL_MATCH"
+        ? rozstrzygniecie.selectedCandidate
+        : rozstrzygniecie.status === STATUSY_RESOLVERA.AUTO_MATCH ? rozstrzygniecie.selectedCandidate : null;
+      if (wybrany) {
+        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,status:"READY",selectedCandidate:wybrany});
+      } else if (rozstrzygniecie.manualStatus === "SKIPPED") {
+        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,status:"SKIPPED",selectedCandidate:null});
+      } else {
+        nierozstrzygniete++;
+      }
+    }
+    return {pozycje,gotoweDoOtwarcia:pozycje.filter(pozycja => pozycja.status === "READY").length,nierozstrzygniete};
   }
 
   function pogrupujElementyKolejki(elementy = [], organizacja) {
@@ -133,7 +180,8 @@
           tytul:propozycja.grupa.tytul,
           elementy:propozycja.grupa.elementy,
           ogloszenie:propozycja.najlepszy.ogloszenie,
-          wynik:propozycja.najlepszy.wynik
+          wynik:propozycja.najlepszy.wynik,
+          resolver:propozycja.resolver
         });
       } else {
         nierozpoznane.push({
@@ -196,8 +244,13 @@
     CZAS_WAZNOSCI_SERII_MS,
     STATUSY_RESOLVERA,
     pobierzIdEventisZUrl,
+    utworzKandydataZUrlEventis,
     pogrupujElementyKolejki,
     rozwiazGrupeTytulu,
+    wybierzKandydataRozstrzygniecia,
+    wybierzRecznyUrlEventis,
+    pominRozstrzygniecie,
+    utworzPlanOtwarcia,
     dopasujKolejkeDoOgloszen,
     czyMapowanieGotoweDoAutomatyzacji,
     utworzSerieAutomatyczna,

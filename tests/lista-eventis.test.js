@@ -2,6 +2,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const narzedzia = require("../shared/lista-eventis");
 
 function element(id, tytul, organizacja = "SEMPER") {
@@ -106,6 +108,57 @@ test("kolejność kandydatów resolvera jest deterministyczna", () => {
   const pierwszy = rozwiaz("Prawo pracy w praktyce dla specjalistów HR",ogloszenia);
   const drugi = rozwiaz("Prawo pracy w praktyce dla specjalistów HR",[...ogloszenia].reverse());
   assert.deepEqual(pierwszy.candidates,drugi.candidates);
+});
+
+test("AUTO_MATCH trafia do planu bez ręcznego wyboru", () => {
+  const resolver = rozwiaz("Prawo pracy",[ogloszenie(101,"Prawo pracy")]);
+  const plan = narzedzia.utworzPlanOtwarcia([resolver]);
+  assert.equal(plan.gotoweDoOtwarcia,1);
+  assert.equal(plan.nierozstrzygniete,0);
+  assert.equal(plan.pozycje[0].selectedCandidate.eventId,"101");
+});
+
+test("AMBIGUOUS wymaga jednego wyboru i zastępuje poprzedni wybór", () => {
+  const resolver = rozwiaz("RODO",[ogloszenie(101,"RODO"),ogloszenie(102,"RODO")]);
+  const pierwszy = narzedzia.wybierzKandydataRozstrzygniecia(resolver,"101");
+  const drugi = narzedzia.wybierzKandydataRozstrzygniecia(pierwszy,"102");
+  const planPrzed = narzedzia.utworzPlanOtwarcia([resolver]);
+  const planPo = narzedzia.utworzPlanOtwarcia([drugi]);
+  assert.equal(planPrzed.nierozstrzygniete,1);
+  assert.equal(planPo.gotoweDoOtwarcia,1);
+  assert.equal(planPo.pozycje.length,1);
+  assert.equal(planPo.pozycje[0].selectedCandidate.eventId,"102");
+});
+
+test("NOT_FOUND nie otrzymuje automatycznego wydarzenia", () => {
+  const resolver = rozwiaz("Nieznane szkolenie",[ogloszenie(101,"Prawo pracy")]);
+  const plan = narzedzia.utworzPlanOtwarcia([resolver]);
+  assert.equal(resolver.status,"NOT_FOUND");
+  assert.equal(plan.gotoweDoOtwarcia,0);
+  assert.equal(plan.nierozstrzygniete,1);
+});
+
+test("pominięcie działa dla pojedynczego tytułu", () => {
+  const pierwszy = rozwiaz("Nieznane A",[]);
+  const drugi = rozwiaz("Nieznane B",[]);
+  const plan = narzedzia.utworzPlanOtwarcia([narzedzia.pominRozstrzygniecie(pierwszy),drugi]);
+  assert.equal(plan.pozycje[0].sourceTitle,"Nieznane A");
+  assert.equal(plan.pozycje[0].status,"SKIPPED");
+  assert.equal(plan.nierozstrzygniete,1);
+});
+
+test("ręczny URL dopuszcza tylko bezpieczny adres Eventis i wyciąga eventId", () => {
+  const resolver = rozwiaz("Nieznane szkolenie",[]);
+  const wybor = narzedzia.wybierzRecznyUrlEventis(resolver,"https://eventis.pl/event/edit/321");
+  assert.equal(wybor.selectedCandidate.eventId,"321");
+  assert.equal(wybor.selectedCandidate.matchType,"MANUAL_URL");
+  assert.equal(narzedzia.wybierzRecznyUrlEventis(resolver,"https://evil.example/event/edit/321"),null);
+});
+
+test("widok listy ucieka od nieufnych tytułów przed wstawieniem do innerHTML", () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
+  assert.match(kod,/\$\{esc\(pozycja\.sourceTitle\)\}/);
+  assert.match(kod,/\$\{esc\(kandydat\.title\)\}/);
 });
 
 test("identyfikator Eventis jest odczytywany wyłącznie z bezpiecznego adresu edycji", () => {

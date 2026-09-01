@@ -24,6 +24,8 @@
     ogloszenia:[],
     dopasowania:[],
     nierozpoznane:[],
+    rozstrzygniecia:[],
+    decyzje:{},
     liczbaBledow:0,
     liczbaDuplikatow:0,
     komunikat:""
@@ -93,6 +95,22 @@
     });
   }
 
+  function kluczRozstrzygniecia(rozstrzygniecie) {
+    return `${rozstrzygniecie.organization}|${rozstrzygniecie.normalizedSourceTitle}`;
+  }
+
+  function aktualneRozstrzygniecie(rozstrzygniecie) {
+    return stan.decyzje[kluczRozstrzygniecia(rozstrzygniecie)] || rozstrzygniecie;
+  }
+
+  function liczbyTerminow(rozstrzygniecie) {
+    const rekordy = stan.rekordy.filter(rekord => !rekord.error && rekord.normalizedTitle === rozstrzygniecie.normalizedSourceTitle);
+    return {
+      potwierdzone:rekordy.filter(rekord => rekord.status === "CONFIRMED").length,
+      odpotwierdzone:rekordy.filter(rekord => rekord.status === "DECONFIRMED").length
+    };
+  }
+
   async function analizujWklejonyTekst() {
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
@@ -113,41 +131,37 @@
     const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(kolejkaPodgladu,rekordy),stan.ogloszenia,stan.organizacja);
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
     stan.nierozpoznane = wynik.nierozpoznane;
+    stan.rozstrzygniecia = [
+      ...wynik.dopasowane.map(dopasowanie => dopasowanie.resolver),
+      ...wynik.nierozpoznane.map(pozycja => pozycja.powod === "COLLISION"
+        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION"}
+        : pozycja.resolver)
+    ];
+    stan.decyzje = {};
     stan.komunikat = "";
     renderuj();
   }
 
-  async function zatwierdzISprawdzKolejke() {
-    const gotowe = stan.dopasowania.filter(dopasowanie => dopasowanie.gotowe);
-    if (!gotowe.length) return pokazKomunikat("Brak kart z aktywnym, wcześniej zweryfikowanym mapowaniem SEMPER/IIST.");
-    const dane = await chrome.storage.local.get(["eventisImportQueue","eventisAutomaticBatches"]);
-    const obecnaKolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
-    const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(stan.rekordy,obecnaKolejka,{organization:stan.organizacja});
-    const kolejka = [...obecnaKolejka,...przygotowane.items];
-    const aktualneElementy = elementyDotyczaceRekordow(kolejka,stan.rekordy);
-    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(aktualneElementy,pobierzOgloszeniaZListy(),stan.organizacja);
-    const gotoweId = new Set(gotowe.map(dopasowanie => dopasowanie.ogloszenie.eventisId));
-    const zatwierdzone = wynik.dopasowane.filter(dopasowanie => gotoweId.has(dopasowanie.ogloszenie.eventisId));
-    if (!zatwierdzone.length) return pokazKomunikat("Dopasowania listy zmieniły się. Uruchom analizę ponownie.");
-    const seria = NARZEDZIA_LISTY.utworzSerieAutomatyczna(zatwierdzone,stan.organizacja);
-    const serie = {...(dane.eventisAutomaticBatches || {}),[seria.identyfikatorSerii]:seria};
-    const migawka = {importedAt:new Date().toISOString(),hash:String(stan.surowyTekst.length)+":"+NARZEDZIA_WYSZUKIWANIA.normalizujTytul(stan.surowyTekst).slice(0,64),records:stan.rekordy,rawText:stan.surowyTekst};
-    await chrome.storage.local.set({eventisImportQueue:kolejka,eventisAutomaticBatches:serie,manualSheetSnapshot:migawka});
-    const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_TABS",urls:seria.zadania.map(zadanie => zadanie.eventisUrl)});
-    if (!odpowiedz?.ok) return pokazKomunikat(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
-    stan.kolejka = kolejka;
-    stan.komunikat = `Uruchomiono ${odpowiedz.opened} kart. Formularze zostaną uzupełnione, ale wymagają ręcznej kontroli i zapisu.`;
-    renderuj();
-    pokazKomunikat(stan.komunikat);
-  }
-
   function renderujWyniki() {
     if (!stan.rekordy.length) return "";
-    const gotowe = stan.dopasowania.filter(dopasowanie => dopasowanie.gotowe);
-    const bezMapowania = stan.dopasowania.filter(dopasowanie => !dopasowanie.gotowe);
-    const wiersze = stan.dopasowania.map(dopasowanie => `<div class="esync-import-row"><div><div class="esync-term-main">${esc(dopasowanie.tytul)}</div><div class="esync-term-sub">Eventis #${esc(dopasowanie.ogloszenie.eventisId)} · ${Math.round(dopasowanie.wynik*100)}% · ${dopasowanie.elementy.length} termin(y)</div>${dopasowanie.gotowe?'<div class="esync-small" style="color:#147a36">Gotowe do uruchomienia</div>':'<div class="esync-small esync-danger">Brak aktywnego, zweryfikowanego mapowania — karta nie zostanie uruchomiona automatycznie.</div>'}</div></div>`).join("");
-    const nierozpoznane = stan.nierozpoznane.map(pozycja => `<div class="esync-import-row"><div><div class="esync-term-main">${esc(pozycja.tytul)}</div><div class="esync-small esync-danger">Brak jednoznacznego dopasowania na bieżącej stronie listy.</div></div></div>`).join("");
-    return `<div class="esync-card"><div class="esync-section-title"><span>Wynik analizy</span><span>${stan.rekordy.length} rekordów</span></div><div class="esync-import-summary"><span>Gotowe: <b>${gotowe.length}</b></span><span>Bez mapowania: <b>${bezMapowania.length}</b></span><span>Nierozpoznane: <b>${stan.nierozpoznane.length}</b></span><span>Duplikaty: <b>${stan.liczbaDuplikatow}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${wiersze}${nierozpoznane}<button id="esync-lista-start" class="esync-btn good" style="width:100%;margin-top:8px" ${gotowe.length?"":"disabled"}>Zatwierdź i otwórz karty (${gotowe.length})</button><div class="esync-small esync-muted" style="margin-top:6px">Wtyczka nie zapisuje formularzy automatycznie. Każdą otwartą kartę sprawdź i zapisz ręcznie.</div></div>`;
+    const automatyczne = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "AUTO_MATCH").length;
+    const wymagajaWyboru = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "AMBIGUOUS").length;
+    const nieZnaleziono = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "NOT_FOUND").length;
+    const wymagajaceRozstrzygniecia = stan.rozstrzygniecia.filter(pozycja => pozycja.status !== "AUTO_MATCH").map((pozycja, indeks) => {
+      const aktualna = aktualneRozstrzygniecie(pozycja);
+      const liczby = liczbyTerminow(pozycja);
+      const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
+      const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
+      const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>${esc(kandydat.url)}</small></label>`).join("") : "";
+      const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
+      const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
+      return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Wybierz dokładnie jedno wydarzenie Eventis.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>'}${kandydaci}${wybrano}${pominieto}${recznyUrl}${szukaj}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
+    }).join("");
+    const plan = NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie));
+    const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
+      ? `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} → ${esc(pozycja.selectedCandidate.url)}</div>`
+      : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("");
+    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span><span>Duplikaty: <b>${stan.liczbaDuplikatow}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Gotowe do otwarcia: <b>${plan.gotoweDoOtwarcia}</b></span><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div><div class="esync-small esync-muted">Ten etap tylko tworzy plan — nie otwiera kart i nie zapisuje zmian.</div></div>`;
   }
 
   function renderuj() {
@@ -163,7 +177,27 @@
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
     $("#esync-lista-analizuj")?.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message)));
-    $("#esync-lista-start")?.addEventListener("click",() => zatwierdzISprawdzKolejke().catch(blad => pokazKomunikat(blad.message)));
+    $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",() => {
+      const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === pole.dataset.wyborKlucz);
+      const wybor = NARZEDZIA_LISTY.wybierzKandydataRozstrzygniecia(zrodlo,pole.value);
+      if (wybor) stan.decyzje[pole.dataset.wyborKlucz] = wybor;
+      renderuj();
+    }));
+    $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",() => {
+      const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
+      if (zrodlo) stan.decyzje[przycisk.dataset.pominTytul] = NARZEDZIA_LISTY.pominRozstrzygniecie(zrodlo);
+      renderuj();
+    }));
+    $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",() => {
+      const klucz = przycisk.dataset.zatwierdzUrl;
+      const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
+      const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
+      const wybor = NARZEDZIA_LISTY.wybierzRecznyUrlEventis(zrodlo,pole?.value || "");
+      if (!wybor) return pokazKomunikat("Podaj bezpieczny adres edycji wydarzenia Eventis.");
+      stan.decyzje[klucz] = wybor;
+      renderuj();
+    }));
+    $$('[data-ponow-wyszukiwanie]').forEach(przycisk => przycisk.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message))));
   }
 
   async function inicjalizuj() {
