@@ -200,6 +200,7 @@ test("ręczny URL dopuszcza tylko bezpieczny adres Eventis i wyciąga eventId", 
   const wybor = narzedzia.wybierzRecznyUrlEventis(resolver,"https://eventis.pl/event/edit/321");
   assert.equal(wybor.selectedCandidate.eventId,"321");
   assert.equal(wybor.selectedCandidate.matchType,"MANUAL_URL");
+  assert.equal(narzedzia.wybierzRecznyUrlEventis(resolver,"https://www.szkolenia-semper.pl/component/trainings/details"),null);
   assert.equal(narzedzia.wybierzRecznyUrlEventis(resolver,"https://evil.example/event/edit/321"),null);
 });
 

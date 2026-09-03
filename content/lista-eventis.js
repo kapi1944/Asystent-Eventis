@@ -205,7 +205,7 @@
       const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
       const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
       const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>${esc(kandydat.url)}</small></label>`).join("") : "";
-      const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
+      const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><div class="esync-small esync-muted" style="margin-top:4px">Wklej adres edycji wydarzenia z Eventis, nie adres szkolenia SEMPER/IIST.</div><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
       const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
       const wariant = pozycja.wariantLokalizacji ? `<div class="esync-info esync-small">3-dniowe - wariant lokalizacyjny: ${esc(pozycja.wariantLokalizacji)}.</div>` : "";
       const komunikatWyboru = pozycja.reason === "LOCATION_VARIANT_UNCONFIRMED" ? '<div class="esync-warning esync-small">Nie potwierdzono wariantu miejscowości - wymagany wybór.</div>' : pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Wybierz dokładnie jedno wydarzenie Eventis.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>';
@@ -262,8 +262,9 @@
       const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
       const wybor = NARZEDZIA_LISTY.wybierzRecznyUrlEventis(zrodlo,pole?.value || "");
-      if (!wybor) return pokazKomunikat("Podaj bezpieczny adres edycji wydarzenia Eventis.");
+      if (!wybor) return pokazKomunikat("Wklej adres edycji Eventis, np. https://eventis.pl/event/edit/123. Link szkolenia SEMPER/IIST nie zawiera ID wydarzenia Eventis.");
       stan.decyzje[klucz] = wybor;
+      renderuj();
       await zapiszRozstrzygniecie(wybor,"manual");
       await odswiezPlanOtwarcia();
       renderuj();
