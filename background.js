@@ -64,13 +64,21 @@ async function otworzPlanEventis(pozycje, organizacja) {
   const {eventisOpeningSessions = {}} = await chrome.storage.local.get(["eventisOpeningSessions"]);
   const zadania = plan.doOtwarcia;
   await chrome.storage.local.set({eventisOpeningSessions:{...eventisOpeningSessions,[sessionId]:OTWIERANIE_WYDARZEN.utworzSesjeOtwarcia(sessionId,organizacja,zadania)}});
+  const bledyOtwarcia = [];
+  let liczbaOtwartych = 0;
   for (let indeks = 0; indeks < zadania.length; indeks++) {
-    const url = new URL(zadania[indeks].eventUrl);
-    url.searchParams.set("esyncSession",sessionId);
-    url.searchParams.set("esyncTask",String(zadania[indeks].eventId));
-    await chrome.tabs.create({url:url.href,active:indeks === 0});
+    try {
+      const url = new URL(zadania[indeks].eventUrl);
+      url.searchParams.set("esyncSession",sessionId);
+      url.searchParams.set("esyncTask",String(zadania[indeks].eventId));
+      await chrome.tabs.create({url:url.href,active:indeks === 0});
+      liczbaOtwartych++;
+      if (indeks < zadania.length - 1) await new Promise(rozwiaz => setTimeout(rozwiaz,200));
+    } catch (blad) {
+      bledyOtwarcia.push({eventId:zadania[indeks].eventId,error:blad?.message || String(blad)});
+    }
   }
-  return {ok:true,...plan,opened:zadania.length,sessionId};
+  return {ok:true,...plan,opened:liczbaOtwartych,bledyOtwarcia,sessionId,error:bledyOtwarcia.length ? `Nie udało się otworzyć ${bledyOtwarcia.length} kart.` : ""};
 }
 
 async function fetchText({ url, method = "GET", body = null, headers = {}, timeoutMs = 15000 }) {

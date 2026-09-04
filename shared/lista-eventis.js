@@ -5,8 +5,9 @@
     || (typeof require === "function" ? require("./wyszukiwanie") : null);
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
 
-  const PROG_DOPASOWANIA = 0.72;
-  const MINIMALNA_PRZEWAGA = 0.08;
+  const PROG_DOPASOWANIA = 0.78;
+  const PROG_SUGESTII = 0.5;
+  const MINIMALNA_PRZEWAGA = 0.1;
   const CZAS_WAZNOSCI_SERII_MS = 2 * 60 * 60 * 1000;
   const STATUSY_RESOLVERA = Object.freeze({
     AUTO_MATCH:"AUTO_MATCH",
@@ -19,6 +20,34 @@
       || pierwszy.normalizedTitle.localeCompare(drugi.normalizedTitle,"pl")
       || String(pierwszy.eventId).localeCompare(String(drugi.eventId),"pl",{numeric:true})
       || pierwszy.url.localeCompare(drugi.url);
+  }
+
+  function normalizujAdresStronyListyEventis(wartosc, baza = "https://eventis.pl/company/listevents") {
+    try {
+      const url = new URL(String(wartosc || ""),baza);
+      if (url.protocol !== "https:" || url.username || url.password || !/(^|\.)eventis\.pl$/i.test(url.hostname)) return "";
+      const sciezka = url.pathname.replace(/\/+$/,"") || "/";
+      if (sciezka !== "/company" && !/^\/company\/listevents(?:\/|$)/i.test(sciezka)) return "";
+      url.hash = "";
+      return url.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function scalOgloszeniaEventis(...listy) {
+    const wedlugId = new Map();
+    for (const ogloszenie of listy.flat()) {
+      if (!ogloszenie?.eventisId || !ogloszenie.url) continue;
+      const eventisId = String(ogloszenie.eventisId);
+      const poprzednie = wedlugId.get(eventisId);
+      const tytuly = [...new Set([
+        ...(poprzednie?.tytuly || []),
+        ...(Array.isArray(ogloszenie.tytuly) ? ogloszenie.tytuly : [ogloszenie.tytul])
+      ].map(wartosc => String(wartosc || "").replace(/\s+/g," ").trim()).filter(Boolean))];
+      wedlugId.set(eventisId,{...poprzednie,...ogloszenie,eventisId,tytuly});
+    }
+    return [...wedlugId.values()];
   }
 
   function kandydaciEventis(ogloszenia = [], organizacja, normalizedSourceTitle, sourceTitle = normalizedSourceTitle) {
@@ -72,8 +101,11 @@
     if (wariant && !kandydaciDoAutoWyboru.length) {
       return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"LOCATION_VARIANT_UNCONFIRMED",confidence:candidates[0]?.score || 0,wariantLokalizacji:wariant.locationVariant};
     }
-    if (!najlepszy || najlepszy.score < prog) {
+    if (!najlepszy || najlepszy.score < PROG_SUGESTII) {
       return {status:STATUSY_RESOLVERA.NOT_FOUND,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"NO_SUFFICIENT_FUZZY_MATCH",confidence:najlepszy?.score || 0,wariantLokalizacji:wariant?.locationVariant || ""};
+    }
+    if (najlepszy.score < prog) {
+      return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"WEAK_FUZZY_MATCH",confidence:najlepszy.score,wariantLokalizacji:wariant?.locationVariant || ""};
     }
     if (drugi && najlepszy.score - drugi.score < przewaga) {
       return {status:STATUSY_RESOLVERA.AMBIGUOUS,sourceTitle,normalizedSourceTitle,organization:organizacja,selectedCandidate:null,candidates,reason:"FUZZY_MATCHES_TOO_CLOSE",confidence:najlepszy.score,wariantLokalizacji:wariant?.locationVariant || ""};
@@ -253,9 +285,12 @@
 
   const interfejs = {
     PROG_DOPASOWANIA,
+    PROG_SUGESTII,
     MINIMALNA_PRZEWAGA,
     CZAS_WAZNOSCI_SERII_MS,
     STATUSY_RESOLVERA,
+    normalizujAdresStronyListyEventis,
+    scalOgloszeniaEventis,
     pobierzIdEventisZUrl,
     utworzKandydataZUrlEventis,
     pogrupujElementyKolejki,

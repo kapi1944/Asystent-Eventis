@@ -31,8 +31,11 @@
     planOtwarcia:null,
     liczbaBledow:0,
     liczbaDuplikatow:0,
-    komunikat:""
+    komunikat:"",
+    skanowanie:{trwa:false,liczbaStron:1,liczbaZapytan:0,blad:""}
   };
+
+  const MAKSYMALNA_LICZBA_STRON = 40;
 
   const $ = (selektor, korzen=document) => korzen.querySelector(selektor);
   const $$ = (selektor, korzen=document) => Array.from(korzen.querySelectorAll(selektor));
@@ -45,6 +48,12 @@
     element.textContent = tekst;
     document.body.appendChild(element);
     setTimeout(() => element.remove(),3500);
+  }
+
+  function obsluzAsynchronicznie(akcja) {
+    return (...argumenty) => Promise.resolve()
+      .then(() => akcja(...argumenty))
+      .catch(blad => pokazKomunikat(blad?.message || String(blad)));
   }
 
   function wykryjOrganizacje() {
@@ -63,19 +72,35 @@
     if (tekst.length >= 12 && !/^(edytuj|edycja|usun|usuń|podglad|podgląd)$/i.test(tekst) && !lista.includes(tekst)) lista.push(tekst);
   }
 
-  function pobierzOgloszeniaZListy() {
+  function znajdzKontenerOgloszenia(link, identyfikatorEventis, adresStrony) {
+    let element = link.parentElement;
+    for (let poziom = 0; element && element !== link.ownerDocument.body && poziom < 9; poziom++, element = element.parentElement) {
+      const identyfikatory = new Set($$('a[href*="/event/edit"]',element).map(kandydat => {
+        try { return NARZEDZIA_LISTY.pobierzIdEventisZUrl(new URL(kandydat.getAttribute("href"),adresStrony).href); } catch (_) { return ""; }
+      }).filter(Boolean));
+      if (identyfikatory.size !== 1 || !identyfikatory.has(identyfikatorEventis)) continue;
+      const tekstMerytoryczny = String(element.textContent || "")
+        .replace(/\b(?:edytuj|edycja|usuń|usun|podgląd|podglad)\b/gi," ")
+        .replace(/\s+/g," ")
+        .trim();
+      if (tekstMerytoryczny.length >= 12) return element;
+    }
+    return link.closest("tr, article, .event, .card, .panel, .row") || link.parentElement;
+  }
+
+  function pobierzOgloszeniaZDokumentu(dokument = document, adresStrony = location.href) {
     const wedlugId = new Map();
-    for (const link of $$('a[href*="/event/edit"]')) {
+    for (const link of $$('a[href*="/event/edit"]',dokument)) {
       let url;
-      try { url = new URL(link.getAttribute("href"),location.href); } catch (_) { continue; }
+      try { url = new URL(link.getAttribute("href"),adresStrony); } catch (_) { continue; }
       const eventisId = NARZEDZIA_LISTY.pobierzIdEventisZUrl(url.href);
       if (!eventisId) continue;
-      const kontener = link.closest("tr, article, li, .event, .card, .panel, .row") || link.parentElement;
+      const kontener = znajdzKontenerOgloszenia(link,eventisId,adresStrony);
       const tytuly = wedlugId.get(eventisId)?.tytuly || [];
       dodajKandydata(tytuly,link.textContent);
       dodajKandydata(tytuly,link.getAttribute("title"));
       dodajKandydata(tytuly,link.getAttribute("aria-label"));
-      for (const element of $$('[data-title], .event-title, .title, h2, h3, h4, td, a',kontener || document)) {
+      for (const element of $$('[data-title], .event-title, .event-name, .title, .name, .media-heading, [class*="title"], [class*="nazwa"], h2, h3, h4, td, a',kontener || dokument)) {
         dodajKandydata(tytuly,element.getAttribute?.("data-title"));
         dodajKandydata(tytuly,element.textContent);
       }
@@ -83,6 +108,131 @@
       wedlugId.set(eventisId,{eventisId,url:url.href,tytuly});
     }
     return [...wedlugId.values()];
+  }
+
+  function pobierzAdresyPaginacji(dokument, adresStrony) {
+    const adresy = new Set();
+    for (const link of $$('a[href]',dokument)) {
+      const adres = NARZEDZIA_LISTY.normalizujAdresStronyListyEventis(link.getAttribute("href"),adresStrony);
+      if (!adres) continue;
+      const url = new URL(adres);
+      const tekst = String(link.textContent || "").replace(/\s+/g," ").trim();
+      const jestWPaginacji = !!link.closest('.pagination,.pager,[class*="pagin"],[class*="pager"],nav[aria-label]');
+      const maParametrStrony = [...url.searchParams.keys()].some(nazwa => /^(?:page|p|strona|start|offset|limitstart)$/i.test(nazwa));
+      const wygladaJakNawigacja = /^(?:\d+|nast[eę]pna|nast[eę]pny|dalej|next|›|»|>)$/i.test(tekst);
+      if (jestWPaginacji || maParametrStrony || wygladaJakNawigacja) adresy.add(adres);
+    }
+    return [...adresy];
+  }
+
+  async function pobierzDokumentListy(adres) {
+    const odpowiedz = await fetch(adres,{credentials:"include",redirect:"follow",cache:"no-store"});
+    if (!odpowiedz.ok) throw new Error(`Eventis zwrócił HTTP ${odpowiedz.status}.`);
+    const adresKoncowy = NARZEDZIA_LISTY.normalizujAdresStronyListyEventis(odpowiedz.url,adres);
+    if (!adresKoncowy) throw new Error("Eventis przekierował wyszukiwanie poza listę ogłoszeń.");
+    return {dokument:new DOMParser().parseFromString(await odpowiedz.text(),"text/html"),adres:adresKoncowy};
+  }
+
+  function znajdzPoleWyszukiwaniaOgloszen() {
+    return $$('input[type="search"],input[type="text"],input:not([type])')
+      .filter(pole => !pole.closest("#esync-root") && !pole.disabled)
+      .map(pole => {
+        const opis = NARZEDZIA_WYSZUKIWANIA.normalizujTytul([
+          pole.type,
+          pole.name,
+          pole.id,
+          pole.placeholder,
+          pole.getAttribute("aria-label")
+        ].join(" "));
+        const ocena = (pole.type === "search" ? 3 : 0)
+          + (/szukaj|wyszukaj|search/.test(opis) ? 3 : 0)
+          + (pole.offsetParent ? 1 : 0);
+        return {pole,ocena};
+      })
+      .filter(pozycja => pozycja.ocena >= 3)
+      .sort((pierwsza,druga) => druga.ocena - pierwsza.ocena)[0]?.pole || null;
+  }
+
+  function ustawWartoscPolaWyszukiwania(pole, wartosc) {
+    const ustaw = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")?.set;
+    if (ustaw) ustaw.call(pole,wartosc); else pole.value = wartosc;
+    pole.dispatchEvent(new Event("input",{bubbles:true}));
+    pole.dispatchEvent(new Event("change",{bubbles:true}));
+    pole.dispatchEvent(new KeyboardEvent("keyup",{bubbles:true,key:"Unidentified"}));
+  }
+
+  async function zastosujFiltrWyszukiwania(pole, wartosc) {
+    const obserwowany = pole.closest('[class*="table"],[class*="list"],main,section') || document.body;
+    await new Promise(rozwiaz => {
+      let zakonczono = false;
+      let czasUspokojenia = null;
+      const zakoncz = () => {
+        if (zakonczono) return;
+        zakonczono = true;
+        obserwator.disconnect();
+        clearTimeout(czasUspokojenia);
+        clearTimeout(czasMaksymalny);
+        rozwiaz();
+      };
+      const obserwator = new MutationObserver(() => {
+        clearTimeout(czasUspokojenia);
+        czasUspokojenia = setTimeout(zakoncz,180);
+      });
+      obserwator.observe(obserwowany,{subtree:true,childList:true,characterData:true,attributes:true});
+      const czasMaksymalny = setTimeout(zakoncz,1800);
+      ustawWartoscPolaWyszukiwania(pole,wartosc);
+      czasUspokojenia = setTimeout(zakoncz,700);
+    });
+  }
+
+  async function pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly) {
+    const pole = znajdzPoleWyszukiwaniaOgloszen();
+    if (!pole || !tytuly.length) return {ogloszenia:[],liczbaZapytan:0};
+    const pierwotnaWartosc = pole.value;
+    let ogloszenia = [];
+    let liczbaZapytan = 0;
+    try {
+      for (const tytul of tytuly) {
+        const warianty = NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(tytul,5);
+        for (const wariant of warianty) {
+          await zastosujFiltrWyszukiwania(pole,wariant);
+          liczbaZapytan++;
+          ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,pobierzOgloszeniaZDokumentu(document,location.href));
+        }
+      }
+    } finally {
+      await zastosujFiltrWyszukiwania(pole,pierwotnaWartosc);
+    }
+    return {ogloszenia,liczbaZapytan};
+  }
+
+  async function pobierzWszystkieOgloszeniaZListy(tytuly) {
+    const adresPoczatkowy = NARZEDZIA_LISTY.normalizujAdresStronyListyEventis(location.href);
+    const odwiedzone = new Set(adresPoczatkowy ? [adresPoczatkowy] : []);
+    const oczekujace = pobierzAdresyPaginacji(document,location.href).filter(adres => !odwiedzone.has(adres));
+    let ogloszenia = pobierzOgloszeniaZDokumentu(document,location.href);
+    let ostatniBlad = "";
+
+    while (oczekujace.length && odwiedzone.size < MAKSYMALNA_LICZBA_STRON) {
+      const adres = oczekujace.shift();
+      if (odwiedzone.has(adres)) continue;
+      odwiedzone.add(adres);
+      try {
+        const wynik = await pobierzDokumentListy(adres);
+        ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,pobierzOgloszeniaZDokumentu(wynik.dokument,wynik.adres));
+        for (const kolejnyAdres of pobierzAdresyPaginacji(wynik.dokument,wynik.adres)) {
+          if (!odwiedzone.has(kolejnyAdres) && !oczekujace.includes(kolejnyAdres)) oczekujace.push(kolejnyAdres);
+        }
+      } catch (blad) {
+        ostatniBlad = blad?.message || String(blad);
+      }
+    }
+    if (oczekujace.length && odwiedzone.size >= MAKSYMALNA_LICZBA_STRON) {
+      ostatniBlad = `Osiągnięto bezpieczny limit ${MAKSYMALNA_LICZBA_STRON} stron listy.`;
+    }
+    const wynikPola = await pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly);
+    ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,wynikPola.ogloszenia);
+    return {ogloszenia,liczbaStron:odwiedzone.size,liczbaZapytan:wynikPola.liczbaZapytan,blad:ostatniBlad};
   }
 
   function elementyDotyczaceRekordow(kolejka, rekordy) {
@@ -148,27 +298,37 @@
     await chrome.storage.local.set({eventisImportQueue:stan.kolejka});
     const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:plan.pozycje,organization:stan.organizacja});
     if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
-    stan.komunikat = odpowiedz.opened ? `Otwarto ${odpowiedz.opened} kart w sesji ${odpowiedz.sessionId}.` : "Nie otwarto nowych kart: wszystkie są już otwarte albo plan jest pusty.";
+    stan.komunikat = odpowiedz.opened
+      ? `Otwarto ${odpowiedz.opened} kart w sesji ${odpowiedz.sessionId}.${odpowiedz.bledyOtwarcia?.length ? ` Nie udało się otworzyć: ${odpowiedz.bledyOtwarcia.length}.` : ""}`
+      : odpowiedz.bledyOtwarcia?.length ? `Nie udało się otworzyć kart: ${odpowiedz.bledyOtwarcia.length}. Możesz ponowić próbę.` : "Nie otwarto nowych kart: wszystkie są już otwarte albo plan jest pusty.";
     await odswiezPlanOtwarcia();
     renderuj();
   }
 
   async function analizujWklejonyTekst() {
+    if (stan.skanowanie.trwa) return;
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
     if (!surowyTekst) return pokazKomunikat("Wklej listę potwierdzonych szkoleń.");
     const rekordy = NARZEDZIA_ARKUSZA.parseManualPaste(surowyTekst);
     if (!rekordy.length) return pokazKomunikat("Nie znaleziono wierszy POTWIERDZONE SZKOLENIE ani ODPOTWIERDZONE.");
-    const dane = await chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+    stan.surowyTekst = surowyTekst;
+    stan.skanowanie = {trwa:true,liczbaStron:1,liczbaZapytan:0,blad:""};
+    renderuj();
+    const tytulyDoWyszukania = [...new Set(rekordy.filter(rekord => !rekord.error).map(rekord => rekord.title).filter(Boolean))];
+    const [dane,wynikSkanowania] = await Promise.all([
+      chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]),
+      pobierzWszystkieOgloszeniaZListy(tytulyDoWyszukania)
+    ]);
     const kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,kolejka,{organization:stan.organizacja});
     const kolejkaPodgladu = [...kolejka,...przygotowane.items];
-    stan.surowyTekst = surowyTekst;
     stan.rekordy = rekordy;
     stan.kolejka = kolejkaPodgladu;
     stan.mapowania = dane.mappings || {};
     stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
-    stan.ogloszenia = pobierzOgloszeniaZListy();
+    stan.ogloszenia = wynikSkanowania.ogloszenia;
+    stan.skanowanie = {trwa:false,liczbaStron:wynikSkanowania.liczbaStron,liczbaZapytan:wynikSkanowania.liczbaZapytan,blad:wynikSkanowania.blad};
     stan.liczbaBledow = rekordy.filter(rekord => rekord.error).length;
     stan.liczbaDuplikatow = przygotowane.duplicates;
     const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(kolejkaPodgladu,rekordy),stan.ogloszenia,stan.organizacja,{
@@ -204,11 +364,11 @@
       const liczby = liczbyTerminow(pozycja);
       const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
       const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
-      const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>${esc(kandydat.url)}</small></label>`).join("") : "";
+      const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).slice(0,5).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>Zgodność: ${Math.round(kandydat.score*100)}% · ${esc(kandydat.url)}</small></label>`).join("") : "";
       const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><div class="esync-small esync-muted" style="margin-top:4px">Wklej adres edycji wydarzenia z Eventis, nie adres szkolenia SEMPER/IIST.</div><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
       const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
       const wariant = pozycja.wariantLokalizacji ? `<div class="esync-info esync-small">3-dniowe - wariant lokalizacyjny: ${esc(pozycja.wariantLokalizacji)}.</div>` : "";
-      const komunikatWyboru = pozycja.reason === "LOCATION_VARIANT_UNCONFIRMED" ? '<div class="esync-warning esync-small">Nie potwierdzono wariantu miejscowości - wymagany wybór.</div>' : pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Wybierz dokładnie jedno wydarzenie Eventis.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>';
+      const komunikatWyboru = pozycja.reason === "LOCATION_VARIANT_UNCONFIRMED" ? '<div class="esync-warning esync-small">Nie potwierdzono wariantu miejscowości - wymagany wybór.</div>' : pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Znaleziono podobne tytuły. Wybierz dokładnie jedno wydarzenie Eventis — bez wyboru żadna karta nie zostanie otwarta.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>';
       return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${wariant}${komunikatWyboru}${kandydaci}${wybrano}${pominieto}${recznyUrl}${szukaj}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
     }).join("");
     const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
@@ -224,7 +384,10 @@
   function renderujSeryjnaKolejke() {
     const kolejka = NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(stan.kolejka,stan.organizacja);
     const podsumowanie = NARZEDZIA_KOLEJKI.podsumujKolejke(kolejka);
-    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div></div>`;
+    const stanSkanowania = stan.skanowanie.trwa
+      ? '<div class="esync-info esync-small">Wyszukiwanie ogłoszeń na wszystkich stronach listy Eventis…</div>'
+      : `<div class="esync-small esync-muted" style="margin-top:6px">Przeszukane strony: ${stan.skanowanie.liczbaStron} · zapytania w polu wyszukiwania: ${stan.skanowanie.liczbaZapytan} · znalezione ogłoszenia: ${stan.ogloszenia.length}</div>${stan.skanowanie.blad?`<div class="esync-warning esync-small">Część stron nie została odczytana: ${esc(stan.skanowanie.blad)}</div>`:""}`;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}</div>`;
   }
 
   function renderuj() {
@@ -234,14 +397,14 @@
       korzen.id = "esync-root";
       document.body.appendChild(korzen);
     }
-    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujSeryjnaKolejke()}<div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px">Analizuj kolejkę i dopasuj karty</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
+    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujSeryjnaKolejke()}<div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
     $("#esync-lista-collapse")?.addEventListener("click",() => {
       korzen.classList.toggle("esync-collapsed");
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
-    $("#esync-lista-analizuj")?.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message)));
-    $("#esync-otworz-karty")?.addEventListener("click",() => otworzGotoweKarty().catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",async () => {
+    $("#esync-lista-analizuj")?.addEventListener("click",obsluzAsynchronicznie(analizujWklejonyTekst));
+    $("#esync-otworz-karty")?.addEventListener("click",obsluzAsynchronicznie(otworzGotoweKarty));
+    $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === pole.dataset.wyborKlucz);
       const wybor = NARZEDZIA_LISTY.wybierzKandydataRozstrzygniecia(zrodlo,pole.value);
       if (wybor) {
@@ -250,14 +413,14 @@
       }
       await odswiezPlanOtwarcia();
       renderuj();
-    }).catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",async () => {
+    })));
+    $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
       if (zrodlo) stan.decyzje[przycisk.dataset.pominTytul] = NARZEDZIA_LISTY.pominRozstrzygniecie(zrodlo);
       await odswiezPlanOtwarcia();
       renderuj();
-    }).catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",async () => {
+    })));
+    $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.zatwierdzUrl;
       const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
@@ -268,8 +431,8 @@
       await zapiszRozstrzygniecie(wybor,"manual");
       await odswiezPlanOtwarcia();
       renderuj();
-    }).catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",async () => {
+    })));
+    $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.zmienMapowanie;
       const indeks = stan.rozstrzygniecia.findIndex(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
       const zrodlo = stan.rozstrzygniecia[indeks];
@@ -281,8 +444,8 @@
       delete stan.decyzje[klucz];
       await odswiezPlanOtwarcia();
       renderuj();
-    }).catch(blad => pokazKomunikat(blad.message)));
-    $$('[data-ponow-wyszukiwanie]').forEach(przycisk => przycisk.addEventListener("click",() => analizujWklejonyTekst().catch(blad => pokazKomunikat(blad.message))));
+    })));
+    $$('[data-ponow-wyszukiwanie]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(analizujWklejonyTekst)));
   }
 
   async function inicjalizuj() {
@@ -290,7 +453,7 @@
     stan.ustawienia = {...KONFIGURACJA.DEFAULT_SETTINGS,...(dane.settings || {})};
     stan.organizacja = wykryjOrganizacje();
     stan.kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
-    stan.ogloszenia = pobierzOgloszeniaZListy();
+    stan.ogloszenia = pobierzOgloszeniaZDokumentu();
     renderuj();
   }
 

@@ -115,6 +115,32 @@ test("resolver zwraca NOT_FOUND bez wystarczająco dobrego wyniku", () => {
   assert.equal(wynik.selectedCandidate,null);
 });
 
+test("słabe podobne trafienie wymaga ręcznego wyboru", () => {
+  const wynik = rozwiaz("Rozliczanie czasu pracy kierowców w praktyce",[
+    ogloszenie(101,"Rozliczanie czasu pracy kierowców w firmie")
+  ]);
+  assert.equal(wynik.status,"AMBIGUOUS");
+  assert.equal(wynik.reason,"WEAK_FUZZY_MATCH");
+  assert.equal(wynik.selectedCandidate,null);
+  assert.equal(narzedzia.utworzPlanOtwarcia([wynik]).gotoweDoOtwarcia,0);
+});
+
+test("adresy paginacji są ograniczone do listy Eventis", () => {
+  assert.equal(narzedzia.normalizujAdresStronyListyEventis("/company/listevents?page=2","https://eventis.pl/company/listevents").includes("page=2"),true);
+  assert.equal(narzedzia.normalizujAdresStronyListyEventis("https://eventis.pl/event/edit/123"),"");
+  assert.equal(narzedzia.normalizujAdresStronyListyEventis("https://eventis.pl/company/listevents-inne?page=2"),"");
+  assert.equal(narzedzia.normalizujAdresStronyListyEventis("https://evil.example/company/listevents?page=2"),"");
+});
+
+test("ogłoszenia z wielu stron są scalane po identyfikatorze", () => {
+  const wynik = narzedzia.scalOgloszeniaEventis(
+    [ogloszenie(101,"Prawo pracy")],
+    [{...ogloszenie(101,"Prawo pracy - szkolenie online"),tytuly:["Prawo pracy - szkolenie online"]},ogloszenie(102,"Kadry i płace")]
+  );
+  assert.equal(wynik.length,2);
+  assert.deepEqual(wynik.find(pozycja => pozycja.eventisId === "101").tytuly,["Prawo pracy","Prawo pracy - szkolenie online"]);
+});
+
 test("krótki tytuł Szkolenie A działa przez exact match", () => {
   const wynik = rozwiaz("Szkolenie A",[ogloszenie(101,"Szkolenie A")]);
   assert.equal(wynik.status,"AUTO_MATCH");
@@ -208,6 +234,12 @@ test("widok listy ucieka od nieufnych tytułów przed wstawieniem do innerHTML",
   const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
   assert.match(kod,/\$\{esc\(pozycja\.sourceTitle\)\}/);
   assert.match(kod,/\$\{esc\(kandydat\.title\)\}/);
+});
+
+test("obsługa zdarzeń nie wywołuje catch na wyniku forEach", () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
+  assert.doesNotMatch(kod,/\}\)\.catch\(blad\s*=>\s*pokazKomunikat/);
+  assert.match(kod,/obsluzAsynchronicznie\(analizujWklejonyTekst\)/);
 });
 
 function daneMapowania(organizacja = "SEMPER", tytul = "Prawo pracy", eventId = "101") {
