@@ -69,8 +69,13 @@ async function otworzPlanEventis(pozycje, organizacja) {
   for (let indeks = 0; indeks < zadania.length; indeks++) {
     try {
       const url = new URL(zadania[indeks].eventUrl);
-      url.searchParams.set("esyncSession",sessionId);
-      url.searchParams.set("esyncTask",String(zadania[indeks].eventId));
+      if (zadania[indeks].typ === "CREATE_NEW") {
+        url.searchParams.set("esyncNoweId",zadania[indeks].taskId);
+        url.searchParams.set("esyncNowyTytul",zadania[indeks].sourceTitle);
+      } else {
+        url.searchParams.set("esyncSession",sessionId);
+        url.searchParams.set("esyncTask",String(zadania[indeks].eventId));
+      }
       await chrome.tabs.create({url:url.href,active:indeks === 0});
       liczbaOtwartych++;
       if (indeks < zadania.length - 1) await new Promise(rozwiaz => setTimeout(rozwiaz,200));
@@ -108,6 +113,9 @@ async function fetchText({ url, method = "GET", body = null, headers = {}, timeo
 }
 
 async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu) {
+  const nazwaPola = typeof name === "string" ? name : "";
+  const wartoscHtml = typeof html === "string" ? html : "";
+  const identyfikatorEdytora = typeof identyfikatorElementu === "string" ? identyfikatorElementu : null;
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
@@ -189,12 +197,12 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
 
       return blad("EDITOR_MODEL_UNAVAILABLE", `Nie znaleziono obsługiwanej instancji edytora pola „${nazwaPola}”.`);
     },
-    args: [name, html, identyfikatorElementu]
+    args: [nazwaPola, wartoscHtml, identyfikatorEdytora]
   });
   return result || {
     ok: false,
     code: "EXECUTION_NO_RESULT",
-    field: name || identyfikatorElementu || "nieznane",
+    field: nazwaPola || identyfikatorEdytora || "nieznane",
     message: "Nie otrzymano wyniku aktualizacji pola rich-text."
   };
 }

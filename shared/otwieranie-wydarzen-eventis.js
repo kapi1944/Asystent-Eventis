@@ -23,11 +23,35 @@
       || parsed.searchParams.get("id") || parsed.searchParams.get("event_id") || parsed.searchParams.get("eventId") || "";
   }
 
+  function kluczNowegoOgloszenia(pozycja) {
+    return `${String(pozycja?.organization || "").toUpperCase()}|${String(pozycja?.normalizedSourceTitle || "")}`;
+  }
+
+  function bezpiecznyUrlNowegoOgloszenia(wartosc) {
+    try {
+      const url = new URL(String(wartosc || ""));
+      if (url.protocol !== "https:" || url.username || url.password || !/(^|\.)eventis\.pl$/i.test(url.hostname) || !/^\/event\/add\/?$/i.test(url.pathname)) return "";
+      url.hash = "";
+      return url.href;
+    } catch (_) {
+      return "";
+    }
+  }
+
   function utworzPlanOtwierania(pozycje = [], otwarteUrl = []) {
     const otwarteEventy = new Set(otwarteUrl.map(eventIdZUrl).filter(Boolean));
     const wedlugEventu = new Map();
+    const wedlugNowegoOgloszenia = new Map();
     const konflikty = [];
     for (const pozycja of pozycje) {
+      if (pozycja?.status === "CREATE_NEW" && pozycja.selectedCandidate?.matchType === "CREATE_NEW") {
+        const url = bezpiecznyUrlNowegoOgloszenia(pozycja.selectedCandidate.url);
+        const taskId = kluczNowegoOgloszenia(pozycja);
+        if (url && taskId && !wedlugNowegoOgloszenia.has(taskId)) {
+          wedlugNowegoOgloszenia.set(taskId,{...pozycja,taskId,eventId:"",eventUrl:url,typ:"CREATE_NEW"});
+        }
+        continue;
+      }
       if (pozycja?.status !== "READY" || !pozycja.selectedCandidate) continue;
       const url = bezpiecznyUrlEdycjiEventis(pozycja.selectedCandidate.url);
       const eventId = String(pozycja.selectedCandidate.eventId || eventIdZUrl(url));
@@ -40,9 +64,13 @@
       }
       wedlugEventu.set(eventId,zadanie);
     }
-    const gotowe = [...wedlugEventu.values()];
-    const juzOtwarte = gotowe.filter(zadanie => otwarteEventy.has(zadanie.eventId));
-    const doOtwarcia = gotowe.filter(zadanie => !otwarteEventy.has(zadanie.eventId));
+    const noweOtwarte = new Set(otwarteUrl.map(wartosc => {
+      const bezpieczny = bezpiecznyUrlNowegoOgloszenia(wartosc);
+      try { return bezpieczny ? new URL(bezpieczny).searchParams.get("esyncNoweId") || "" : ""; } catch (_) { return ""; }
+    }).filter(Boolean));
+    const gotowe = [...wedlugEventu.values(),...wedlugNowegoOgloszenia.values()];
+    const juzOtwarte = gotowe.filter(zadanie => zadanie.typ === "CREATE_NEW" ? noweOtwarte.has(zadanie.taskId) : otwarteEventy.has(zadanie.eventId));
+    const doOtwarcia = gotowe.filter(zadanie => zadanie.typ === "CREATE_NEW" ? !noweOtwarte.has(zadanie.taskId) : !otwarteEventy.has(zadanie.eventId));
     return {gotowe:gotowe.length,juzOtwarte,doOtwarcia,konflikty};
   }
 
@@ -52,14 +80,15 @@
       organization:organizacja,
       createdAt,
       tasks:zadania.map(zadanie => ({
-        taskId:String(zadanie.eventId || zadanie.selectedCandidate?.eventId),
+        taskId:String(zadanie.taskId || zadanie.eventId || zadanie.selectedCandidate?.eventId),
         sourceTitle:zadanie.sourceTitle,
         normalizedSourceTitle:zadanie.normalizedSourceTitle,
         organization:zadanie.organization || organizacja,
         eventId:zadanie.eventId || zadanie.selectedCandidate?.eventId,
         eventUrl:zadanie.eventUrl || zadanie.selectedCandidate?.url,
         queueItemIds:[...(zadanie.queueItemIds || zadanie.identyfikatoryKolejki || [])],
-        status:"PENDING"
+        status:"PENDING",
+        typ:zadanie.typ || "EDIT"
       }))
     };
   }
@@ -105,7 +134,7 @@
     };
   }
 
-  const interfejs = {bezpiecznyUrlEdycjiEventis,eventIdZUrl,utworzPlanOtwierania,utworzSesjeOtwarcia,zweryfikujOtwartaKarte,zapiszWynikWeryfikacjiSesji};
+  const interfejs = {bezpiecznyUrlEdycjiEventis,bezpiecznyUrlNowegoOgloszenia,eventIdZUrl,kluczNowegoOgloszenia,utworzPlanOtwierania,utworzSesjeOtwarcia,zweryfikujOtwartaKarte,zapiszWynikWeryfikacjiSesji};
   globalny.OtwieranieWydarzenEventis = interfejs;
   if (typeof module !== "undefined" && module.exports) module.exports = interfejs;
 })(typeof globalThis !== "undefined" ? globalThis : this);

@@ -48,6 +48,36 @@ test("dwa mapowania jednego wydarzenia zgłaszają konflikt i nie dublują karty
   assert.equal(plan.konflikty.length,1);
 });
 
+test("każdy zatwierdzony nowy tytuł tworzy osobną kartę dodawania", () => {
+  const nowe = [1,2].map(numer => ({
+    sourceTitle:`Nowy tytuł ${numer}`,
+    normalizedSourceTitle:`nowy tytul ${numer}`,
+    organization:"SEMPER",
+    status:"CREATE_NEW",
+    selectedCandidate:{eventId:"",url:"https://eventis.pl/event/add",matchType:"CREATE_NEW"},
+    queueItemIds:[`kolejka-${numer}`]
+  }));
+  const plan = narzedzia.utworzPlanOtwierania(nowe);
+  assert.equal(plan.gotowe,2);
+  assert.equal(plan.doOtwarcia.length,2);
+  assert.notEqual(plan.doOtwarcia[0].taskId,plan.doOtwarcia[1].taskId);
+  assert.equal(plan.doOtwarcia[0].typ,"CREATE_NEW");
+});
+
+test("już otwarty formularz nowego tytułu nie jest otwierany ponownie", () => {
+  const nowa = {
+    sourceTitle:"Nowy tytuł",
+    normalizedSourceTitle:"nowy tytul",
+    organization:"SEMPER",
+    status:"CREATE_NEW",
+    selectedCandidate:{eventId:"",url:"https://eventis.pl/event/add",matchType:"CREATE_NEW"}
+  };
+  const klucz = encodeURIComponent("SEMPER|nowy tytul");
+  const plan = narzedzia.utworzPlanOtwierania([nowa],[`https://eventis.pl/event/add?esyncNoweId=${klucz}`]);
+  assert.equal(plan.juzOtwarte.length,1);
+  assert.equal(plan.doOtwarcia.length,0);
+});
+
 test("sesja zachowuje kontekst SEMPER lub IIST po serializacji storage", () => {
   const sesja = narzedzia.utworzSesjeOtwarcia("sesja-1","IIST",[pozycja(1,"IIST")],"2026-09-01T10:00:00.000Z");
   const odtworzona = JSON.parse(JSON.stringify(sesja));

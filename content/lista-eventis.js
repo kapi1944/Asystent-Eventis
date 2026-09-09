@@ -363,19 +363,23 @@
       const aktualna = aktualneRozstrzygniecie(pozycja);
       const liczby = liczbyTerminow(pozycja);
       const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
+      const tworzenie = aktualna.manualStatus === "CREATE_NEW" ? '<div class="esync-success esync-small">Potwierdzono utworzenie nowego ogłoszenia.</div>' : "";
       const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
       const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).slice(0,5).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>Zgodność: ${Math.round(kandydat.score*100)}% · ${esc(kandydat.url)}</small></label>`).join("") : "";
       const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><div class="esync-small esync-muted" style="margin-top:4px">Wklej adres edycji wydarzenia z Eventis, nie adres szkolenia SEMPER/IIST.</div><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
       const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
+      const utworzNowe = `<button class="esync-btn good" data-utworz-nowe="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie dla tego tytułu</button>`;
       const wariant = pozycja.wariantLokalizacji ? `<div class="esync-info esync-small">3-dniowe - wariant lokalizacyjny: ${esc(pozycja.wariantLokalizacji)}.</div>` : "";
       const komunikatWyboru = pozycja.reason === "LOCATION_VARIANT_UNCONFIRMED" ? '<div class="esync-warning esync-small">Nie potwierdzono wariantu miejscowości - wymagany wybór.</div>' : pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Znaleziono podobne tytuły. Wybierz dokładnie jedno wydarzenie Eventis — bez wyboru żadna karta nie zostanie otwarta.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>';
-      return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${wariant}${komunikatWyboru}${kandydaci}${wybrano}${pominieto}${recznyUrl}${szukaj}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
+      return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${wariant}${komunikatWyboru}${kandydaci}${wybrano}${tworzenie}${pominieto}${recznyUrl}${szukaj}${utworzNowe}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
     }).join("");
     const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
     const plan = finalnyPlanOtwarcia();
     const planOtwarcia = stan.planOtwarcia;
     const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
       ? `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} → ${esc(pozycja.selectedCandidate.url)}</div>`
+      : pozycja.status === "CREATE_NEW"
+        ? `<div class="esync-small">＋ ${esc(pozycja.sourceTitle)} → nowe ogłoszenie</div>`
       : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("");
     const podsumowanieOtwarcia = planOtwarcia ? `<div class="esync-import-summary"><span>Gotowe: <b>${planOtwarcia.gotowe}</b></span><span>Już otwarte: <b>${planOtwarcia.juzOtwarte.length}</b></span><span>Do otwarcia: <b>${planOtwarcia.doOtwarcia.length}</b></span><span>Pominięte: <b>${plan.pozycje.filter(pozycja => pozycja.status === "SKIPPED").length}</b></span></div>${planOtwarcia.konflikty.length ? `<div class="esync-warning esync-small">Konflikty mapowań: ${planOtwarcia.konflikty.length}. Ten sam event nie zostanie otwarty drugi raz.</div>` : ""}<button id="esync-otworz-karty" class="esync-btn good" style="width:100%;margin-top:6px" ${planOtwarcia.doOtwarcia.length ? "" : "disabled"}>OTWÓRZ ${planOtwarcia.doOtwarcia.length} KART EVENTIS</button>` : '<div class="esync-small esync-muted">Sprawdzanie już otwartych kart…</div>';
     return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
@@ -417,6 +421,15 @@
     $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
       if (zrodlo) stan.decyzje[przycisk.dataset.pominTytul] = NARZEDZIA_LISTY.pominRozstrzygniecie(zrodlo);
+      await odswiezPlanOtwarcia();
+      renderuj();
+    })));
+    $$('[data-utworz-nowe]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const klucz = przycisk.dataset.utworzNowe;
+      const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
+      const wybor = NARZEDZIA_LISTY.utworzNoweOgloszenieRozstrzygniecia(zrodlo,location.origin);
+      if (!wybor) return pokazKomunikat("Nie udało się przygotować bezpiecznego adresu nowego ogłoszenia Eventis.");
+      stan.decyzje[klucz] = wybor;
       await odswiezPlanOtwarcia();
       renderuj();
     })));

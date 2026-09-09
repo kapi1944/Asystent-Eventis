@@ -212,6 +212,19 @@ test("NOT_FOUND nie otrzymuje automatycznego wydarzenia", () => {
   assert.equal(plan.nierozstrzygniete,1);
 });
 
+test("użytkownik może zatwierdzić utworzenie nowego ogłoszenia dla nierozpoznanego tytułu", () => {
+  const resolver = {...rozwiaz("Nieznane szkolenie",[]),queueItemIds:["q1"]};
+  const wybor = narzedzia.utworzNoweOgloszenieRozstrzygniecia(resolver,"https://firma.eventis.pl/company/listevents");
+  const plan = narzedzia.utworzPlanOtwarcia([wybor]);
+  assert.equal(wybor.manualStatus,"CREATE_NEW");
+  assert.equal(plan.gotoweDoOtwarcia,1);
+  assert.equal(plan.nierozstrzygniete,0);
+  assert.equal(plan.pozycje[0].status,"CREATE_NEW");
+  assert.equal(plan.pozycje[0].selectedCandidate.url,"https://firma.eventis.pl/event/add");
+  assert.deepEqual(plan.pozycje[0].queueItemIds,["q1"]);
+  assert.equal(narzedzia.utworzNoweOgloszenieRozstrzygniecia(resolver,"https://evil.example"),null);
+});
+
 test("pominięcie działa dla pojedynczego tytułu", () => {
   const pierwszy = rozwiaz("Nieznane A",[]);
   const drugi = rozwiaz("Nieznane B",[]);

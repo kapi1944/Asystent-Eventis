@@ -43,6 +43,9 @@ function utworzWorker(dokument, ckeditor) {
     },
     scripting: {
       async executeScript(konfiguracja) {
+        if (konfiguracja.args.some(argument => argument === undefined || typeof argument === "function")) {
+          throw new Error("Argument executeScript nie jest serializowalny.");
+        }
         return [{ result:await konfiguracja.func(...konfiguracja.args) }];
       }
     }
@@ -184,4 +187,13 @@ test("na /event/edit import opisów nie jest wykonywany", async () => {
   assert.deepEqual(wywolania,[]);
   assert.deepEqual(wynik,{ok:true,pominieto:true,ustawionePola:[]});
   assert.match(fs.readFileSync(path.join(__dirname,"..","content","eventis.js"),"utf8"),/uzupelnijPolaOpisoweJesliDodawanie\(\s*MODE,/);
+});
+
+test("brak terminów uruchamia zapis i zamyka kartę dopiero po komunikacie sukcesu", () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","eventis.js"),"utf8");
+  assert.match(kod,/data-action="\$\{zamknijKarte\?'save-close':'save'\}"/);
+  assert.match(kod,/zapiszFormularzZPanelu\(true\)/);
+  assert.match(kod,/if \(!pageHasSaveSuccessMarker\(\)\) return false;/);
+  assert.match(kod,/await sleep\(900\);\s*await chrome\.runtime\.sendMessage\(\{type:"CLOSE_TAB"\}\)/);
+  assert.doesNotMatch(kod,/dataset\.action === "close"/);
 });

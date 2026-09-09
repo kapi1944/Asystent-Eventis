@@ -8,6 +8,7 @@
   const VERSION = "0.1.0";
   const PAGE_LOAD_ID = crypto.randomUUID();
   const MODE = location.pathname.startsWith("/event/edit") ? "edit" : "add";
+  const KLUCZ_ZAMKNIECIA_PO_ZAPISIE = "eventisSyncZamknijPoZapisie";
   const REGIONS = { Warszawa:7, Kraków:6, Poznań:15, Wrocław:1, Gdańsk:11, Katowice:12, Szczecin:16, Zakopane:6, Kołobrzeg:16 };
   const KONFIGURACJA = globalThis.EventisSyncConfig;
   const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
@@ -718,8 +719,8 @@
     const przycisk = $("#esync-panel-action");
     if (!przycisk) return;
     const zamknijKarte = state.analizaTerminowWykonana && !state.analizaWykazalaBraki && !state.formularzZmieniony;
-    przycisk.dataset.action = zamknijKarte ? "close" : "save";
-    przycisk.textContent = zamknijKarte ? "↺ Wróć do listy" : "Zapisz kartę";
+    przycisk.dataset.action = zamknijKarte ? "save-close" : "save";
+    przycisk.textContent = zamknijKarte ? "Zapisz i wróć do listy" : "Zapisz kartę";
     przycisk.classList.toggle("good",!zamknijKarte);
     przycisk.classList.toggle("primary",zamknijKarte);
     przycisk.disabled = !zamknijKarte && !state.formularzZmieniony;
@@ -748,8 +749,8 @@
       || null;
   }
 
-  async function zapiszFormularzZPanelu() {
-    if (!state.formularzZmieniony) return;
+  async function zapiszFormularzZPanelu(wymusZapis = false) {
+    if (!state.formularzZmieniony && !wymusZapis) return;
     const formularz = $("#eventForm");
     if (!formularz) return toast("Nie znaleziono formularza Eventis.");
     if (state.pendingOperation?.status === "SAVE_SUBMITTED") return toast("Żądanie zapisu zostało już wysłane. Oczekuję na wynik Eventis.");
@@ -773,9 +774,33 @@
     else formularz.requestSubmit();
   }
 
+  async function zamknijPoPotwierdzonymZapisie() {
+    let zamiar;
+    try { zamiar = JSON.parse(sessionStorage.getItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE) || "null"); } catch (_) { zamiar = null; }
+    if (!zamiar || zamiar.pageLoadId === PAGE_LOAD_ID) return false;
+    for (let proba = 0; proba < 20 && !pageHasSaveSuccessMarker(); proba++) await sleep(250);
+    sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+    if (!pageHasSaveSuccessMarker()) return false;
+    await sleep(900);
+    await chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+    return true;
+  }
+
+  async function zapiszIZamknijKarte() {
+    const sukcesWidocznyPrzedZapisem = pageHasSaveSuccessMarker();
+    sessionStorage.setItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE,JSON.stringify({pageLoadId:PAGE_LOAD_ID,startedAt:Date.now()}));
+    await zapiszFormularzZPanelu(true);
+    if (sukcesWidocznyPrzedZapisem) return;
+    for (let proba = 0; proba < 20 && !pageHasSaveSuccessMarker(); proba++) await sleep(250);
+    if (!pageHasSaveSuccessMarker()) return;
+    sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+    await sleep(900);
+    await chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+  }
+
   function wykonajAkcjePanelu() {
     const przycisk = $("#esync-panel-action");
-    if (przycisk?.dataset.action === "close") chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+    if (przycisk?.dataset.action === "save-close") zapiszIZamknijKarte().catch(blad=>toast(`Nie udało się zapisać formularza: ${blad.message}`));
     else zapiszFormularzZPanelu().catch(blad=>toast(`Nie udało się rozpocząć zapisu: ${blad.message}`));
   }
 
@@ -1805,7 +1830,7 @@
     if(!root){root=document.createElement("aside");root.id="esync-root";document.body.appendChild(root);}
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'↺ Wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
     bindUI();
     renderOutboxStatus();
   }
@@ -1878,8 +1903,13 @@
   }
 
   async function init() {
+    if (MODE === "add") {
+      const nowyTytul = new URLSearchParams(location.search).get("esyncNowyTytul") || "";
+      if (nowyTytul) setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),nowyTytul);
+    }
     await loadSettingsAndState();
     await zweryfikujKarteSesjiOtwarcia();
+    if (await zamknijPoPotwierdzonymZapisie()) return;
     render();
     obserwujZmianyFormularza();
     observeTitleChanges();

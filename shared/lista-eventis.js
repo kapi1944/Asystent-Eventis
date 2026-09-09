@@ -123,6 +123,27 @@
     return {...rozstrzygniecie,selectedCandidate:null,manualStatus:"SKIPPED"};
   }
 
+  function utworzNoweOgloszenieRozstrzygniecia(rozstrzygniecie, baza = "https://eventis.pl/") {
+    try {
+      const url = new URL("/event/add",baza);
+      if (url.protocol !== "https:" || url.username || url.password || !/(^|\.)eventis\.pl$/i.test(url.hostname)) return null;
+      return {
+        ...rozstrzygniecie,
+        selectedCandidate:{
+          eventId:"",
+          url:url.href,
+          title:String(rozstrzygniecie?.sourceTitle || ""),
+          normalizedTitle:String(rozstrzygniecie?.normalizedSourceTitle || ""),
+          score:0,
+          matchType:"CREATE_NEW"
+        },
+        manualStatus:"CREATE_NEW"
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   function pobierzIdEventisZUrl(wartosc) {
     try {
       const url = new URL(String(wartosc || ""), "https://eventis.pl/");
@@ -164,13 +185,15 @@
         : [STATUSY_RESOLVERA.AUTO_MATCH,"KNOWN_MAPPING"].includes(rozstrzygniecie.status) ? rozstrzygniecie.selectedCandidate : null;
       if (wybrany) {
         pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"READY",selectedCandidate:wybrany,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
+      } else if (rozstrzygniecie.manualStatus === "CREATE_NEW" && rozstrzygniecie.selectedCandidate?.matchType === "CREATE_NEW") {
+        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"CREATE_NEW",selectedCandidate:rozstrzygniecie.selectedCandidate,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else if (rozstrzygniecie.manualStatus === "SKIPPED") {
         pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"SKIPPED",selectedCandidate:null,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else {
         nierozstrzygniete++;
       }
     }
-    return {pozycje,gotoweDoOtwarcia:pozycje.filter(pozycja => pozycja.status === "READY").length,nierozstrzygniete};
+    return {pozycje,gotoweDoOtwarcia:pozycje.filter(pozycja => ["READY","CREATE_NEW"].includes(pozycja.status)).length,nierozstrzygniete};
   }
 
   function pogrupujElementyKolejki(elementy = [], organizacja) {
@@ -297,6 +320,7 @@
     rozwiazGrupeTytulu,
     wybierzKandydataRozstrzygniecia,
     wybierzRecznyUrlEventis,
+    utworzNoweOgloszenieRozstrzygniecia,
     pominRozstrzygniecie,
     utworzPlanOtwarcia,
     dopasujKolejkeDoOgloszen,
