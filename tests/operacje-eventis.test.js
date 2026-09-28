@@ -148,3 +148,47 @@ test("wysłanie formularza ma osobny stan przed potwierdzeniem zapisu", () => {
   assert.equal(wyslana.saveRequestedAt,"2026-09-01T14:00:00.000Z");
   assert.equal(operacje.oznaczWyslanieZapisu({...operacja,status:"CLAIMED"}),null);
 });
+
+test("300 ms bez komunikatu pozostawia oczekiwanie", () => {
+  const stan = operacje.utworzStanZapisu({eventId:"123",timestamp:1000},1000);
+  assert.equal(operacje.rozstrzygnijStanZapisu(stan,null,1300).saveState,"WAITING_FOR_EVENTIS");
+});
+
+test("komunikat sukcesu po 2 sekundach potwierdza zapis", () => {
+  const stan = operacje.utworzStanZapisu({eventId:"123",timestamp:1000});
+  const wynik = operacje.rozstrzygnijStanZapisu(stan,{rodzaj:"SUCCESS",tekst:"Dane wydarzenia zaktualizowane."},3000);
+  assert.equal(wynik.saveState,"SUCCESS");
+  assert.equal(wynik.successDetectedAt,3000);
+});
+
+test("jednoznaczny błąd walidacji daje EXPLICIT_ERROR", () => {
+  const stan = operacje.utworzStanZapisu({eventId:"123",timestamp:1000});
+  const wynik = operacje.rozstrzygnijStanZapisu(stan,{rodzaj:"EXPLICIT_ERROR",tekst:"Pole jest wymagane"},1200);
+  assert.equal(wynik.saveState,"EXPLICIT_ERROR");
+  assert.equal(wynik.przyczyna,"Pole jest wymagane");
+});
+
+test("brak komunikatu po 20 sekundach daje UNKNOWN", () => {
+  const stan = operacje.utworzStanZapisu({eventId:"123",timestamp:1000});
+  const wynik = operacje.rozstrzygnijStanZapisu(stan,null,21000);
+  assert.equal(wynik.saveState,"UNKNOWN");
+  assert.equal(wynik.timeoutAt,21000);
+});
+
+test("stan zapisu po reloadzie przywraca się tylko dla tej operacji i wydarzenia", () => {
+  const pendingSave = {eventId:"123",timestamp:1000,expectedOperation:"operacja-1",url:"/event/edit/123"};
+  assert.equal(operacje.czyPrzywrocicZapis(pendingSave,"123","/event/edit/123",{operationId:"operacja-1"},3000),true);
+  assert.equal(operacje.utworzStanZapisu(pendingSave,3000).saveState,"WAITING_FOR_EVENTIS");
+  assert.equal(operacje.czyPrzywrocicZapis(pendingSave,"456","/event/edit/456",{operationId:"operacja-1"},3000),false);
+  assert.equal(operacje.czyPrzywrocicZapis(pendingSave,"123","/event/edit/123",{operationId:"inna"},3000),false);
+  assert.equal(operacje.czyPrzywrocicZapis(pendingSave,"123","/event/edit/123",{operationId:"operacja-1"},122000),false);
+});
+
+test("w trakcie oczekiwania kolejne kliknięcia nie rozpoczynają zapisu", () => {
+  const stan = operacje.utworzStanZapisu({eventId:"123",timestamp:1000});
+  assert.equal(operacje.czyMoznaRozpoczacZapis(stan,false),false);
+  assert.equal(operacje.czyMoznaRozpoczacZapis({saveState:"PREPARING_SAVE"},false),false);
+  assert.equal(operacje.czyMoznaRozpoczacZapis({saveState:"SUBMITTING"},false),false);
+  assert.equal(operacje.czyMoznaRozpoczacZapis(null,true),false);
+  assert.equal(operacje.czyMoznaRozpoczacZapis({saveState:"UNKNOWN"},false),true);
+});

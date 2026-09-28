@@ -38,7 +38,34 @@
     return {...operacja,status:"SAVE_SUBMITTED",saveRequestedAt:teraz};
   }
 
-  const interfejs = { utworzOperationId, kluczClaimuOperacji, uzyskajClaimOperacji, wykonajPoUzyskaniuClaimu, oznaczWyslanieZapisu };
+  const CZAS_OCZEKIWANIA_ZAPISU = 20000;
+
+  function utworzStanZapisu(oczekujacyZapis, teraz = Date.now()) {
+    return {saveState:"WAITING_FOR_EVENTIS",submitStartedAt:oczekujacyZapis.timestamp || teraz,
+      successDetectedAt:null,errorDetectedAt:null,timeoutAt:null,pendingSave:oczekujacyZapis};
+  }
+
+  function rozstrzygnijStanZapisu(stan, wynik, teraz = Date.now()) {
+    if (!stan || stan.saveState !== "WAITING_FOR_EVENTIS") return stan;
+    if (wynik?.rodzaj === "SUCCESS") return {...stan,saveState:"SUCCESS",successDetectedAt:teraz};
+    if (wynik?.rodzaj === "EXPLICIT_ERROR") return {...stan,saveState:"EXPLICIT_ERROR",errorDetectedAt:teraz,przyczyna:wynik.tekst};
+    if (teraz - stan.submitStartedAt >= CZAS_OCZEKIWANIA_ZAPISU) return {...stan,saveState:"UNKNOWN",timeoutAt:teraz};
+    return stan;
+  }
+
+  function czyMoznaRozpoczacZapis(stan, trwaRozpoczynanie) {
+    return !trwaRozpoczynanie && !["PREPARING_SAVE","SUBMITTING","WAITING_FOR_EVENTIS"].includes(stan?.saveState);
+  }
+
+  function czyPrzywrocicZapis(oczekujacyZapis, eventId, url, operacja, teraz = Date.now()) {
+    if (!oczekujacyZapis || !Number.isFinite(oczekujacyZapis.timestamp) || teraz - oczekujacyZapis.timestamp > 120000 || teraz < oczekujacyZapis.timestamp) return false;
+    if (oczekujacyZapis.expectedOperation !== (operacja?.operationId || "FORM_SAVE")) return false;
+    return oczekujacyZapis.eventId === eventId || (String(oczekujacyZapis.eventId).startsWith("new:")
+      && (oczekujacyZapis.url === url || (oczekujacyZapis.url?.startsWith("/event/add") && url.startsWith("/event/edit"))));
+  }
+
+  const interfejs = { utworzOperationId, kluczClaimuOperacji, uzyskajClaimOperacji, wykonajPoUzyskaniuClaimu, oznaczWyslanieZapisu,
+    CZAS_OCZEKIWANIA_ZAPISU, utworzStanZapisu, rozstrzygnijStanZapisu, czyMoznaRozpoczacZapis, czyPrzywrocicZapis };
   globalny.NarzedziaOperacjiEventis = interfejs;
   if (typeof module !== "undefined" && module.exports) module.exports = interfejs;
 })(typeof globalThis !== "undefined" ? globalThis : this);

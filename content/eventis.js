@@ -9,6 +9,7 @@
   const PAGE_LOAD_ID = crypto.randomUUID();
   const MODE = location.pathname.startsWith("/event/edit") ? "edit" : "add";
   const KLUCZ_ZAMKNIECIA_PO_ZAPISIE = "eventisSyncZamknijPoZapisie";
+  const KLUCZ_OCZEKUJACEGO_ZAPISU = "eventisSyncPendingSave";
   const REGIONS = { Warszawa:7, Kraków:6, Poznań:15, Wrocław:1, Gdańsk:11, Katowice:12, Szczecin:16, Zakopane:6, Kołobrzeg:16 };
   const KONFIGURACJA = globalThis.EventisSyncConfig;
   const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
@@ -73,6 +74,8 @@
     eventisImportQueue: [],
     pendingOperation: null,
     pendingLooksSaved: false,
+    zapis: {saveState:"IDLE"},
+    trwaRozpoczynanieZapisu: false,
     weryfikacjaOtwartejKarty: null,
     przypisaneElementyKolejki: [],
     formularzZmieniony: false,
@@ -723,7 +726,7 @@
     przycisk.textContent = zamknijKarte ? "Zapisz i wróć do listy" : "Zapisz kartę";
     przycisk.classList.toggle("good",!zamknijKarte);
     przycisk.classList.toggle("primary",zamknijKarte);
-    przycisk.disabled = !zamknijKarte && !state.formularzZmieniony;
+    przycisk.disabled = !NARZEDZIA_OPERACJI.czyMoznaRozpoczacZapis(state.zapis,state.trwaRozpoczynanieZapisu) || (!zamknijKarte && !state.formularzZmieniony);
   }
 
   function obserwujZmianyFormularza() {
@@ -750,58 +753,62 @@
   }
 
   async function zapiszFormularzZPanelu(wymusZapis = false) {
+    if (!NARZEDZIA_OPERACJI.czyMoznaRozpoczacZapis(state.zapis,state.trwaRozpoczynanieZapisu)) return;
     if (!state.formularzZmieniony && !wymusZapis) return;
     const formularz = $("#eventForm");
     if (!formularz) return toast("Nie znaleziono formularza Eventis.");
     if (state.pendingOperation?.status === "SAVE_SUBMITTED") return toast("Żądanie zapisu zostało już wysłane. Oczekuję na wynik Eventis.");
+    state.trwaRozpoczynanieZapisu = true;
+    state.zapis = {saveState:"PREPARING_SAVE"};
+    render();
+    try {
     if (state.pendingOperation?.status === "WAITING_FOR_SAVE") {
       const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
       const klucz = kluczStorageOperacji(state.pendingOperation);
       const aktualnaOperacja = pendingOperations[klucz];
       if (identyfikatorOperacji(aktualnaOperacja) !== identyfikatorOperacji(state.pendingOperation)) {
-        return toast("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
+        throw new Error("Operacja oczekująca zmieniła się w innej karcie. Odśwież stronę.");
       }
       const wyslanaOperacja = NARZEDZIA_OPERACJI.oznaczWyslanieZapisu(aktualnaOperacja);
-      if (!wyslanaOperacja) return toast("Operacja nie jest gotowa do zapisu.");
+      if (!wyslanaOperacja) throw new Error("Operacja nie jest gotowa do zapisu.");
       pendingOperations[klucz]=wyslanaOperacja;
       await storageSet({pendingOperations});
       state.pendingOperation=wyslanaOperacja;
-      state.status="SAVE_SUBMITTED";
-      render();
     }
+    state.zapis = {saveState:"SUBMITTING"};
+    render();
+    const oczekujacyZapis = {eventId:state.eventisId,timestamp:Date.now(),expectedOperation:state.pendingOperation?.operationId || "FORM_SAVE",
+      pageLoadId:PAGE_LOAD_ID,url:location.pathname + location.search};
+    sessionStorage.setItem(KLUCZ_OCZEKUJACEGO_ZAPISU,JSON.stringify(oczekujacyZapis));
+    state.zapis = NARZEDZIA_OPERACJI.utworzStanZapisu(oczekujacyZapis);
+    diagnostykaZapisu({pageReloadDetected:false,pendingSaveRestored:false});
+    rozpocznijObserwacjeZapisu();
+    render();
     const przyciskZapisu = znajdzPrzyciskZapisu();
     if (przyciskZapisu) przyciskZapisu.click();
     else formularz.requestSubmit();
-  }
-
-  async function zamknijPoPotwierdzonymZapisie() {
-    let zamiar;
-    try { zamiar = JSON.parse(sessionStorage.getItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE) || "null"); } catch (_) { zamiar = null; }
-    if (!zamiar || zamiar.pageLoadId === PAGE_LOAD_ID) return false;
-    for (let proba = 0; proba < 20 && !pageHasSaveSuccessMarker(); proba++) await sleep(250);
-    sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
-    if (!pageHasSaveSuccessMarker()) return false;
-    await sleep(900);
-    await chrome.runtime.sendMessage({type:"CLOSE_TAB"});
-    return true;
+    } catch (blad) {
+      zakonczObserwacjeZapisu();
+      sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+      state.zapis = {saveState:"IDLE"};
+      render();
+      throw blad;
+    } finally { state.trwaRozpoczynanieZapisu = false; }
   }
 
   async function zapiszIZamknijKarte() {
-    const sukcesWidocznyPrzedZapisem = pageHasSaveSuccessMarker();
     sessionStorage.setItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE,JSON.stringify({pageLoadId:PAGE_LOAD_ID,startedAt:Date.now()}));
-    await zapiszFormularzZPanelu(true);
-    if (sukcesWidocznyPrzedZapisem) return;
-    for (let proba = 0; proba < 20 && !pageHasSaveSuccessMarker(); proba++) await sleep(250);
-    if (!pageHasSaveSuccessMarker()) return;
-    sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
-    await sleep(900);
-    await chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+    try { await zapiszFormularzZPanelu(true); }
+    catch (blad) { sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE); throw blad; }
   }
 
   function wykonajAkcjePanelu() {
     const przycisk = $("#esync-panel-action");
     if (przycisk?.dataset.action === "save-close") zapiszIZamknijKarte().catch(blad=>toast(`Nie udało się zapisać formularza: ${blad.message}`));
-    else zapiszFormularzZPanelu().catch(blad=>toast(`Nie udało się rozpocząć zapisu: ${blad.message}`));
+    else {
+      sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+      zapiszFormularzZPanelu().catch(blad=>toast(`Nie udało się rozpocząć zapisu: ${blad.message}`));
+    }
   }
 
   function setValue(el,val) {
@@ -1150,23 +1157,111 @@
     return false;
   }
 
-  function pageHasSaveSuccessMarker() {
-    const body = normalize(document.body.innerText || "");
-    const phrases = ["zapisano","zostal zapisany","zostało zapisane","zmiany zapisane","zaktualizowano","pomyslnie zapisano","pomyślnie zapisano"];
-    return phrases.some(p=>body.includes(normalize(p)));
+  let obserwatorZapisu = null;
+  let licznikZapisu = null;
+  let komunikatPrzedZapisem = null;
+  let tekstPrzedZapisem = null;
+  let trwaRozstrzyganieZapisu = false;
+
+  function znajdzKomunikatZapisu() {
+    const komunikaty = $$('div, p, li, span, strong, [role="alert"]')
+      .filter(element=>!element.closest("#esync-root") && element.getClientRects().length);
+    const sukces = komunikaty.find(element=>/^dane wydarzenia zaktualizowane\.?$/i.test((element.textContent || "").trim())
+      && !Array.from(element.children).some(dziecko=>/^dane wydarzenia zaktualizowane\.?$/i.test((dziecko.textContent || "").trim())));
+    if (sukces) return {rodzaj:"SUCCESS",tekst:sukces.textContent.trim(),element:sukces,selektor:sukces.id ? `#${sukces.id}` : sukces.className || sukces.tagName};
+    const bledy = $$('.alert-danger,.alert-error,[role="alert"],.invalid-feedback,.validation-error,.error-message')
+      .filter(element=>!element.closest("#esync-root") && element.getClientRects().length);
+    const blad = bledy.find(element=>/błąd|blad|wymagane|wymagany|nie udało się|nie mozna|nie można|nieprawidłow|uzupełnij|uzupelnij/i.test(element.textContent || ""));
+    return blad ? {rodzaj:"EXPLICIT_ERROR",tekst:blad.textContent.trim().slice(0,400),element:blad,
+      selektor:blad.id ? `#${blad.id}` : blad.className || blad.tagName} : null;
+  }
+
+  function zakonczObserwacjeZapisu() {
+    obserwatorZapisu?.disconnect();
+    obserwatorZapisu = null;
+    clearTimeout(licznikZapisu);
+    licznikZapisu = null;
+  }
+
+  function diagnostykaZapisu(dodatkowe = {}) {
+    if (!state.settings.debug && sessionStorage.getItem("eventisSyncDebug") !== "1") return;
+    const {saveState,submitStartedAt,successDetectedAt,errorDetectedAt,timeoutAt} = state.zapis || {};
+    console.debug("Eventis Sync zapis",{saveState,submitStartedAt,successDetectedAt,errorDetectedAt,timeoutAt,...dodatkowe});
+  }
+
+  async function sprawdzWynikZapisu() {
+    if (state.zapis?.saveState !== "WAITING_FOR_EVENTIS" || trwaRozstrzyganieZapisu) return;
+    const komunikat = znajdzKomunikatZapisu();
+    const aktualnyKomunikat = komunikat?.element === komunikatPrzedZapisem && komunikat.tekst === tekstPrzedZapisem ? null : komunikat;
+    const nowyStan = NARZEDZIA_OPERACJI.rozstrzygnijStanZapisu(state.zapis,aktualnyKomunikat);
+    if (nowyStan === state.zapis) return;
+    trwaRozstrzyganieZapisu = true;
+    state.zapis = nowyStan;
+    zakonczObserwacjeZapisu();
+    try {
+      diagnostykaZapisu({successSelectorMatched:aktualnyKomunikat?.rodzaj === "SUCCESS" ? aktualnyKomunikat.selektor : null,
+        errorSelectorMatched:aktualnyKomunikat?.rodzaj === "EXPLICIT_ERROR" ? aktualnyKomunikat.selektor : null});
+      if (nowyStan.saveState === "SUCCESS") {
+        await confirmPendingSaved("AUTO_SUCCESS_MARKER");
+        sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+        compareTerms();
+        render();
+        const zamiarZamkniecia = sessionStorage.getItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+        if (zamiarZamkniecia) {
+          sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+          await chrome.runtime.sendMessage({type:"CLOSE_TAB"});
+        }
+      } else render();
+    } finally { trwaRozstrzyganieZapisu = false; }
+  }
+
+  function rozpocznijObserwacjeZapisu(pominIstniejacy = true) {
+    zakonczObserwacjeZapisu();
+    const poprzedniKomunikat = pominIstniejacy && state.zapis.pendingSave.pageLoadId === PAGE_LOAD_ID ? znajdzKomunikatZapisu() : null;
+    komunikatPrzedZapisem = poprzedniKomunikat?.element || null;
+    tekstPrzedZapisem = poprzedniKomunikat?.tekst || null;
+    obserwatorZapisu = new MutationObserver(()=>{sprawdzWynikZapisu().catch(console.error);});
+    obserwatorZapisu.observe(document.body,{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:["class","style","hidden"]});
+    const pozostalo = Math.max(0,NARZEDZIA_OPERACJI.CZAS_OCZEKIWANIA_ZAPISU - (Date.now() - state.zapis.submitStartedAt));
+    licznikZapisu = setTimeout(()=>{sprawdzWynikZapisu().catch(console.error);},pozostalo);
+    sprawdzWynikZapisu().catch(console.error);
+  }
+
+  function przywrocOczekujacyZapis() {
+    let oczekujacyZapis;
+    try { oczekujacyZapis = JSON.parse(sessionStorage.getItem(KLUCZ_OCZEKUJACEGO_ZAPISU) || "null"); } catch (_) { oczekujacyZapis = null; }
+    if (!oczekujacyZapis) return;
+    if (!NARZEDZIA_OPERACJI.czyPrzywrocicZapis(oczekujacyZapis,state.eventisId,location.pathname + location.search,state.pendingOperation)) {
+      sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+      return;
+    }
+    state.zapis = NARZEDZIA_OPERACJI.utworzStanZapisu(oczekujacyZapis);
+    diagnostykaZapisu({pageReloadDetected:oczekujacyZapis.pageLoadId !== PAGE_LOAD_ID,pendingSaveRestored:true});
+    rozpocznijObserwacjeZapisu();
+  }
+
+  function sprawdzPonownieZapis() {
+    const oczekujacyZapis = state.zapis?.pendingSave || {eventId:state.eventisId,expectedOperation:state.pendingOperation?.operationId || "FORM_SAVE",
+      pageLoadId:PAGE_LOAD_ID,url:location.pathname + location.search};
+    oczekujacyZapis.timestamp = Date.now();
+    sessionStorage.setItem(KLUCZ_OCZEKUJACEGO_ZAPISU,JSON.stringify(oczekujacyZapis));
+    state.zapis = NARZEDZIA_OPERACJI.utworzStanZapisu(oczekujacyZapis);
+    render();
+    rozpocznijObserwacjeZapisu(false);
   }
 
   async function inspectPendingAfterReload() {
     if (!state.pendingOperation || state.pendingOperation.createdPageLoadId === PAGE_LOAD_ID) return;
+    if (state.zapis?.saveState === "WAITING_FOR_EVENTIS") return;
     const existingKeys = new Set(getExistingTerms().map(existingKey));
     const allExist = terminyOperacji(state.pendingOperation).every(t=>existingKeys.has(existingKey(t)));
     if (!allExist) return;
-    if (pageHasSaveSuccessMarker()) await confirmPendingSaved("AUTO_SUCCESS_MARKER");
+    if (znajdzKomunikatZapisu()?.rodzaj === "SUCCESS") await confirmPendingSaved("AUTO_SUCCESS_MARKER");
     else state.pendingLooksSaved = true;
   }
 
   async function confirmPendingSaved(method="USER_CONFIRM") {
-    if (!state.pendingOperation) return;
+    if (!state.pendingOperation) { state.status="SAVED"; render(); return; }
     const op = state.pendingOperation;
     const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
     const key = kluczStorageOperacji(op);
@@ -1213,6 +1308,7 @@
     state.pendingOperation=null;
     state.pendingLooksSaved=false;
     state.status="SAVE_ERROR";
+    state.zapis = {saveState:"EXPLICIT_ERROR",przyczyna:komunikat};
     state.lastError=komunikat;
     await audit("EVENTIS_SAVE_FAILED",{terms:terminyOperacji(op),queueItemIds:op.queueItemIds || []});
     render();
@@ -1782,6 +1878,11 @@
   }
 
   function renderPendingCard(){
+    if (state.zapis?.saveState === "PREPARING_SAVE" || state.zapis?.saveState === "SUBMITTING") return `<div class="esync-card"><div class="esync-info"><b>Zapisywanie zmian w Eventis…</b></div></div>`;
+    if (state.zapis?.saveState === "WAITING_FOR_EVENTIS") return `<div class="esync-card"><div class="esync-info"><b>Oczekiwanie na potwierdzenie Eventis…</b></div></div>`;
+    if (state.zapis?.saveState === "SUCCESS") return `<div class="esync-card"><div class="esync-success"><b>✓ Zmiany zostały zapisane w Eventis.</b></div></div>`;
+    if (state.zapis?.saveState === "EXPLICIT_ERROR") return `<div class="esync-card"><div class="esync-danger"><b>Eventis nie zapisał zmian.</b><div class="esync-small">${esc(state.zapis.przyczyna || "")}</div>${state.pendingOperation?`<button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Rozlicz nieudany zapis</button>`:""}</div></div>`;
+    if (state.zapis?.saveState === "UNKNOWN") return `<div class="esync-card"><div class="esync-warning"><b>Nie udało się automatycznie potwierdzić zapisu.</b><button id="esync-check-save" class="esync-btn" style="width:100%;margin-top:7px">Sprawdź ponownie</button><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam, że zapisano</button><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Eventis zgłosił błąd</button></div></div>`;
     if(!state.pendingOperation) {
       if(state.status==="SAVED") return `<div class="esync-card"><div class="esync-success"><b>✓ Zapis Eventis potwierdzony</b><div class="esync-small">Powiązane terminy mają status DONE.</div></div></div>`;
       if(state.status==="SAVE_ERROR") return `<div class="esync-card"><div class="esync-danger"><b>✕ Błąd zapisu Eventis</b><div class="esync-small">${esc(state.lastError||"Zapis nie został potwierdzony.")}</div></div></div>`;
@@ -1789,8 +1890,8 @@
     }
     if(state.pendingLooksSaved) return `<div class="esync-card"><div class="esync-warning"><b>⚠ Formularz zawiera oczekiwane terminy, zapis wymaga potwierdzenia</b><div class="esync-small">Nie wykryłem jednoznacznego komunikatu sukcesu Eventis. Jeżeli zapis rzeczywiście się udał, potwierdź ręcznie.</div><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam: Eventis zapisał zmiany</button></div></div>`;
     if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID && state.pendingOperation.status==="WAITING_FOR_SAVE") return `<div class="esync-card"><div class="esync-warning"><b>1/2 Formularz wypełniony — jeszcze niezapisany</b><div class="esync-small">Sprawdź dane i użyj przycisku „Zapisz kartę”. Rozszerzenie nie zapisze ich bez Twojej decyzji.</div></div></div>`;
-    if(state.pendingOperation.createdPageLoadId===PAGE_LOAD_ID && state.pendingOperation.status==="SAVE_SUBMITTED") return `<div class="esync-card"><div class="esync-info"><b>2/2 Żądanie zapisu wysłane</b><div class="esync-small">Sprawdź komunikat Eventis. Ten stan nie oznacza błędu — potwierdź zapis, jeśli Eventis przyjął zmiany.</div><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam: Eventis zapisał zmiany</button><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Eventis zgłosił błąd zapisu</button></div></div>`;
-    return `<div class="esync-card"><div class="esync-danger"><b>Nie potwierdzono zapisu</b><div class="esync-small">Istnieje oczekująca operacja, ale nie wszystkie dodane terminy są obecne w formularzu po ponownym otwarciu.</div><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Oznacz zapis jako nieudany</button></div></div>`;
+    if(state.pendingOperation.status==="SAVE_SUBMITTED") return `<div class="esync-card"><div class="esync-warning"><b>Nie udało się automatycznie potwierdzić zapisu.</b><button id="esync-check-save" class="esync-btn" style="width:100%;margin-top:7px">Sprawdź ponownie</button><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam, że zapisano</button><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Eventis zgłosił błąd</button></div></div>`;
+    return `<div class="esync-card"><div class="esync-warning"><b>Nie udało się automatycznie potwierdzić zapisu.</b><div class="esync-small">Nie wszystkie terminy są widoczne w formularzu po ponownym otwarciu.</div><button id="esync-check-save" class="esync-btn" style="width:100%;margin-top:7px">Sprawdź ponownie</button><button id="esync-confirm-save" class="esync-btn good" style="width:100%;margin-top:7px">Potwierdzam, że zapisano</button><button id="esync-reject-save" class="esync-btn danger" style="width:100%;margin-top:7px">Eventis zgłosił błąd</button></div></div>`;
   }
 
   function renderManualCard() {
@@ -1831,6 +1932,7 @@
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
     root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
+    if (!NARZEDZIA_OPERACJI.czyMoznaRozpoczacZapis(state.zapis,state.trwaRozpoczynanieZapisu)) $("#esync-panel-action").disabled = true;
     bindUI();
     renderOutboxStatus();
   }
@@ -1848,8 +1950,22 @@
     $$('[data-reczne-potwierdzenie]',$("#esync-root")||document).forEach(przycisk=>przycisk.addEventListener("click",()=>przelaczRecznePotwierdzenie(przycisk.dataset.recznePotwierdzenie)));
     $("#esync-add-missing")?.addEventListener("click",onAddMissing);
     $("#esync-queue-existing")?.addEventListener("click",queueExistingTerms);
-    $("#esync-confirm-save")?.addEventListener("click",()=>confirmPendingSaved("USER_CONFIRM"));
-    $("#esync-reject-save")?.addEventListener("click",oznaczNieudanyZapis);
+    $("#esync-check-save")?.addEventListener("click",sprawdzPonownieZapis);
+    $("#esync-confirm-save")?.addEventListener("click",async()=>{
+      zakonczObserwacjeZapisu();
+      sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+      state.zapis = {saveState:"SUCCESS"};
+      await confirmPendingSaved("USER_CONFIRM");
+      compareTerms();
+      render();
+    });
+    $("#esync-reject-save")?.addEventListener("click",()=>{
+      zakonczObserwacjeZapisu();
+      sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+      sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+      if (state.pendingOperation) oznaczNieudanyZapis();
+      else { state.zapis = {saveState:"EXPLICIT_ERROR",przyczyna:"Użytkownik potwierdził błąd Eventis."}; render(); }
+    });
     $("#esync-add-import-queue")?.addEventListener("click",dodajPodgladDoKolejki);
     $("#esync-add-queue-terms")?.addEventListener("click",wprowadzTerminyZKolejki);
     $$('[data-queue-retry]',$("#esync-root")||document).forEach(btn=>btn.addEventListener("click",()=>ponowKolejke(btn.dataset.queueRetry)));
@@ -1909,7 +2025,7 @@
     }
     await loadSettingsAndState();
     await zweryfikujKarteSesjiOtwarcia();
-    if (await zamknijPoPotwierdzonymZapisie()) return;
+    przywrocOczekujacyZapis();
     render();
     obserwujZmianyFormularza();
     observeTitleChanges();

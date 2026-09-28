@@ -39,7 +39,7 @@
 - [ ] Po `Uzupełnij brakujące` rozszerzenie NIE klika przycisku zapisu.
 - [ ] Panel wyraźnie każe sprawdzić formularz.
 - [ ] Po ręcznym zapisie i przeładowaniu wykrywane są dodane terminy.
-- [ ] Jeżeli brak jednoznacznego komunikatu sukcesu, wymagane jest ręczne `Potwierdzam: Eventis zapisał zmiany`.
+- [ ] Po zapisie panel czeka na komunikat Eventis; ręczne potwierdzenie pojawia się dopiero po braku automatycznego rozstrzygnięcia.
 
 ## G. Awaryjny import arkusza
 - [ ] Parser przyjmuje `YYYY-MM-DD do YYYY-MM-DD`.

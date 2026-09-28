@@ -193,7 +193,7 @@ test("brak terminów uruchamia zapis i zamyka kartę dopiero po komunikacie sukc
   const kod = fs.readFileSync(path.join(__dirname,"..","content","eventis.js"),"utf8");
   assert.match(kod,/data-action="\$\{zamknijKarte\?'save-close':'save'\}"/);
   assert.match(kod,/zapiszFormularzZPanelu\(true\)/);
-  assert.match(kod,/if \(!pageHasSaveSuccessMarker\(\)\) return false;/);
-  assert.match(kod,/await sleep\(900\);\s*await chrome\.runtime\.sendMessage\(\{type:"CLOSE_TAB"\}\)/);
+  assert.match(kod,/if \(nowyStan\.saveState === "SUCCESS"\)/);
+  assert.match(kod,/await chrome\.runtime\.sendMessage\(\{type:"CLOSE_TAB"\}\)/);
   assert.doesNotMatch(kod,/dataset\.action === "close"/);
 });
