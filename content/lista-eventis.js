@@ -8,10 +8,11 @@
   const KONFIGURACJA = globalThis.EventisSyncConfig;
   const NARZEDZIA_WYSZUKIWANIA = globalThis.NarzedziaWyszukiwaniaEventis;
   const NARZEDZIA_ARKUSZA = globalThis.NarzedziaArkuszaEventis;
+  const NARZEDZIA_TERMINOW = globalThis.NarzedziaTerminowEventis;
   const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
   const NARZEDZIA_LISTY = globalThis.NarzedziaListyEventis;
   const MAPOWANIA_WYDARZEN = globalThis.MapowaniaWydarzenEventis;
-  if (!KONFIGURACJA || !NARZEDZIA_WYSZUKIWANIA || !NARZEDZIA_ARKUSZA || !NARZEDZIA_KOLEJKI || !NARZEDZIA_LISTY || !MAPOWANIA_WYDARZEN) {
+  if (!KONFIGURACJA || !NARZEDZIA_WYSZUKIWANIA || !NARZEDZIA_TERMINOW || !NARZEDZIA_ARKUSZA || !NARZEDZIA_KOLEJKI || !NARZEDZIA_LISTY || !MAPOWANIA_WYDARZEN) {
     throw new Error("Nie załadowano modułów kolejki listy Eventis.");
   }
 
@@ -31,6 +32,7 @@
     planOtwarcia:null,
     liczbaBledow:0,
     liczbaDuplikatow:0,
+    preflight:{trwa:false,sprawdzone:0,lacznie:0,wyniki:{},pokolenie:0},
     komunikat:"",
     skanowanie:{trwa:false,liczbaStron:1,liczbaZapytan:0,blad:""}
   };
@@ -237,7 +239,8 @@
 
   function elementyDotyczaceRekordow(kolejka, rekordy) {
     const klucze = new Set(rekordy.filter(rekord => ["CONFIRMED","DECONFIRMED"].includes(rekord.status) && !rekord.error).map(NARZEDZIA_ARKUSZA.recordKey));
-    return kolejka.filter(element => element.organization === stan.organizacja && klucze.has(element.recordKey));
+    return kolejka.filter(element => element.organization === stan.organizacja && klucze.has(element.recordKey)
+      && ["PENDING","ERROR","NEEDS_ATTENTION","COMPLETED_EXISTING"].includes(element.status));
   }
 
   function ocenGotowoscDopasowan(dopasowania) {
@@ -264,6 +267,119 @@
     };
   }
 
+  function potwierdzoneTerminyTytulu(rozstrzygniecie) {
+    return stan.rekordy.filter(rekord => !rekord.error && rekord.status === "CONFIRMED"
+      && rekord.normalizedTitle === rozstrzygniecie.normalizedSourceTitle)
+      .map(rekord => ({...NARZEDZIA_TERMINOW.zastosujReguleCzterodniowegoTerminu(rekord.start,rekord.end,rekord.city,null),confirmed:true}));
+  }
+
+  async function sprawdzTerminyWydarzenia(rozstrzygniecie) {
+    const kandydat = rozstrzygniecie.selectedCandidate;
+    const identyfikator = NARZEDZIA_LISTY.pobierzIdEventisZUrl(kandydat?.url);
+    if (!identyfikator || String(identyfikator) !== String(kandydat?.eventId)) throw new Error("Brak bezpiecznego adresu edycji wydarzenia Eventis.");
+    let terminyZrodlowe = potwierdzoneTerminyTytulu(rozstrzygniecie);
+    let zrodlo = "wklejona lista";
+    const mapowanie = stan.mapowania[`${stan.organizacja}|${identyfikator}`];
+    if (stan.organizacja === "SEMPER" && mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt
+      && NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(mapowanie.sourceUrl)) {
+      const odpowiedzZrodla = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(mapowanie.sourceUrl)}});
+      if (!odpowiedzZrodla?.ok || !NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(odpowiedzZrodla.finalUrl)) throw new Error("Nie udało się potwierdzić aktualnej strony szkolenia SEMPER.");
+      const dokumentZrodla = new DOMParser().parseFromString(odpowiedzZrodla.text,"text/html");
+      terminyZrodlowe = NARZEDZIA_TERMINOW.odczytajTerminySemper(dokumentZrodla).filter(termin => termin.confirmed);
+      const zImportu = new Set(potwierdzoneTerminyTytulu(rozstrzygniecie).map(NARZEDZIA_TERMINOW.kluczZgodnegoTerminu));
+      const zAktualnejStrony = new Set(terminyZrodlowe.map(NARZEDZIA_TERMINOW.kluczZgodnegoTerminu));
+      if (zImportu.size !== zAktualnejStrony.size || [...zImportu].some(klucz => !zAktualnejStrony.has(klucz))) {
+        throw new Error("Wklejona lista różni się od bieżących potwierdzonych terminów SEMPER. Zaktualizuj listę.");
+      }
+      zrodlo = "bieżąca strona SEMPER";
+    }
+    const adres = new URL(`/event/edit/${identyfikator}`,location.origin);
+    const odpowiedz = await fetch(adres.href,{credentials:"include",redirect:"follow",cache:"no-store"});
+    if (!odpowiedz.ok) throw new Error(`Eventis zwrócił HTTP ${odpowiedz.status}.`);
+    if (NARZEDZIA_LISTY.pobierzIdEventisZUrl(odpowiedz.url) !== identyfikator) throw new Error("Eventis przekierował poza przypisane wydarzenie.");
+    const dokument = new DOMParser().parseFromString(await odpowiedz.text(),"text/html");
+    if (!dokument.querySelector("form#eventForm")) throw new Error("Nie odnaleziono formularza wydarzenia Eventis.");
+    const terminyEventis = NARZEDZIA_TERMINOW.odczytajTerminyEventis(dokument)
+      .map(({start,end,city}) => ({start,end,city}));
+    return {...NARZEDZIA_TERMINOW.ustalWynikPreflightu(terminyZrodlowe,terminyEventis),zrodlo};
+  }
+
+  async function uruchomPreflight(wybraneKlucze = null) {
+    const pokolenie = ++stan.preflight.pokolenie;
+    const rozstrzygniecia = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+      .filter(rozstrzygniecie => rozstrzygniecie.manualStatus !== "SKIPPED"
+        && NARZEDZIA_LISTY.pobierzIdEventisZUrl(rozstrzygniecie.selectedCandidate?.url)
+        && (!wybraneKlucze || wybraneKlucze.has(kluczRozstrzygniecia(rozstrzygniecie))));
+    for (const rozstrzygniecie of rozstrzygniecia) delete stan.preflight.wyniki[kluczRozstrzygniecia(rozstrzygniecie)];
+    stan.preflight.trwa = true;
+    stan.preflight.sprawdzone = 0;
+    stan.preflight.lacznie = rozstrzygniecia.length;
+    renderuj();
+    let nastepny = 0;
+    async function sprawdzKolejny() {
+      while (nastepny < rozstrzygniecia.length && pokolenie === stan.preflight.pokolenie) {
+        const rozstrzygniecie = rozstrzygniecia[nastepny++];
+        const klucz = kluczRozstrzygniecia(rozstrzygniecie);
+        try {
+          const wynik = await sprawdzTerminyWydarzenia(rozstrzygniecie);
+          if (pokolenie !== stan.preflight.pokolenie) return;
+          stan.preflight.wyniki[klucz] = {...wynik,eventId:rozstrzygniecie.selectedCandidate.eventId,checkedAt:new Date().toISOString()};
+          if (["MISSING_TERMS","COUNT_MATCH_BUT_DIFFERENT"].includes(wynik.status)) {
+            const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+            const klucze = new Set(stan.rekordy.filter(rekord => !rekord.error && rekord.status === "CONFIRMED"
+              && rekord.normalizedTitle === rozstrzygniecie.normalizedSourceTitle).map(NARZEDZIA_ARKUSZA.recordKey));
+            const zmiany = eventisImportQueue.filter(element => element.organization === stan.organizacja
+              && klucze.has(element.recordKey) && element.status === "COMPLETED_EXISTING"
+              && element.completion?.source === "preflight-existing")
+              .map(element => ({...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,"PENDING"),completion:null,completionReason:null,completedAt:null}));
+            if (zmiany.length) {
+              const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:zmiany});
+              if (!zapis?.ok) throw new Error("Nie udało się odświeżyć statusu kolejki.");
+              stan.kolejka = zapis.items;
+            }
+          }
+        } catch (blad) {
+          if (pokolenie !== stan.preflight.pokolenie) return;
+          stan.preflight.wyniki[klucz] = {...NARZEDZIA_TERMINOW.ustalWynikPreflightu([],null,blad?.message || String(blad)),eventId:rozstrzygniecie.selectedCandidate.eventId};
+        }
+        stan.preflight.sprawdzone++;
+        renderuj();
+      }
+    }
+    await Promise.all(Array.from({length:Math.min(4,rozstrzygniecia.length)},sprawdzKolejny));
+    if (pokolenie !== stan.preflight.pokolenie) return;
+    stan.preflight.trwa = false;
+    await odswiezPlanOtwarcia();
+    renderuj();
+  }
+
+  async function ustawDecyzjeKompletnych(klucze, pomin) {
+    const poprawne = new Set([...klucze].filter(klucz => {
+      const rozstrzygniecie = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+        .find(pozycja => kluczRozstrzygniecia(pozycja) === klucz);
+      const wynik = stan.preflight.wyniki[klucz];
+      return rozstrzygniecie && wynik?.status === "COMPLETE"
+        && String(wynik.eventId) === String(rozstrzygniecie.selectedCandidate?.eventId);
+    }));
+    if (!poprawne.size) return;
+    const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+    const kolejka = NARZEDZIA_KOLEJKI.migrujKolejke(eventisImportQueue);
+    const kluczeImportu = new Set(stan.rekordy.filter(rekord => !rekord.error && rekord.status === "CONFIRMED").map(NARZEDZIA_ARKUSZA.recordKey));
+    const wyniki = Object.fromEntries([...poprawne].map(klucz => [klucz,stan.preflight.wyniki[klucz]]));
+    const zaktualizowana = pomin ? NARZEDZIA_KOLEJKI.oznaczKompletnePoPreflighcie(kolejka,wyniki,stan.organizacja,kluczeImportu)
+      : kolejka.map(element => element.organization === stan.organizacja && element.recordStatus === "CONFIRMED"
+        && kluczeImportu.has(element.recordKey)
+        && poprawne.has(`${element.organization}|${element.normalizedTitle}`)
+        && element.status === "COMPLETED_EXISTING" && element.completion?.source === "preflight-existing"
+        ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,"PENDING"),completion:null,completionReason:null,completedAt:null} : element);
+    const zmiany = zaktualizowana.filter((element,indeks) => element !== kolejka[indeks]);
+    const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:zmiany});
+    if (!zapis?.ok) throw new Error("Nie udało się zapisać decyzji preflightu.");
+    stan.kolejka = zapis.items;
+    await odswiezPlanOtwarcia();
+    renderuj();
+  }
+
   async function zapiszMagazynMapowan() {
     await chrome.storage.local.set({[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]:stan.magazynMapowan});
   }
@@ -284,7 +400,11 @@
   }
 
   function finalnyPlanOtwarcia() {
-    return NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie));
+    const aktywne = new Set(stan.kolejka.filter(element => element.recordStatus === "CONFIRMED"
+      && ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status)).map(element => element.id));
+    return NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+      .map(rozstrzygniecie => ({...rozstrzygniecie,queueItemIds:(rozstrzygniecie.queueItemIds || []).filter(id => aktywne.has(id))}))
+      .filter(rozstrzygniecie => rozstrzygniecie.queueItemIds.length));
   }
 
   async function odswiezPlanOtwarcia() {
@@ -295,7 +415,13 @@
 
   async function otworzGotoweKarty() {
     const plan = finalnyPlanOtwarcia();
-    await chrome.storage.local.set({eventisImportQueue:stan.kolejka});
+    const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+    const aktualnaKolejka = NARZEDZIA_KOLEJKI.migrujKolejke(eventisImportQueue);
+    const nowe = stan.kolejka.filter(element => !aktualnaKolejka.some(istniejacy => istniejacy.signature === element.signature));
+    stan.kolejka = [...aktualnaKolejka,...nowe];
+    const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:nowe});
+    if (!zapis?.ok) throw new Error("Nie udało się zapisać kolejki Eventis.");
+    stan.kolejka = zapis.items;
     const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:plan.pozycje,organization:stan.organizacja});
     if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
     stan.komunikat = odpowiedz.opened
@@ -307,6 +433,7 @@
 
   async function analizujWklejonyTekst() {
     if (stan.skanowanie.trwa) return;
+    stan.preflight = {trwa:false,sprawdzone:0,lacznie:0,wyniki:{},pokolenie:stan.preflight.pokolenie+1};
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
     if (!surowyTekst) return pokazKomunikat("Wklej listę potwierdzonych szkoleń.");
@@ -320,18 +447,21 @@
       chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]),
       pobierzWszystkieOgloszeniaZListy(tytulyDoWyszukania)
     ]);
-    const kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
+    const kolejka = NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : []);
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(rekordy,kolejka,{organization:stan.organizacja});
     const kolejkaPodgladu = [...kolejka,...przygotowane.items];
     stan.rekordy = rekordy;
     stan.kolejka = kolejkaPodgladu;
+    const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:przygotowane.items});
+    if (!zapis?.ok) throw new Error("Nie udało się zapisać kolejki Eventis.");
+    stan.kolejka = zapis.items;
     stan.mapowania = dane.mappings || {};
     stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ogloszenia = wynikSkanowania.ogloszenia;
     stan.skanowanie = {trwa:false,liczbaStron:wynikSkanowania.liczbaStron,liczbaZapytan:wynikSkanowania.liczbaZapytan,blad:wynikSkanowania.blad};
     stan.liczbaBledow = rekordy.filter(rekord => rekord.error).length;
     stan.liczbaDuplikatow = przygotowane.duplicates;
-    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(kolejkaPodgladu,rekordy),stan.ogloszenia,stan.organizacja,{
+    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(elementyDotyczaceRekordow(stan.kolejka,rekordy),stan.ogloszenia,stan.organizacja,{
       znajdzMapowanie:grupa => MAPOWANIA_WYDARZEN.resolverZMapowania(MAPOWANIA_WYDARZEN.pobierzBezpieczneMapowanie(stan.magazynMapowan,stan.organizacja,grupa.klucz,grupa.tytul))
     });
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
@@ -350,6 +480,29 @@
     await odswiezPlanOtwarcia();
     stan.komunikat = "";
     renderuj();
+    uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
+  }
+
+  function renderujPreflight(rozstrzygniecie) {
+    if (rozstrzygniecie.manualStatus === "SKIPPED" || !NARZEDZIA_LISTY.pobierzIdEventisZUrl(rozstrzygniecie.selectedCandidate?.url)) return "";
+    const klucz = kluczRozstrzygniecia(rozstrzygniecie);
+    const wynik = stan.preflight.wyniki[klucz];
+    const aktualny = wynik && String(wynik.eventId) === String(rozstrzygniecie.selectedCandidate.eventId) ? wynik : null;
+    const status = aktualny?.status || "UNVERIFIED";
+    const potwierdzone = aktualny?.confirmedSemperTerms?.length ?? NARZEDZIA_TERMINOW.dedupeTerms(potwierdzoneTerminyTytulu(rozstrzygniecie)).length;
+    const zgodne = aktualny?.matchingEventisTerms?.length;
+    const brakujace = aktualny?.missingConfirmedTerms?.length;
+    const opis = status === "COMPLETE" ? "✓ Wszystkie potwierdzone terminy są już w Eventis"
+      : status === "COUNT_MATCH_BUT_DIFFERENT" ? `⚠ Liczby są równe, ale brakuje ${brakujace} potwierdzonych terminów`
+      : status === "MISSING_TERMS" ? `⚠ Brakuje ${brakujace} potwierdzonych terminów`
+      : aktualny?.error ? `Nie udało się zweryfikować: ${aktualny.error}`
+      : aktualny ? "Nie wykryto potwierdzonych terminów do porównania" : "Oczekuje na weryfikację terminów";
+    const pokazTermin = termin => `${termin.start}${termin.end && termin.end !== termin.start ? `–${termin.end}` : ""} · ${termin.city}`;
+    const szczegoly = aktualny?.confirmedSemperTerms ? `<details><summary>Pokaż terminy</summary><div class="esync-small">Potwierdzone SEMPER: ${esc(aktualny.confirmedSemperTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Brakujące: ${esc(aktualny.missingConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Pozostałe Eventis: ${esc(aktualny.extraEventisTerms.map(pokazTermin).join(", ") || "brak")}</div></details>` : "";
+    const akcje = status === "COMPLETE"
+      ? `<button class="esync-btn good" data-preflight-skip="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Pomiń otwieranie</button><button class="esync-btn" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Otwórz mimo to</button>`
+      : `<button class="esync-btn good" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>${brakujace ? "Otwórz i uzupełnij" : "Otwórz ręcznie"}</button>`;
+    return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(rozstrzygniecie.sourceTitle)}</div><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small ${status === "COMPLETE" ? "esync-success" : "esync-warning"}">${esc(opis)}</div>${szczegoly}<div class="esync-grid2" style="margin-top:5px">${akcje}</div><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></div></div>`;
   }
 
   function renderujWyniki() {
@@ -374,15 +527,25 @@
       return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${wariant}${komunikatWyboru}${kandydaci}${wybrano}${tworzenie}${pominieto}${recznyUrl}${szukaj}${utworzNowe}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
     }).join("");
     const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
+    const wierszePreflightu = stan.rozstrzygniecia.map(aktualneRozstrzygniecie).map(renderujPreflight).join("");
+    const kompletne = stan.rozstrzygniecia.filter(pozycja => {
+      const aktualna = aktualneRozstrzygniecie(pozycja);
+      const wynik = stan.preflight.wyniki[kluczRozstrzygniecia(aktualna)];
+      return wynik?.status === "COMPLETE" && String(wynik.eventId) === String(aktualna.selectedCandidate?.eventId);
+    });
+    const wymagajaUwagi = Object.values(stan.preflight.wyniki).filter(wynik => ["UNVERIFIED","ERROR","COUNT_MATCH_BUT_DIFFERENT"].includes(wynik.status)).length;
+    const postep = stan.preflight.trwa ? `<div class="esync-info esync-small">Weryfikacja terminów ${stan.preflight.sprawdzone}/${stan.preflight.lacznie}</div>` : "";
     const plan = finalnyPlanOtwarcia();
     const planOtwarcia = stan.planOtwarcia;
     const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
-      ? `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} → ${esc(pozycja.selectedCandidate.url)}</div>`
+      ? `<div class="esync-small">→ ${esc(pozycja.sourceTitle)} · ${stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`]?.status === "COMPLETE" ? "kompletne — oczekuje na decyzję" : stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`]?.missingConfirmedTerms?.length ? `brakuje ${stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`].missingConfirmedTerms.length} terminów — zostanie otwarte` : "można otworzyć"}</div>`
       : pozycja.status === "CREATE_NEW"
         ? `<div class="esync-small">＋ ${esc(pozycja.sourceTitle)} → nowe ogłoszenie</div>`
-      : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("");
-    const podsumowanieOtwarcia = planOtwarcia ? `<div class="esync-import-summary"><span>Gotowe: <b>${planOtwarcia.gotowe}</b></span><span>Już otwarte: <b>${planOtwarcia.juzOtwarte.length}</b></span><span>Do otwarcia: <b>${planOtwarcia.doOtwarcia.length}</b></span><span>Pominięte: <b>${plan.pozycje.filter(pozycja => pozycja.status === "SKIPPED").length}</b></span></div>${planOtwarcia.konflikty.length ? `<div class="esync-warning esync-small">Konflikty mapowań: ${planOtwarcia.konflikty.length}. Ten sam event nie zostanie otwarty drugi raz.</div>` : ""}<button id="esync-otworz-karty" class="esync-btn good" style="width:100%;margin-top:6px" ${planOtwarcia.doOtwarcia.length ? "" : "disabled"}>OTWÓRZ ${planOtwarcia.doOtwarcia.length} KART EVENTIS</button>` : '<div class="esync-small esync-muted">Sprawdzanie już otwartych kart…</div>';
-    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
+      : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("")
+      + kompletne.filter(pozycja => !plan.pozycje.some(planowana => planowana.normalizedSourceTitle === pozycja.normalizedSourceTitle))
+        .map(pozycja => `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} · kompletne — pominięto otwieranie</div>`).join("");
+    const podsumowanieOtwarcia = planOtwarcia ? `<div class="esync-import-summary"><span>Gotowe: <b>${planOtwarcia.gotowe}</b></span><span>Już otwarte: <b>${planOtwarcia.juzOtwarte.length}</b></span><span>Do otwarcia: <b>${planOtwarcia.doOtwarcia.length}</b></span><span>Kompletne: <b>${kompletne.length}</b></span><span>Wymagają uwagi: <b>${wymagajaUwagi}</b></span></div>${planOtwarcia.konflikty.length ? `<div class="esync-warning esync-small">Konflikty mapowań: ${planOtwarcia.konflikty.length}. Ten sam event nie zostanie otwarty drugi raz.</div>` : ""}<button id="esync-otworz-karty" class="esync-btn good" style="width:100%;margin-top:6px" ${planOtwarcia.doOtwarcia.length && !stan.preflight.trwa ? "" : "disabled"}>OTWÓRZ ${planOtwarcia.doOtwarcia.length} KART EVENTIS</button>` : '<div class="esync-small esync-muted">Sprawdzanie już otwartych kart…</div>';
+    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Preflight terminów</span></div>${postep}${wierszePreflightu || '<div class="esync-small esync-muted">Brak przypisanych wydarzeń do sprawdzenia.</div>'}<button id="esync-pomin-kompletne" class="esync-btn" ${kompletne.length && !stan.preflight.trwa ? "" : "disabled"}>Pomiń wszystkie kompletne</button><div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
   }
 
   function renderujSeryjnaKolejke() {
@@ -391,7 +554,7 @@
     const stanSkanowania = stan.skanowanie.trwa
       ? '<div class="esync-info esync-small">Wyszukiwanie ogłoszeń na wszystkich stronach listy Eventis…</div>'
       : `<div class="esync-small esync-muted" style="margin-top:6px">Przeszukane strony: ${stan.skanowanie.liczbaStron} · zapytania w polu wyszukiwania: ${stan.skanowanie.liczbaZapytan} · znalezione ogłoszenia: ${stan.ogloszenia.length}</div>${stan.skanowanie.blad?`<div class="esync-warning esync-small">Część stron nie została odczytana: ${esc(stan.skanowanie.blad)}</div>`:""}`;
-    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Błędy: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}</div>`;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${kolejka.map(element => `<div class="esync-import-row"><div><div class="esync-term-main">${esc(element.title)}</div><div class="esync-term-sub">${esc(element.start)} · ${esc(element.city)} · ${esc(element.status)}</div>${stan.ustawienia.debug ? `<details><summary>Diagnostyka</summary><pre>${esc(JSON.stringify({queueItemId:element.id,signature:element.signature,status:element.status,eventisEventId:element.eventisEventId,tabId:element.tabId,createdAt:element.createdAt,updatedAt:element.updatedAt,completedAt:element.completedAt,pendingOperationId:element.pendingOperationId,historia:element.historia},null,2))}</pre></details>` : ""}</div>${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć do kolejki</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń ten termin</button>` : ""}</div>`).join("")}</div>`;
   }
 
   function renderuj() {
@@ -407,7 +570,41 @@
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
     $("#esync-lista-analizuj")?.addEventListener("click",obsluzAsynchronicznie(analizujWklejonyTekst));
+    for (const przycisk of $$('[data-queue-skip],[data-queue-restore]')) przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const id = przycisk.dataset.queueSkip || przycisk.dataset.queueRestore;
+      const status = przycisk.dataset.queueSkip ? "SKIPPED" : "PENDING";
+      const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+      stan.kolejka = NARZEDZIA_KOLEJKI.migrujKolejke(eventisImportQueue).map(element => element.id === id ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,status) : element);
+      const zmieniony = stan.kolejka.find(element => element.id === id);
+      const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:[zmieniony]});
+      if (!zapis?.ok) throw new Error("Nie udało się zapisać statusu terminu.");
+      stan.kolejka = zapis.items;
+      await odswiezPlanOtwarcia();
+      renderuj();
+    }));
     $("#esync-otworz-karty")?.addEventListener("click",obsluzAsynchronicznie(otworzGotoweKarty));
+    $("#esync-pomin-kompletne")?.addEventListener("click",obsluzAsynchronicznie(async () => {
+      await ustawDecyzjeKompletnych(new Set(Object.keys(stan.preflight.wyniki).filter(klucz => stan.preflight.wyniki[klucz].status === "COMPLETE")),true);
+    }));
+    $$('[data-preflight-skip]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      await ustawDecyzjeKompletnych(new Set([przycisk.dataset.preflightSkip]),true);
+    })));
+    $$('[data-preflight-retry]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      await uruchomPreflight(new Set([przycisk.dataset.preflightRetry]));
+    })));
+    $$('[data-preflight-open]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const klucz = przycisk.dataset.preflightOpen;
+      if (stan.preflight.wyniki[klucz]?.status === "COMPLETE") await ustawDecyzjeKompletnych(new Set([klucz]),false);
+      const pozycja = finalnyPlanOtwarcia().pozycje.find(wpis => `${wpis.organization}|${wpis.normalizedSourceTitle}` === klucz)
+        || NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+          .filter(wpis => kluczRozstrzygniecia(wpis) === klucz)
+          .map(wpis => ({...wpis,queueItemIds:[]}))).pozycje[0];
+      if (!pozycja) return pokazKomunikat("To wydarzenie nie ma aktywnych potwierdzonych terminów do otwarcia.");
+      const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:[pozycja],organization:stan.organizacja});
+      if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć karty Eventis.");
+      await odswiezPlanOtwarcia();
+      renderuj();
+    })));
     $$('[data-wybor-klucz]').forEach(pole => pole.addEventListener("change",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === pole.dataset.wyborKlucz);
       const wybor = NARZEDZIA_LISTY.wybierzKandydataRozstrzygniecia(zrodlo,pole.value);
@@ -417,6 +614,7 @@
       }
       await odswiezPlanOtwarcia();
       renderuj();
+      if (wybor) uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
     })));
     $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
@@ -444,6 +642,7 @@
       await zapiszRozstrzygniecie(wybor,"manual");
       await odswiezPlanOtwarcia();
       renderuj();
+      uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
     })));
     $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.zmienMapowanie;
@@ -462,10 +661,12 @@
   }
 
   async function inicjalizuj() {
-    const dane = await chrome.storage.local.get(["settings","eventisImportQueue"]);
+    await chrome.runtime.sendMessage({type:"RECONCILE_QUEUE"});
+    const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion"]);
     stan.ustawienia = {...KONFIGURACJA.DEFAULT_SETTINGS,...(dane.settings || {})};
     stan.organizacja = wykryjOrganizacje();
-    stan.kolejka = Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [];
+    stan.kolejka = NARZEDZIA_KOLEJKI.reconcileQueueState(NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : []),dane.pendingOperations || {});
+    if (dane.eventisQueueSchemaVersion !== 2) await chrome.storage.local.set({eventisImportQueue:stan.kolejka,eventisQueueSchemaVersion:2});
     stan.ogloszenia = pobierzOgloszeniaZDokumentu();
     renderuj();
   }

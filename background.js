@@ -1,8 +1,9 @@
-importScripts("shared/config.js","shared/operacje-eventis.js","shared/otwieranie-wydarzen-eventis.js","background/sheet-bridge-client.js");
+importScripts("shared/config.js","shared/wyszukiwanie.js","shared/terminy.js","shared/arkusz.js","shared/kolejka-eventis.js","shared/operacje-eventis.js","shared/otwieranie-wydarzen-eventis.js","background/sheet-bridge-client.js");
 
 const DEFAULT_SETTINGS = globalThis.EventisSyncConfig.DEFAULT_SETTINGS;
 const KLIENT_MOSTU_ARKUSZA = globalThis.KlientMostuArkuszaEventis;
 const OTWIERANIE_WYDARZEN = globalThis.OtwieranieWydarzenEventis;
+const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
 const kolejkiClaimowOperacji = new Map();
 
 async function wykonajClaimSeryjnie(kluczClaimu, akcja) {
@@ -14,6 +15,28 @@ async function wykonajClaimSeryjnie(kluczClaimu, akcja) {
   } finally {
     if (kolejkiClaimowOperacji.get(kluczClaimu) === biezacy) kolejkiClaimowOperacji.delete(kluczClaimu);
   }
+}
+
+async function usunOsieroconeOperacje() {
+  const operacje = (await chrome.storage.local.get(["pendingOperations"])).pendingOperations || {};
+  let zmieniono = false;
+  for (const [klucz,wpis] of Object.entries(operacje)) {
+    const przeterminowana = !Number.isFinite(Date.parse(wpis.updatedAt || wpis.filledAt || wpis.createdAt))
+      || Date.now() - Date.parse(wpis.updatedAt || wpis.filledAt || wpis.createdAt) > 2 * 60 * 60 * 1000;
+    let kartaIstnieje = Boolean(wpis.tabId);
+    if (kartaIstnieje) {
+      try { await chrome.tabs.get(wpis.tabId); } catch (_) { kartaIstnieje = false; }
+    }
+    if (przeterminowana || !kartaIstnieje) { delete operacje[klucz]; zmieniono = true; }
+  }
+  if (zmieniono) {
+    await chrome.storage.local.set({pendingOperations:operacje});
+    await wykonajClaimSeryjnie("eventisImportQueue",async () => {
+      const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+      await chrome.storage.local.set({eventisImportQueue:NARZEDZIA_KOLEJKI.reconcileQueueState(eventisImportQueue,operacje)});
+    });
+  }
+  return operacje;
 }
 
 async function wykonajAkcjeMostuArkusza(akcja) {
@@ -235,11 +258,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!operacja?.operationId || !operacja?.operationScopeKey) throw new Error("Nieprawidłowy claim operacji importu.");
         const NARZEDZIA_OPERACJI = globalThis.NarzedziaOperacjiEventis;
         if (!NARZEDZIA_OPERACJI) throw new Error("Nie załadowano obsługi operacji Eventis.");
-        const wynik = await wykonajClaimSeryjnie(operacja.operationScopeKey,() => NARZEDZIA_OPERACJI.uzyskajClaimOperacji({
-          pobierz:async () => (await chrome.storage.local.get(["pendingOperations"])).pendingOperations || {},
+        if (!sender.tab?.id) throw new Error("Brak identyfikatora karty operacji.");
+        const wynik = await wykonajClaimSeryjnie("pendingOperations",() => NARZEDZIA_OPERACJI.uzyskajClaimOperacji({
+          pobierz:usunOsieroconeOperacje,
           zapisz:async pendingOperations => chrome.storage.local.set({pendingOperations})
-        },operacja));
+        },{...operacja,tabId:sender.tab.id}));
         sendResponse(wynik);
+        break;
+      }
+      case "GET_TAB_CONTEXT": {
+        await wykonajClaimSeryjnie("pendingOperations",usunOsieroconeOperacje);
+        sendResponse({ok:true,tabId:sender.tab?.id || null});
+        break;
+      }
+      case "RECONCILE_QUEUE": {
+        await wykonajClaimSeryjnie("pendingOperations",usunOsieroconeOperacje);
+        const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
+        sendResponse({ok:true,items:eventisImportQueue});
+        break;
+      }
+      case "MERGE_QUEUE_ITEMS": {
+        const wynik = await wykonajClaimSeryjnie("eventisImportQueue",async () => {
+          const dane = await chrome.storage.local.get(["eventisImportQueue"]);
+          const kolejka = NARZEDZIA_KOLEJKI.scalElementyKolejki(Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [],message.items || []);
+          await chrome.storage.local.set({eventisImportQueue:kolejka,eventisQueueSchemaVersion:2});
+          return kolejka;
+        });
+        sendResponse({ok:true,items:wynik});
         break;
       }
       case "SHEET_BRIDGE_HEALTH": {

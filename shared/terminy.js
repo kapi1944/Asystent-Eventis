@@ -128,7 +128,63 @@
   }
 
   function kluczIstniejacegoTerminu(termin) {
-    return [termin.start,normalizuj(termin.city)].join("|");
+    return kluczZgodnegoTerminu(termin);
+  }
+
+  function kluczZgodnegoTerminu(termin) {
+    return [termin.start,termin.end || termin.start,normalizuj(termin.city)].join("|");
+  }
+
+  function odczytajTerminyEventis(dokument) {
+    const terminy = [];
+    for (const wiersz of dokument.querySelectorAll('[id^="li_eventdate_"]')) {
+      const identyfikator = wiersz.id.split("_").pop();
+      const poczatek = wiersz.querySelector(`input[name="eventDate[${identyfikator}][date_start]"]`)?.value
+        || wiersz.querySelector(`#eventdate_datestart_${identyfikator}`)?.value;
+      const koniec = wiersz.querySelector(`input[name="eventDate[${identyfikator}][date_end]"]`)?.value
+        || wiersz.querySelector(`#eventdate_dateend_${identyfikator}`)?.value || poczatek;
+      const miasto = wiersz.querySelector(`input[name="eventDate[${identyfikator}][city]"]`)?.value || "";
+      const informacja = wiersz.querySelector(`input[name="eventDate[${identyfikator}][info]"]`)?.value || "";
+      const tryb = wiersz.querySelector(`select[name="eventDate[${identyfikator}][is_online]"]`)?.value
+        || wiersz.querySelector(`#eventdate_is_online_${identyfikator}`)?.value;
+      const lokalizacja = tryb === "1" ? "Online" : (miasto || informacja);
+      const cena = Number(wiersz.querySelector('input[name*="[price]"]')?.value || 0) || null;
+      if (poczatek) terminy.push({start:poczatek,end:koniec,city:String(lokalizacja).replace(/\s+/g," ").trim(),price:cena,row:wiersz,id:identyfikator});
+    }
+    return terminy;
+  }
+
+  function odczytajTerminySemper(dokument) {
+    const terminy = [];
+    for (const wiersz of dokument.querySelectorAll("table tr")) {
+      const tekst = String(wiersz.textContent || "").replace(/\s+/g," ").trim();
+      const komorki = Array.from(wiersz.children).map(komorka => String(komorka.textContent || "").replace(/\s+/g," ").trim());
+      const zakres = zakresDatZTresci(komorki[0] || tekst);
+      const miasto = miastoZTresci(komorki[1] || tekst);
+      const cena = cenaZTresci(komorki[3] || tekst);
+      if (!zakres || !miasto || !cena) continue;
+      terminy.push({...zastosujReguleCzterodniowegoTerminu(zakres.start,zakres.end,miasto,cena),
+        confirmed:Boolean(wiersz.querySelector(".gw")) || czyTekstPotwierdzony(tekst),rawText:tekst});
+    }
+    return usunDuplikatyTerminow(terminy);
+  }
+
+  function porownajPotwierdzoneTerminy(terminyZrodlowe = [], terminyEventis = []) {
+    const potwierdzone = usunDuplikatyTerminow(terminyZrodlowe.filter(termin => termin.confirmed));
+    const kluczeEventis = new Set(terminyEventis.map(kluczZgodnegoTerminu));
+    const kluczePotwierdzone = new Set(potwierdzone.map(kluczZgodnegoTerminu));
+    const zgodne = potwierdzone.filter(termin => kluczeEventis.has(kluczZgodnegoTerminu(termin)));
+    const brakujace = potwierdzone.filter(termin => !kluczeEventis.has(kluczZgodnegoTerminu(termin)));
+    const dodatkowe = terminyEventis.filter(termin => !kluczePotwierdzone.has(kluczZgodnegoTerminu(termin)));
+    const status = !potwierdzone.length ? "UNVERIFIED" : !brakujace.length ? "COMPLETE"
+      : terminyEventis.length === potwierdzone.length ? "COUNT_MATCH_BUT_DIFFERENT" : "MISSING_TERMS";
+    return {status,confirmedSemperTerms:potwierdzone,matchingEventisTerms:zgodne,missingConfirmedTerms:brakujace,extraEventisTerms:dodatkowe,eventisTerms:terminyEventis};
+  }
+
+  function ustalWynikPreflightu(terminyZrodlowe, terminyEventis, blad = "") {
+    return blad || !Array.isArray(terminyEventis)
+      ? {status:"UNVERIFIED",error:String(blad || "Nie udało się odczytać terminów Eventis.")}
+      : porownajPotwierdzoneTerminy(terminyZrodlowe,terminyEventis);
   }
 
   function usunDuplikatyTerminow(terminy) {
@@ -151,6 +207,11 @@
     isConfirmedText: czyTekstPotwierdzony,
     termKey: kluczTerminu,
     existingKey: kluczIstniejacegoTerminu,
+    kluczZgodnegoTerminu,
+    odczytajTerminyEventis,
+    odczytajTerminySemper,
+    porownajPotwierdzoneTerminy,
+    ustalWynikPreflightu,
     dedupeTerms: usunDuplikatyTerminow,
     zastosujReguleCzterodniowegoTerminu
   };

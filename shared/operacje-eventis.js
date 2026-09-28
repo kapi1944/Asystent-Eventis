@@ -15,7 +15,11 @@
 
   async function uzyskajClaimOperacji(magazyn, operacja) {
     const operacjePrzedClaimem = { ...(await magazyn.pobierz()) };
-    const istniejacaOperacja = operacjePrzedClaimem[operacja.operationScopeKey];
+    const identyfikatory = new Set(operacja.queueItemIds || []);
+    const istniejacaOperacja = operacjePrzedClaimem[operacja.operationScopeKey]
+      || Object.values(operacjePrzedClaimem).find(wpis => identyfikatory.size
+        && wpis?.organization === operacja.organization
+        && (wpis.queueItemIds || []).some(id => identyfikatory.has(id)));
     if (istniejacaOperacja) return { ok:false, code:"OPERATION_ALREADY_CLAIMED", operacja:istniejacaOperacja };
     const operacjePoClaimie = { ...operacjePrzedClaimem, [operacja.operationScopeKey]:operacja };
     await magazyn.zapisz(operacjePoClaimie);

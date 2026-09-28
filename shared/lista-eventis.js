@@ -199,7 +199,7 @@
   function pogrupujElementyKolejki(elementy = [], organizacja) {
     const grupy = new Map();
     for (const element of elementy) {
-      if (element.organization !== organizacja || !["PENDING", "ERROR"].includes(element.status)) continue;
+      if (element.organization !== organizacja || !["PENDING", "ERROR", "NEEDS_ATTENTION", "COMPLETED_EXISTING"].includes(element.status)) continue;
       const klucz = element.normalizedTitle || NARZEDZIA_WYSZUKIWANIA.normalizujTytul(element.title);
       if (!klucz) continue;
       if (!grupy.has(klucz)) grupy.set(klucz, { klucz, tytul:element.title, elementy:[] });

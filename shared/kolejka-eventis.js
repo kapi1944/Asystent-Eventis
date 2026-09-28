@@ -9,13 +9,11 @@
     OCZEKUJE: "PENDING",
     CZEKA_NA_ZAPIS: "WAITING_FOR_SAVE",
     ZAKONCZONE: "DONE",
+    ZAKONCZONE_ISTNIEJACE: "COMPLETED_EXISTING",
+    POMINIETE: "SKIPPED",
+    WYMAGA_UWAGI: "NEEDS_ATTENTION",
     BLAD: "ERROR"
   });
-  const AKTYWNE_STATUSY_KOLEJKI = new Set([
-    STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,
-    STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS,
-    STATUSY_KOLEJKI_EVENTIS.BLAD
-  ]);
   const DOZWOLONE_ORGANIZACJE = new Set(["SEMPER", "IIST"]);
 
   function normalizujMiasto(wartosc) {
@@ -26,11 +24,6 @@
       .replace(/ł/g, "l")
       .replace(/\s+/g, " ")
       .trim();
-  }
-
-  function utworzId() {
-    if (globalny.crypto && typeof globalny.crypto.randomUUID === "function") return globalny.crypto.randomUUID();
-    return `eventis-import-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
   function sprawdzOrganizacje(organizacja) {
@@ -45,8 +38,12 @@
   function utworzElementKolejki(rekord, opcje = {}) {
     const teraz = opcje.now || new Date().toISOString();
     const organizacja = sprawdzOrganizacje(opcje.organization);
+    const queueItemId = opcje.id || kluczKolejki(organizacja,NARZEDZIA_ARKUSZA.recordKey(rekord));
     return {
-      id: opcje.id || utworzId(),
+      id: queueItemId,
+      queueItemId,
+      schemaVersion: 2,
+      signature: kluczKolejki(organizacja,NARZEDZIA_ARKUSZA.recordKey(rekord)),
       recordKey: NARZEDZIA_ARKUSZA.recordKey(rekord),
       organization: organizacja,
       status: STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,
@@ -68,7 +65,7 @@
   function przygotujElementyKolejki(rekordy, kolejka = [], opcje = {}) {
     const organizacja = sprawdzOrganizacje(opcje.organization);
     const klucze = new Set((kolejka || [])
-      .filter(element => element.organization === organizacja && AKTYWNE_STATUSY_KOLEJKI.has(element.status))
+      .filter(element => element.organization === organizacja)
       .map(element => kluczKolejki(element.organization,element.recordKey)));
     const nowe = [];
     let pominieteDuplikaty = 0;
@@ -99,7 +96,7 @@
       element.organization === organizacja
       && identyfikatory.has(element.id)
       && String(element.normalizedTitle || "") === tytulGrupy
-      && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status)
+      && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status)
       && ["CONFIRMED","DECONFIRMED"].includes(element.recordStatus)
     );
   }
@@ -108,10 +105,63 @@
     return (kolejka || []).reduce((wynik, element) => {
       if (element.status === STATUSY_KOLEJKI_EVENTIS.OCZEKUJE) wynik.pending++;
       else if (element.status === STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS) wynik.waitingForSave++;
-      else if (element.status === STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE) wynik.done++;
-      else if (element.status === STATUSY_KOLEJKI_EVENTIS.BLAD) wynik.errors++;
+      else if ([STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE].includes(element.status)) wynik.done++;
+      else if (element.status === STATUSY_KOLEJKI_EVENTIS.POMINIETE) wynik.skipped++;
+      else if ([STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status)) wynik.errors++;
       return wynik;
-    }, { pending: 0, waitingForSave: 0, done: 0, errors: 0 });
+    }, { pending: 0, waitingForSave: 0, done: 0, skipped: 0, errors: 0 });
+  }
+
+  function migrujKolejke(kolejka = []) {
+    const wynik = new Map();
+    for (const element of kolejka || []) {
+      if (!element?.organization || !element.recordKey) {
+        if (element) wynik.set(`legacy|${element.id || wynik.size}`,element);
+        continue;
+      }
+      const signature = kluczKolejki(element.organization,element.recordKey);
+      const poprzedni = wynik.get(signature);
+      const zakonczone = new Set([STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE]);
+      if (!poprzedni || (!zakonczone.has(poprzedni.status) && zakonczone.has(element.status))) {
+        wynik.set(signature,{...element,queueItemId:element.id,signature,schemaVersion:2});
+      }
+    }
+    return [...wynik.values()];
+  }
+
+  function scalElementyKolejki(kolejka = [], zmiany = []) {
+    const wynik = migrujKolejke(kolejka);
+    for (const element of zmiany) {
+      if (!element?.id || !element.organization || !element.recordKey) continue;
+      const indeks = wynik.findIndex(istniejacy => istniejacy.id === element.id);
+      if (indeks >= 0) wynik[indeks] = element;
+      else if (!wynik.some(istniejacy => istniejacy.signature === element.signature)) wynik.push(element);
+    }
+    return wynik;
+  }
+
+  function reconcileQueueState(kolejka = [], operacje = {}, istniejaceId = new Set(), teraz = Date.now()) {
+    const aktualneOperacje = Object.values(operacje);
+    return kolejka.map(element => {
+      if (istniejaceId.has(element.id) && ["PENDING","ERROR","NEEDS_ATTENTION","WAITING_FOR_SAVE"].includes(element.status)) {
+        return {...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE),completionReason:"ALREADY_EXISTS",completedAt:new Date(teraz).toISOString(),operationId:null};
+      }
+      if (element.status !== STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS) return element;
+      const operacja = aktualneOperacje.find(wpis => wpis.operationId === element.operationId);
+      if (operacja && teraz - Date.parse(operacja.updatedAt || operacja.filledAt || operacja.createdAt) < 2 * 60 * 60 * 1000) return element;
+      return {...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI,"Sprawdź wynik wcześniejszego zapisu Eventis."),operationId:null};
+    });
+  }
+
+  function oznaczKompletnePoPreflighcie(kolejka = [], wyniki = {}, organizacja, dozwoloneKlucze = null) {
+    return kolejka.map(element => {
+      const wynik = wyniki[`${element.organization}|${element.normalizedTitle}`];
+      if (element.organization !== organizacja || element.recordStatus !== "CONFIRMED"
+        || (dozwoloneKlucze && !dozwoloneKlucze.has(element.recordKey))
+        || wynik?.status !== "COMPLETE" || !["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status)) return element;
+      const zmieniony = zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE);
+      return {...zmieniony,eventisEventId:wynik.eventId,completionReason:"ALREADY_EXISTS",completion:{status:"COMPLETED",completedAt:zmieniony.completedAt,eventisEventId:wynik.eventId,source:"preflight-existing"}};
+    });
   }
 
   function czyPasujeDoTerminu(element, termin) {
@@ -128,7 +178,7 @@
   }
 
   function kluczTerminuEventis(termin) {
-    return [termin.start,normalizujMiasto(termin.city)].join("|");
+    return [termin.start,termin.end || termin.start,normalizujMiasto(termin.city)].join("|");
   }
 
   function rozdzielTerminyDoWprowadzenia(terminy = [], istniejaceTerminy = []) {
@@ -205,7 +255,10 @@
   }
 
   function zmienStatusElementu(element, status, errorMessage = "") {
-    return { ...element, status, errorMessage, updatedAt: new Date().toISOString() };
+    const teraz = new Date().toISOString();
+    return { ...element, status, errorMessage, updatedAt: teraz,
+      historia:[...(element.historia || []).slice(-9),{status,at:teraz}],
+      ...([STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE].includes(status) ? {completedAt:teraz} : {}) };
   }
 
   function oznaczElementyOczekujaceOperacji(kolejka = [], operacja) {
@@ -214,8 +267,8 @@
     return kolejka.map(element =>
       element.organization === operacja.organization
         && identyfikatory.has(element.id)
-        && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status)
-        ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId, filledAt:new Date().toISOString() }
+        && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status)
+        ? { ...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.CZEKA_NA_ZAPIS), operationId:operacja.operationId, pendingOperationId:operacja.operationId, eventisEventId:operacja.eventisIdResolved || operacja.eventisIdAtStart || null,tabId:operacja.tabId || null,filledAt:new Date().toISOString() }
         : element
     );
   }
@@ -229,19 +282,21 @@
         && (!operacja.operationId || element.operationId === operacja.operationId)
         ? {
           ...zmienStatusElementu(element,status,komunikatBledu),
-          ...(status === STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE ? {completionReason:"SAVED",savedAt:new Date().toISOString()} : {}),
+          ...(status === STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE ? {completionReason:"SAVED",savedAt:new Date().toISOString(),completion:{status:"COMPLETED",completedAt:new Date().toISOString(),eventisEventId:operacja.eventisIdResolved || operacja.eventisIdAtStart || null,source:"verified-save"}} : {}),
           ...(status === STATUSY_KOLEJKI_EVENTIS.BLAD ? {saveErrorAt:new Date().toISOString()} : {})
         }
         : element
     );
   }
 
-  function znajdzOperacjeDlaStrony(operacje = {}, organizacja, eventisId, eventisTitle) {
-    const dokladna = operacje[`${organizacja}|${eventisId}`];
+  function znajdzOperacjeDlaStrony(operacje = {}, organizacja, eventisId, eventisTitle, tabId = null) {
+    const dostepne = Object.values(operacje).filter(operacja => tabId == null || operacja?.tabId === tabId);
+    const dokladna = dostepne.find(operacja => operacja?.organization === organizacja
+      && String(operacja?.eventisIdResolved || operacja?.eventisIdAtStart || operacja?.eventisId) === String(eventisId));
     if (dokladna) return dokladna;
     const normalizujTytul = wartosc => String(wartosc || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
     const tytul = normalizujTytul(eventisTitle);
-    const kandydaci = Object.values(operacje).filter(operacja =>
+    const kandydaci = dostepne.filter(operacja =>
       operacja?.organization === organizacja
       && (String(operacja.operationScopeKey || "").startsWith(`${organizacja}|add:`)
         || String(operacja.eventisIdAtStart ?? operacja.eventisId ?? "").startsWith("new:"))
@@ -258,6 +313,10 @@
     filtrujKolejkeOrganizacji,
     przypiszElementyDoZadania,
     podsumujKolejke,
+    migrujKolejke,
+    scalElementyKolejki,
+    reconcileQueueState,
+    oznaczKompletnePoPreflighcie,
     dopasujElementKolejkiDoTerminow,
     rozdzielTerminyDoWprowadzenia,
     wypelnijTerminyOsobno,

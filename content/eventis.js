@@ -72,6 +72,7 @@
     manualMatches: [],
     manualPreview: null,
     eventisImportQueue: [],
+    tabId: null,
     pendingOperation: null,
     pendingLooksSaved: false,
     zapis: {saveState:"IDLE"},
@@ -183,6 +184,13 @@
   async function storageGet(keys) { return chrome.storage.local.get(keys); }
   async function storageSet(obj) { return chrome.storage.local.set(obj); }
 
+  async function zapiszElementyKolejki(elementy) {
+    const wynik = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:elementy});
+    if (!wynik?.ok) throw new Error(wynik?.error || "Nie udało się zapisać kolejki Eventis.");
+    state.eventisImportQueue = wynik.items;
+    return wynik.items;
+  }
+
   async function fetchText(url, opts={}) {
     const payload = { url, method: opts.method || "GET", body: opts.body || null, headers: opts.headers || {}, timeoutMs: opts.timeoutMs || 15000 };
     const res = await chrome.runtime.sendMessage({ type:"FETCH_TEXT", payload });
@@ -216,7 +224,8 @@
   }
 
   async function loadSettingsAndState() {
-    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue"]);
+    state.tabId = (await chrome.runtime.sendMessage({type:"GET_TAB_CONTEXT"}))?.tabId || null;
+    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue","eventisQueueSchemaVersion"]);
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
@@ -224,9 +233,9 @@
     const key = mappingKey(state.organization,state.eventisId);
     state.mapping = (data.mappings || {})[key] || null;
     const pendingOperations = data.pendingOperations || {};
-    state.pendingOperation = pendingOperations[kluczClaimuBiezacegoFormularza()]
-      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle);
-    state.eventisImportQueue = Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : [];
+    state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
+    state.eventisImportQueue = NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : []);
+    if (data.eventisQueueSchemaVersion !== 2) await storageSet({eventisImportQueue:state.eventisImportQueue,eventisQueueSchemaVersion:2});
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
       state.manualMatches = matchManualRecordsToCurrent(state.manualRecords);
@@ -321,19 +330,7 @@
   }
 
   function parseSemperTerms(doc) {
-    const raw = [];
-    for (const row of $$('table tr',doc)) {
-      const text = cleanLine(row.textContent || "");
-      const cells = Array.from(row.children).map(td=>cleanLine(td.textContent||""));
-      const range = dateRangeFromText(cells[0] || text);
-      const city = cityFromText(cells[1] || text);
-      const price = priceFromText(cells[3] || text);
-      if (!range || !city || !price) continue;
-      const confirmed = !!row.querySelector(".gw") || isConfirmedText(text);
-      const dostosowanyTermin = zastosujReguleCzterodniowegoTerminu(range.start,range.end,city,price);
-      raw.push({...dostosowanyTermin,confirmed,rawText:text});
-    }
-    return dedupeTerms(raw);
+    return NARZEDZIA_TERMINOW.odczytajTerminySemper(doc);
   }
 
   function odczytajLiczbeDni(doc) {
@@ -679,26 +676,13 @@
   }
 
   function getExistingTerms() {
-    const existing = [];
-    for (const row of $$('[id^="li_eventdate_"]')) {
-      const id = row.id.split("_").pop();
-      const dateStart = row.querySelector(`input[name="eventDate[${id}][date_start]"]`)?.value || row.querySelector(`#eventdate_datestart_${id}`)?.value;
-      const dateEnd = row.querySelector(`input[name="eventDate[${id}][date_end]"]`)?.value || row.querySelector(`#eventdate_dateend_${id}`)?.value || dateStart;
-      const city = row.querySelector(`input[name="eventDate[${id}][city]"]`)?.value || "";
-      const info = row.querySelector(`input[name="eventDate[${id}][info]"]`)?.value || "";
-      const type = row.querySelector(`select[name="eventDate[${id}][is_online]"]`)?.value || row.querySelector(`#eventdate_is_online_${id}`)?.value;
-      const place = type === "1" ? "Online" : (city || info);
-      const price = Number(row.querySelector('input[name*="[price]"]')?.value || 0) || null;
-      if (dateStart) existing.push({start:dateStart,end:dateEnd||dateStart,city:cleanLine(place),price,row,id});
-    }
-    return existing;
+    return NARZEDZIA_TERMINOW.odczytajTerminyEventis(document);
   }
 
   function compareTerms() {
     state.existingTerms = getExistingTerms();
-    const existingKeys = new Set(state.existingTerms.map(existingKey));
-    const confirmed = state.sourceTerms.filter(czyTerminPotwierdzony);
-    state.missingTerms = confirmed.filter(t=>!existingKeys.has(existingKey(t)));
+    const potwierdzone = state.sourceTerms.filter(czyTerminPotwierdzony).map(termin => ({...termin,confirmed:true}));
+    state.missingTerms = NARZEDZIA_TERMINOW.porownajPotwierdzoneTerminy(potwierdzone,state.existingTerms).missingConfirmedTerms;
     if (state.analizaTerminowWykonana && state.missingTerms.length) state.analizaWykazalaBraki = true;
   }
 
@@ -1082,7 +1066,9 @@
     const eventisIdAtStart = MODE === "add" ? null : state.eventisId;
     return {
       operationId:NARZEDZIA_OPERACJI.utworzOperationId(),
-      operationScopeKey:kluczClaimuBiezacegoFormularza(),
+      operationScopeKey:queueItemIds.length
+        ? `${state.organization}|queue:${[...queueItemIds].sort().join(",")}`
+        : kluczClaimuBiezacegoFormularza(),
       organization:state.organization,
       eventisIdAtStart,
       eventisIdResolved:MODE === "edit" ? state.eventisId : null,
@@ -1091,6 +1077,7 @@
       sourceUrl:state.source?.url || state.mapping?.sourceUrl || "",
       expectedTerms:terms.map(przygotujTerminDoKolejki),
       queueItemIds:[...queueItemIds],
+      tabId:state.tabId,
       skipSheetOutbox:queueItemIds.length>0,
       operator:state.settings.operatorInitial || "K",
       createdAt:new Date().toISOString(),
@@ -1135,9 +1122,9 @@
     pendingOperations[key]=potwierdzona;
     const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
     const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.oznaczElementyOczekujaceOperacji(aktualnaKolejka,potwierdzona);
-    await storageSet({pendingOperations,eventisImportQueue:zaktualizowanaKolejka});
+    await storageSet({pendingOperations});
+    await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== aktualnaKolejka[indeks]));
     state.pendingOperation=potwierdzona;
-    state.eventisImportQueue=zaktualizowanaKolejka;
     return potwierdzona;
   }
 
@@ -1148,8 +1135,7 @@
       return false;
     }
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
-    const operacja = pendingOperations[kluczClaimuBiezacegoFormularza()]
-      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle);
+    const operacja = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
     if (!operacja) return true;
     state.pendingOperation=operacja;
     render();
@@ -1266,7 +1252,7 @@
     const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
     const key = kluczStorageOperacji(op);
     if (identyfikatorOperacji(pendingOperations[key]) !== identyfikatorOperacji(op)) {
-      state.pendingOperation=pendingOperations[kluczClaimuBiezacegoFormularza()] || null;
+      state.pendingOperation=NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
       state.pendingLooksSaved=false;
       render();
       return toast("Operacja oczekująca zmieniła się w innej karcie. Odświeżono stan panelu.");
@@ -1286,8 +1272,8 @@
     }
     const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,op,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE);
     delete pendingOperations[key];
-    await storageSet({pendingOperations,sheetOutbox,eventisImportQueue:zaktualizowanaKolejka});
-    state.eventisImportQueue=zaktualizowanaKolejka;
+    await storageSet({pendingOperations,sheetOutbox});
+    await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== eventisImportQueue[indeks]));
     await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:terminyOperacji(op)});
     state.pendingOperation=null; state.pendingLooksSaved=false; state.status="SAVED";
     toast(op.queueItemIds?.length ? "Zapis Eventis potwierdzony. Pozycje kolejki oznaczono jako zakończone." : "Zapis Eventis potwierdzony. Oznaczenia dodano do lokalnej kolejki arkusza.");
@@ -1303,8 +1289,8 @@
     const komunikat = "Zapis formularza Eventis nie został potwierdzony. Sprawdź dane i ponów operację.";
     const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,op,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,komunikat);
     delete pendingOperations[key];
-    await storageSet({pendingOperations,eventisImportQueue:zaktualizowanaKolejka});
-    state.eventisImportQueue=zaktualizowanaKolejka;
+    await storageSet({pendingOperations});
+    await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== eventisImportQueue[indeks]));
     state.pendingOperation=null;
     state.pendingLooksSaved=false;
     state.status="SAVE_ERROR";
@@ -1366,7 +1352,7 @@
     const przygotowane = NARZEDZIA_KOLEJKI.przygotujElementyKolejki(state.manualPreview.records,obecnaKolejka,{organization:state.organization});
     if (!przygotowane.items.length) return toast("Brak nowych potwierdzonych pozycji do dodania do kolejki.");
     state.eventisImportQueue = [...obecnaKolejka,...przygotowane.items];
-    await storageSet({eventisImportQueue:state.eventisImportQueue});
+    await zapiszElementyKolejki(przygotowane.items);
     state.manualPreview = utworzPodgladImportu(state.manualPreview.records,state.manualPreview.rawText,state.manualPreview.bledyWalidacji);
     await audit("MANUAL_EVENTIS_QUEUE_ADDED",{records:przygotowane.items.length,duplicates:przygotowane.duplicates});
     render();
@@ -1385,11 +1371,12 @@
   async function zaktualizujBiezacaKolejke(modyfikator) {
     const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
     const aktualnaKolejka = Array.isArray(eventisImportQueue) ? eventisImportQueue : [];
-    state.eventisImportQueue=modyfikator(aktualnaKolejka);
+    const zaktualizowanaKolejka=modyfikator(aktualnaKolejka);
+    state.eventisImportQueue=zaktualizowanaKolejka;
     if (state.weryfikacjaOtwartejKarty?.status === "VERIFIED") {
       state.przypisaneElementyKolejki=NARZEDZIA_KOLEJKI.przypiszElementyDoZadania(state.eventisImportQueue,{...state.weryfikacjaOtwartejKarty.task,status:"VERIFIED"},state.organization);
     }
-    await storageSet({eventisImportQueue:state.eventisImportQueue});
+    await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== aktualnaKolejka[indeks]));
     return state.eventisImportQueue;
   }
 
@@ -1401,13 +1388,29 @@
     }
   }
 
+  async function reconcileBiezacejKolejki() {
+    if (MODE !== "edit" || !state.sourceTerms.length || state.formularzZmieniony) return;
+    const istniejące = new Set(getExistingTerms().map(existingKey));
+    const potwierdzoneId = new Set(state.eventisImportQueue.filter(element =>
+      element.organization === state.organization
+      && element.normalizedTitle === normalize(state.eventisTitle)
+      && element.recordStatus === "CONFIRMED"
+      && !state.pendingOperation?.queueItemIds?.includes(element.id)
+      && NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,state.sourceTerms.filter(czyTerminPotwierdzony))
+        .some(termin => istniejące.has(existingKey(termin)))
+    ).map(element => element.id));
+    if (!potwierdzoneId.size) return;
+    await zaktualizujBiezacaKolejke(kolejka => NARZEDZIA_KOLEJKI.reconcileQueueState(kolejka,{},potwierdzoneId));
+    render();
+  }
+
   function dopasowaniaKolejkiDoBiezacegoTytulu() {
     const elementy = state.weryfikacjaOtwartejKarty
       ? state.przypisaneElementyKolejki
       : NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
         .filter(element => String(element.normalizedTitle || "") === normalize(state.eventisTitle));
     return elementy
-      .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD].includes(element.status))
+      .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status))
       .map(element => ({
         element,
         similarity:titleSimilarity(state.eventisTitle,element.title),
@@ -1455,7 +1458,7 @@
     if (!doWprowadzenia.length) {
       await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element=>
         element.organization===state.organization && zaktualizowanePoIstniejacych.has(element.id)
-          ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
+          ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE),completionReason:"ALREADY_EXISTS"}
           : element));
       render();
       return toast("Wszystkie dopasowane terminy już istnieją w Eventis.");
@@ -1493,7 +1496,7 @@
       if (zaktualizowanePoIstniejacych.size) {
         await zaktualizujBiezacaKolejke(kolejka => kolejka.map(element=>
           element.organization===state.organization && zaktualizowanePoIstniejacych.has(element.id)
-            ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"ALREADY_EXISTS"}
+            ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE),completionReason:"ALREADY_EXISTS"}
             : element));
       }
       state.status="FORM_FILLED";
@@ -1562,6 +1565,7 @@
       const source=await fetchTraining(state.mapping.sourceUrl,organizacja);
       if(identyfikator!==state.searchRequestId||organizacja!==state.organization)return;
       await useSource(source,{learn:false,fromMapping:true});
+      await reconcileBiezacejKolejki();
       const ms=mappingState();
       if(ms.kind==="danger"){
         state.mapping.status="REVIEW_REQUIRED";
@@ -1584,6 +1588,7 @@
       await saveMapping(state.source,"AUTO_RECOMMENDED_CONFIRMED");
     }
     state.mappingVerifiedThisSession=true;
+    await reconcileBiezacejKolejki();
     if (state.mapping) {
       const { mappings = {} } = await storageGet(["mappings"]);
       const key=mappingKey(state.organization,state.eventisId);
@@ -1778,8 +1783,7 @@
     state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
     const { mappings={}, pendingOperations={} }=await storageGet(["mappings","pendingOperations"]);
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
-    state.pendingOperation=pendingOperations[kluczClaimuBiezacegoFormularza()]
-      || NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle);
+    state.pendingOperation=NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle,state.tabId);
     state.pendingLooksSaved=false;
     render();
     await inspectPendingAfterReload();

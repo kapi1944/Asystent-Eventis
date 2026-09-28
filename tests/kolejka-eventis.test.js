@@ -45,12 +45,67 @@ test("filtrowanie organizacji nie zwraca rekordów drugiego profilu", () => {
   assert.deepEqual(kolejka.filtrujKolejkeOrganizacji(elementy,"SEMPER").map(element => element.id),["s1","s2"]);
 });
 
-test("DONE nie blokuje ponownego importu tego samego rekordu", () => {
+test("DONE zachowuje historię przy ponownym imporcie tego samego rekordu", () => {
   const pierwszy = kolejka.przygotujElementyKolejki([rekord],[],{organization:"SEMPER"}).items[0];
   const zakonczony = {...pierwszy,status:"DONE"};
   const ponowny = kolejka.przygotujElementyKolejki([rekord],[zakonczony],{organization:"SEMPER"});
-  assert.equal(ponowny.items.length,1);
-  assert.equal(ponowny.duplicates,0);
+  assert.equal(ponowny.items.length,0);
+  assert.equal(ponowny.duplicates,1);
+  assert.equal(zakonczony.status,"DONE");
+});
+
+test("stabilny identyfikator i migracja zachowują 10 ukończonych, błąd i 20 oczekujących", () => {
+  const pierwszy = kolejka.przygotujElementyKolejki([rekord],[],{organization:"SEMPER"}).items[0];
+  const drugi = kolejka.przygotujElementyKolejki([rekord],[],{organization:"SEMPER"}).items[0];
+  assert.equal(pierwszy.id,drugi.id);
+  const zapisane = Array.from({length:31},(_,indeks) => ({...pierwszy,id:`stare-${indeks}`,recordKey:`klucz-${indeks}`,status:indeks<10?"DONE":indeks===10?"ERROR":"PENDING"}));
+  const odtworzone = kolejka.migrujKolejke(JSON.parse(JSON.stringify(zapisane)));
+  assert.deepEqual(kolejka.podsumujKolejke(odtworzone),{pending:20,waitingForSave:0,done:10,skipped:0,errors:1});
+});
+
+test("ponowny import zakończonych, pominiętych i błędnych nie tworzy nowych zadań", () => {
+  const element = kolejka.przygotujElementyKolejki([rekord],[],{organization:"SEMPER"}).items[0];
+  for (const status of ["DONE","COMPLETED_EXISTING","SKIPPED","ERROR"]) {
+    const wynik = kolejka.przygotujElementyKolejki([rekord],[{...element,status}],{organization:"SEMPER"});
+    assert.equal(wynik.items.length,0);
+  }
+});
+
+test("pominięcie i błąd jednego zadania nie zmieniają drugiego", () => {
+  const elementy = [{id:"A",status:"PENDING"},{id:"B",status:"PENDING"}];
+  const pominiete = elementy.map(element => element.id === "A" ? kolejka.zmienStatusElementu(element,"SKIPPED") : element);
+  assert.equal(pominiete[1].status,"PENDING");
+  const bledne = elementy.map(element => element.id === "A" ? kolejka.zmienStatusElementu(element,"ERROR") : element);
+  assert.equal(bledne[1].status,"PENDING");
+});
+
+test("reconciliation oznacza termin istniejący i porzucony zapis", () => {
+  const teraz = Date.parse("2026-09-28T12:00:00.000Z");
+  const wynik = kolejka.reconcileQueueState([
+    {id:"A",status:"PENDING"},
+    {id:"B",status:"WAITING_FOR_SAVE",operationId:"stara"},
+    {id:"C",status:"PENDING"}
+  ],{},new Set(["A"]),teraz);
+  assert.equal(wynik[0].status,"COMPLETED_EXISTING");
+  assert.equal(wynik[1].status,"NEEDS_ATTENTION");
+  assert.equal(wynik[2].status,"PENDING");
+});
+
+test("aktualizacje dwóch kart zachowują niezależne statusy", () => {
+  const elementy = [rekord,{...rekord,start:"2026-10-02",end:"2026-10-02"}]
+    .map(wpis => kolejka.przygotujElementyKolejki([wpis],[],{organization:"SEMPER"}).items[0]);
+  const poPierwszej = kolejka.scalElementyKolejki(elementy,[kolejka.zmienStatusElementu(elementy[0],"WAITING_FOR_SAVE")]);
+  const poDrugiej = kolejka.scalElementyKolejki(poPierwszej,[kolejka.zmienStatusElementu(elementy[1],"DONE")]);
+  assert.deepEqual(poDrugiej.map(element => element.status),["WAITING_FOR_SAVE","DONE"]);
+});
+
+test("zbiorcze pominięcie otwierania kończy tylko kompletne potwierdzone elementy", () => {
+  const elementy = ["A","B","C","D"].map((tytul,indeks) => ({id:tytul,organization:"SEMPER",normalizedTitle:tytul,recordStatus:indeks === 3 ? "DECONFIRMED" : "CONFIRMED",status:"PENDING"}));
+  const wyniki = {"SEMPER|A":{status:"COMPLETE",eventId:"10"},"SEMPER|B":{status:"MISSING_TERMS",eventId:"20"},"SEMPER|C":{status:"UNVERIFIED",eventId:"30"},"SEMPER|D":{status:"COMPLETE",eventId:"40"}};
+  const wynik = kolejka.oznaczKompletnePoPreflighcie(elementy,wyniki,"SEMPER");
+  assert.deepEqual(wynik.map(element => element.status),["COMPLETED_EXISTING","PENDING","PENDING","PENDING"]);
+  assert.equal(wynik[0].completion.source,"preflight-existing");
+  assert.deepEqual(kolejka.migrujKolejke(JSON.parse(JSON.stringify(wynik))).map(element => element.status),wynik.map(element => element.status));
 });
 
 test("aktywne PENDING, WAITING_FOR_SAVE i ERROR blokują ponowny import tego samego rekordu", () => {

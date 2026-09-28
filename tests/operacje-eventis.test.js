@@ -84,6 +84,23 @@ test("dwa różne ogłoszenia mają niezależne claimy", async () => {
   assert.equal(druga.ok,true);
 });
 
+test("dwie karty różnych zadań działają równolegle mimo oczekującego zapisu", async () => {
+  const magazyn = magazynPamięci();
+  const pierwsza = {...plan("A","SEMPER|queue:A"),queueItemIds:["A"],tabId:1,status:"WAITING_FOR_SAVE"};
+  const druga = {...plan("B","SEMPER|queue:B"),queueItemIds:["B"],tabId:2};
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,pierwsza)).ok,true);
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,druga)).ok,true);
+  assert.equal(kolejka.znajdzOperacjeDlaStrony(magazyn.stan(),"SEMPER","123","Inny tytuł",2),null);
+});
+
+test("ten sam queueItem w dwóch kartach dostaje tylko jednego właściciela", async () => {
+  const magazyn = magazynPamięci();
+  const pierwsza = {...plan("A","SEMPER|queue:A"),queueItemIds:["A"],tabId:1};
+  const druga = {...plan("B","SEMPER|queue:A,B"),queueItemIds:["A","B"],tabId:2};
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,pierwsza)).ok,true);
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,druga)).ok,false);
+});
+
 test("nowe formularze są rozróżniane tokenem dokumentu, a nie tytułem", () => {
   const pierwszy = operacje.kluczClaimuOperacji("SEMPER","add","new:tytuł","dokument-A");
   const drugi = operacje.kluczClaimuOperacji("SEMPER","add","new:tytuł","dokument-B");

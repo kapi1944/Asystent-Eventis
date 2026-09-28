@@ -60,6 +60,77 @@ test("zwykły termin otrzymuje zgodne daty źródłowe", () => {
 test("stary termin bez sourceStart i sourceEnd pozostaje zgodny", () => {
   const staryTermin = {start:"2026-09-28",end:"2026-09-29",city:"Online",confirmed:true};
   assert.equal(narzedzia.termKey(staryTermin),"2026-09-28|2026-09-29|online");
-  assert.equal(narzedzia.existingKey(staryTermin),"2026-09-28|online");
+  assert.equal(narzedzia.existingKey(staryTermin),"2026-09-28|2026-09-29|online");
   assert.deepEqual(narzedzia.dedupeTerms([staryTermin]),[staryTermin]);
+});
+
+test("preflight: trzy zgodne potwierdzone terminy są kompletne", () => {
+  const zrodlo = [1,5,10].map(dzien => ({start:`2026-10-${String(dzien).padStart(2,"0")}`,end:`2026-10-${String(dzien).padStart(2,"0")}`,city:"Online",confirmed:true}));
+  const wynik = narzedzia.porownajPotwierdzoneTerminy(zrodlo,[...zrodlo]);
+  assert.equal(wynik.status,"COMPLETE");
+  assert.equal(wynik.matchingEventisTerms.length,3);
+  assert.equal(wynik.missingConfirmedTerms.length,0);
+});
+
+test("preflight: brak jednego z czterech terminów wymaga uzupełnienia", () => {
+  const zrodlo = [1,5,10,20].map(dzien => ({start:`2026-10-${String(dzien).padStart(2,"0")}`,end:`2026-10-${String(dzien).padStart(2,"0")}`,city:"Warszawa",confirmed:true}));
+  const wynik = narzedzia.porownajPotwierdzoneTerminy(zrodlo,zrodlo.slice(0,3));
+  assert.equal(wynik.status,"MISSING_TERMS");
+  assert.equal(wynik.missingConfirmedTerms.length,1);
+});
+
+test("preflight: równe liczby z inną datą nie oznaczają kompletności", () => {
+  const zrodlo = [1,5,10].map(dzien => ({start:`2026-10-${String(dzien).padStart(2,"0")}`,end:`2026-10-${String(dzien).padStart(2,"0")}`,city:"Online",confirmed:true}));
+  const eventis = [...zrodlo.slice(0,2),{...zrodlo[2],start:"2026-10-20",end:"2026-10-20"}];
+  const wynik = narzedzia.porownajPotwierdzoneTerminy(zrodlo,eventis);
+  assert.equal(wynik.status,"COUNT_MATCH_BUT_DIFFERENT");
+  assert.equal(wynik.matchingEventisTerms.length,2);
+  assert.equal(wynik.missingConfirmedTerms.length,1);
+  assert.equal(wynik.extraEventisTerms.length,1);
+});
+
+test("preflight: historyczne terminy Eventis nie zaburzają kompletności", () => {
+  const zrodlo = [1,5].map(dzien => ({start:`2026-10-${String(dzien).padStart(2,"0")}`,end:`2026-10-${String(dzien).padStart(2,"0")}`,city:"Online",confirmed:true}));
+  const wynik = narzedzia.porownajPotwierdzoneTerminy(zrodlo,[...zrodlo,{start:"2020-01-01",end:"2020-01-01",city:"Online"}]);
+  assert.equal(wynik.status,"COMPLETE");
+  assert.equal(wynik.matchingEventisTerms.length,2);
+  assert.equal(wynik.extraEventisTerms.length,1);
+});
+
+test("preflight: data końcowa i lokalizacja uczestniczą w porównaniu", () => {
+  const zrodlo = [{start:"2026-10-01",end:"2026-10-02",city:"Online",confirmed:true}];
+  assert.equal(narzedzia.porownajPotwierdzoneTerminy(zrodlo,[{start:"2026-10-01",end:"2026-10-03",city:"Online"}]).status,"COUNT_MATCH_BUT_DIFFERENT");
+  assert.equal(narzedzia.porownajPotwierdzoneTerminy(zrodlo,[{start:"2026-10-01",end:"2026-10-02",city:"Warszawa"}]).status,"COUNT_MATCH_BUT_DIFFERENT");
+});
+
+test("preflight bez potwierdzonych terminów pozostaje niezweryfikowany", () => {
+  assert.equal(narzedzia.porownajPotwierdzoneTerminy([],[]).status,"UNVERIFIED");
+});
+
+test("błąd pobrania Eventis nie pozwala uznać szkolenia za kompletne", () => {
+  const wynik = narzedzia.ustalWynikPreflightu([{start:"2026-10-01",end:"2026-10-01",city:"Online",confirmed:true}],null,"HTTP 503");
+  assert.equal(wynik.status,"UNVERIFIED");
+  assert.equal(wynik.error,"HTTP 503");
+});
+
+test("wspólny odczyt formularza Eventis rozpoznaje datę końcową i ONLINE", () => {
+  const pola = new Map([
+    ['input[name="eventDate[7][date_start]"]',{value:"2026-11-18"}],
+    ['input[name="eventDate[7][date_end]"]',{value:"2026-11-19"}],
+    ['input[name="eventDate[7][city]"]',{value:"Warszawa"}],
+    ['select[name="eventDate[7][is_online]"]',{value:"1"}]
+  ]);
+  const wiersz = {id:"li_eventdate_7",querySelector:selektor => pola.get(selektor) || null};
+  const dokument = {querySelectorAll:() => [wiersz]};
+  const [termin] = narzedzia.odczytajTerminyEventis(dokument);
+  assert.deepEqual({start:termin.start,end:termin.end,city:termin.city},{start:"2026-11-18",end:"2026-11-19",city:"Online"});
+});
+
+test("wspólny odczyt SEMPER zachowuje wyłącznie potwierdzenie z oznaczenia", () => {
+  const komorki = ["2026-11-18 do 2026-11-19","ONLINE","","1200 zł"].map(textContent => ({textContent}));
+  const wiersz = {textContent:"2026-11-18 do 2026-11-19 ONLINE 1200 zł",children:komorki,querySelector:selektor => selektor === ".gw" ? {} : null};
+  const dokument = {querySelectorAll:() => [wiersz]};
+  const [termin] = narzedzia.odczytajTerminySemper(dokument);
+  assert.deepEqual({start:termin.start,end:termin.end,city:termin.city,confirmed:termin.confirmed},
+    {start:"2026-11-18",end:"2026-11-19",city:"Online",confirmed:true});
 });
