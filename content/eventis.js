@@ -35,6 +35,7 @@
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
+    AUTOMATYCZNE_POTWIERDZENIE_MAPOWANIA: 0.95,
     MOCNY_KANDYDAT: 0.72,
     POKAZ_KANDYDATA: 0.42,
     MINIMALNA_PRZEWAGA: 0.08,
@@ -1247,7 +1248,18 @@
   }
 
   async function confirmPendingSaved(method="USER_CONFIRM") {
-    if (!state.pendingOperation) { state.status="SAVED"; render(); return; }
+    if (!state.pendingOperation) {
+      const znormalizowanyTytul = state.weryfikacjaOtwartejKarty?.task?.normalizedSourceTitle || normalize(state.eventisTitle);
+      if (znormalizowanyTytul) {
+        const { eventisImportQueue = [] } = await storageGet(["eventisImportQueue"]);
+        const zaktualizowanaKolejka = NARZEDZIA_KOLEJKI.oznaczElementySzkoleniaJakoZakonczone(eventisImportQueue,state.organization,znormalizowanyTytul);
+        await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== eventisImportQueue[indeks]));
+        await audit("EVENTIS_SAVE_CONFIRMED",{method,terms:[],sourceTitle:state.source?.title || state.mapping?.sourceTitle});
+      }
+      state.status="SAVED";
+      render();
+      return;
+    }
     const op = state.pendingOperation;
     const { pendingOperations = {}, sheetOutbox = [], eventisImportQueue = [] } = await storageGet(["pendingOperations","sheetOutbox","eventisImportQueue"]);
     const key = kluczStorageOperacji(op);
@@ -1552,6 +1564,9 @@
     state.analizaWykazalaBraki=state.missingTerms.length>0;
     state.mappingVerifiedThisSession=false;
     if (learn) await saveMapping(source,origin);
+    if (titleSimilarity(state.eventisTitle,source.title) > PROGI_WYSZUKIWANIA.AUTOMATYCZNE_POTWIERDZENIE_MAPOWANIA) {
+      await verifyMapping();
+    }
     state.status="SOURCE_READY";
     render();
   }
@@ -1936,6 +1951,29 @@
     const zamknijKarte=state.analizaTerminowWykonana&&!state.analizaWykazalaBraki&&!state.formularzZmieniony;
     const liczbaPotwierdzonych=state.sourceTerms.filter(czyTerminPotwierdzony).length;
     root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Eventis Sync <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button class="esync-icon-btn ${state.organization==='SEMPER'?'semper':'iist'}" id="esync-org" title="Zmień SEMPER / IIST">${esc(state.organization)}</button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${renderPendingCard()}${renderTermsCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action"><button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
+    const naglowek = $(".esync-head",root);
+    naglowek.style.cursor = "move";
+    naglowek.style.touchAction = "none";
+    naglowek.addEventListener("pointerdown",zdarzenie => {
+      if (zdarzenie.button !== 0 || zdarzenie.target.closest("button")) return;
+      zdarzenie.preventDefault();
+      const prostokat = root.getBoundingClientRect();
+      const przesuniecieX = zdarzenie.clientX - prostokat.left;
+      const przesuniecieY = zdarzenie.clientY - prostokat.top;
+      const przesun = ruch => {
+        root.style.right = "auto";
+        root.style.left = `${Math.max(0,Math.min(window.innerWidth - prostokat.width,ruch.clientX - przesuniecieX))}px`;
+        root.style.top = `${Math.max(0,Math.min(window.innerHeight - prostokat.height,ruch.clientY - przesuniecieY))}px`;
+      };
+      const zakoncz = () => {
+        document.removeEventListener("pointermove",przesun);
+        document.removeEventListener("pointerup",zakoncz);
+        document.removeEventListener("pointercancel",zakoncz);
+      };
+      document.addEventListener("pointermove",przesun);
+      document.addEventListener("pointerup",zakoncz);
+      document.addEventListener("pointercancel",zakoncz);
+    });
     if (!NARZEDZIA_OPERACJI.czyMoznaRozpoczacZapis(state.zapis,state.trwaRozpoczynanieZapisu)) $("#esync-panel-action").disabled = true;
     bindUI();
     renderOutboxStatus();

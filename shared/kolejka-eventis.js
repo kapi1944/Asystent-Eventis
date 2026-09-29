@@ -289,6 +289,17 @@
     );
   }
 
+  function oznaczElementySzkoleniaJakoZakonczone(kolejka = [], organizacja, znormalizowanyTytul) {
+    if (!znormalizowanyTytul) return kolejka;
+    return kolejka.map(element =>
+      element.organization === organizacja
+        && element.normalizedTitle === znormalizowanyTytul
+        && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE].includes(element.status)
+        ? {...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"SAVED",savedAt:new Date().toISOString(),completion:{status:"COMPLETED",completedAt:new Date().toISOString(),source:"verified-save"}}
+        : element
+    );
+  }
+
   function znajdzOperacjeDlaStrony(operacje = {}, organizacja, eventisId, eventisTitle, tabId = null) {
     const dostepne = Object.values(operacje).filter(operacja => tabId == null || operacja?.tabId === tabId);
     const dokladna = dostepne.find(operacja => operacja?.organization === organizacja
@@ -325,6 +336,7 @@
     zmienStatusElementu,
     oznaczElementyOczekujaceOperacji,
     rozliczElementyOperacji,
+    oznaczElementySzkoleniaJakoZakonczone,
     znajdzOperacjeDlaStrony
   };
 

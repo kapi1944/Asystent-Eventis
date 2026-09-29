@@ -287,6 +287,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ok:true,items:wynik});
         break;
       }
+      case "REMOVE_QUEUE_ITEMS": {
+        const identyfikatory = new Set(Array.isArray(message.itemIds) ? message.itemIds.filter(Boolean) : []);
+        const wynik = await wykonajClaimSeryjnie("eventisImportQueue",async () => {
+          const dane = await chrome.storage.local.get(["eventisImportQueue","pendingOperations"]);
+          const kolejka = (Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : [])
+            .filter(element => !identyfikatory.has(element.id));
+          const operacje = {...(dane.pendingOperations || {})};
+          for (const [klucz,operacja] of Object.entries(operacje)) {
+            const queueItemIds = (operacja.queueItemIds || []).filter(id => !identyfikatory.has(id));
+            if ((operacja.queueItemIds || []).length && !queueItemIds.length) delete operacje[klucz];
+            else if (queueItemIds.length !== (operacja.queueItemIds || []).length) operacje[klucz] = {...operacja,queueItemIds};
+          }
+          await chrome.storage.local.set({eventisImportQueue:kolejka,pendingOperations:operacje,eventisQueueSchemaVersion:2});
+          return kolejka;
+        });
+        sendResponse({ok:true,items:wynik});
+        break;
+      }
+      case "CLEAR_QUEUE": {
+        const wynik = await wykonajClaimSeryjnie("eventisImportQueue",async () => {
+          const {pendingOperations = {}} = await chrome.storage.local.get(["pendingOperations"]);
+          const operacje = Object.fromEntries(Object.entries(pendingOperations)
+            .filter(([,operacja]) => !(operacja.queueItemIds || []).length));
+          await chrome.storage.local.set({eventisImportQueue:[],pendingOperations:operacje,eventisQueueSchemaVersion:2});
+          return [];
+        });
+        sendResponse({ok:true,items:wynik});
+        break;
+      }
       case "SHEET_BRIDGE_HEALTH": {
         sendResponse(await wykonajAkcjeMostuArkusza("health"));
         break;

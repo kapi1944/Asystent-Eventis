@@ -255,6 +255,14 @@ test("obsługa zdarzeń nie wywołuje catch na wyniku forEach", () => {
   assert.match(kod,/obsluzAsynchronicznie\(analizujWklejonyTekst\)/);
 });
 
+test("trwała kolejka odtwarza dopasowania i plan otwierania po wejściu na listę", () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
+  assert.match(kod,/odtworzAnalizeTrwalejKolejki\(\);/);
+  assert.match(kod,/odtworzAnalizeTrwalejKolejki\(\);\s*await odswiezPlanOtwarcia\(\);/);
+  assert.match(kod,/data-preflight-open=/);
+  assert.match(kod,/id="esync-otworz-karty"/);
+});
+
 function daneMapowania(organizacja = "SEMPER", tytul = "Prawo pracy", eventId = "101") {
   return {organization:organizacja,normalizedTitle:tytul,sourceTitle:tytul,eventId,eventUrl:`https://eventis.pl/event/edit/${eventId}`,eventTitle:`Wydarzenie ${eventId}`,resolutionSource:"manual"};
 }

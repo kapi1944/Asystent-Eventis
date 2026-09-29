@@ -147,9 +147,12 @@
       const informacja = wiersz.querySelector(`input[name="eventDate[${identyfikator}][info]"]`)?.value || "";
       const tryb = wiersz.querySelector(`select[name="eventDate[${identyfikator}][is_online]"]`)?.value
         || wiersz.querySelector(`#eventdate_is_online_${identyfikator}`)?.value;
-      const lokalizacja = tryb === "1" ? "Online" : (miasto || informacja);
+      const opisTrybu = wiersz.querySelector(`select[name="eventDate[${identyfikator}][is_online]"]`)?.selectedOptions?.[0]?.textContent || "";
+      const lokalizacja = tryb === "1" || /\bonline\b/.test(normalizuj(`${tryb || ""} ${opisTrybu}`)) ? "Online" : (miasto || informacja);
       const cena = Number(wiersz.querySelector('input[name*="[price]"]')?.value || 0) || null;
-      if (poczatek) terminy.push({start:poczatek,end:koniec,city:String(lokalizacja).replace(/\s+/g," ").trim(),price:cena,row:wiersz,id:identyfikator});
+      const znormalizowanyPoczatek = zakresDatZTresci(poczatek)?.start || poczatek;
+      const znormalizowanyKoniec = zakresDatZTresci(koniec)?.end || koniec;
+      if (poczatek) terminy.push({start:znormalizowanyPoczatek,end:znormalizowanyKoniec,city:String(lokalizacja).replace(/\s+/g," ").trim(),price:cena,row:wiersz,id:identyfikator});
     }
     return terminy;
   }

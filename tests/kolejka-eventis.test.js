@@ -168,6 +168,18 @@ test("rozliczenie pending operation zmienia tylko powiązane elementy właściwe
   assert.equal(wynik[2].status,"PENDING");
 });
 
+test("zapis karty kończy tylko aktywne elementy tego samego szkolenia", () => {
+  const elementy = [
+    {id:"a",organization:"SEMPER",normalizedTitle:"prawo pracy",status:"PENDING"},
+    {id:"b",organization:"SEMPER",normalizedTitle:"prawo pracy",status:"COMPLETED_EXISTING"},
+    {id:"c",organization:"SEMPER",normalizedTitle:"inne szkolenie",status:"PENDING"},
+    {id:"d",organization:"IIST",normalizedTitle:"prawo pracy",status:"PENDING"}
+  ];
+  const wynik = kolejka.oznaczElementySzkoleniaJakoZakonczone(elementy,"SEMPER","prawo pracy");
+  assert.deepEqual(wynik.map(element => element.status),["DONE","DONE","PENDING","PENDING"]);
+  assert.equal(wynik[0].completion.source,"verified-save");
+});
+
 test("pending operation z event/add jest odnajdywana po przejściu do liczbowego event/edit", () => {
   const operacja = {id:"nowa",organization:"SEMPER",eventisId:"new:prawo pracy",eventisTitle:"Prawo pracy"};
   const operacje = {"SEMPER|new:prawo pracy":operacja};

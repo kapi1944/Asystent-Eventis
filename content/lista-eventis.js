@@ -22,6 +22,7 @@
     rekordy:[],
     surowyTekst:"",
     kolejka:[],
+    pokazKolejke:false,
     mapowania:{},
     ogloszenia:[],
     dopasowania:[],
@@ -34,6 +35,7 @@
     liczbaDuplikatow:0,
     preflight:{trwa:false,sprawdzone:0,lacznie:0,wyniki:{},pokolenie:0},
     komunikat:"",
+    bladAnalizy:false,
     skanowanie:{trwa:false,liczbaStron:1,liczbaZapytan:0,blad:""}
   };
 
@@ -243,6 +245,33 @@
       && ["PENDING","ERROR","NEEDS_ATTENTION","COMPLETED_EXISTING"].includes(element.status));
   }
 
+  function odtworzAnalizeTrwalejKolejki() {
+    const aktywneElementy = stan.kolejka.filter(element => element.organization === stan.organizacja
+      && ["PENDING","ERROR","NEEDS_ATTENTION","COMPLETED_EXISTING"].includes(element.status));
+    stan.rekordy = aktywneElementy.map(element => ({
+      status:element.recordStatus,
+      title:element.title,
+      normalizedTitle:element.normalizedTitle,
+      start:element.start,
+      end:element.end,
+      city:element.city,
+      participants:element.participants,
+      rawText:element.rawText,
+      recordKey:element.recordKey
+    }));
+    const wynik = NARZEDZIA_LISTY.dopasujKolejkeDoOgloszen(aktywneElementy,stan.ogloszenia,stan.organizacja,{
+      znajdzMapowanie:grupa => MAPOWANIA_WYDARZEN.resolverZMapowania(MAPOWANIA_WYDARZEN.pobierzBezpieczneMapowanie(stan.magazynMapowan,stan.organizacja,grupa.klucz,grupa.tytul))
+    });
+    stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
+    stan.nierozpoznane = wynik.nierozpoznane;
+    stan.rozstrzygniecia = [
+      ...wynik.dopasowane.map(dopasowanie => ({...dopasowanie.resolver,queueItemIds:dopasowanie.elementy.map(element => element.id)})),
+      ...wynik.nierozpoznane.map(pozycja => pozycja.powod === "COLLISION"
+        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION",queueItemIds:pozycja.elementy.map(element => element.id)}
+        : {...pozycja.resolver,queueItemIds:pozycja.elementy.map(element => element.id)})
+    ];
+  }
+
   function ocenGotowoscDopasowan(dopasowania) {
     const prog = stan.ustawienia.mappingWarningThreshold;
     return dopasowania.map(dopasowanie => {
@@ -334,7 +363,7 @@
               .map(element => ({...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,"PENDING"),completion:null,completionReason:null,completedAt:null}));
             if (zmiany.length) {
               const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:zmiany});
-              if (!zapis?.ok) throw new Error("Nie udało się odświeżyć statusu kolejki.");
+              if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się odświeżyć statusu kolejki.");
               stan.kolejka = zapis.items;
             }
           }
@@ -374,7 +403,7 @@
         ? {...NARZEDZIA_KOLEJKI.zmienStatusElementu(element,"PENDING"),completion:null,completionReason:null,completedAt:null} : element);
     const zmiany = zaktualizowana.filter((element,indeks) => element !== kolejka[indeks]);
     const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:zmiany});
-    if (!zapis?.ok) throw new Error("Nie udało się zapisać decyzji preflightu.");
+    if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się zapisać decyzji preflightu.");
     stan.kolejka = zapis.items;
     await odswiezPlanOtwarcia();
     renderuj();
@@ -420,7 +449,7 @@
     const nowe = stan.kolejka.filter(element => !aktualnaKolejka.some(istniejacy => istniejacy.signature === element.signature));
     stan.kolejka = [...aktualnaKolejka,...nowe];
     const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:nowe});
-    if (!zapis?.ok) throw new Error("Nie udało się zapisać kolejki Eventis.");
+    if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się zapisać kolejki Eventis.");
     stan.kolejka = zapis.items;
     const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:plan.pozycje,organization:stan.organizacja});
     if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć kart Eventis.");
@@ -440,8 +469,11 @@
     const rekordy = NARZEDZIA_ARKUSZA.parseManualPaste(surowyTekst);
     if (!rekordy.length) return pokazKomunikat("Nie znaleziono wierszy POTWIERDZONE SZKOLENIE ani ODPOTWIERDZONE.");
     stan.surowyTekst = surowyTekst;
+    stan.bladAnalizy = false;
+    stan.komunikat = "";
     stan.skanowanie = {trwa:true,liczbaStron:1,liczbaZapytan:0,blad:""};
     renderuj();
+    try {
     const tytulyDoWyszukania = [...new Set(rekordy.filter(rekord => !rekord.error).map(rekord => rekord.title).filter(Boolean))];
     const [dane,wynikSkanowania] = await Promise.all([
       chrome.storage.local.get(["eventisImportQueue","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]),
@@ -452,9 +484,6 @@
     const kolejkaPodgladu = [...kolejka,...przygotowane.items];
     stan.rekordy = rekordy;
     stan.kolejka = kolejkaPodgladu;
-    const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:przygotowane.items});
-    if (!zapis?.ok) throw new Error("Nie udało się zapisać kolejki Eventis.");
-    stan.kolejka = zapis.items;
     stan.mapowania = dane.mappings || {};
     stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ogloszenia = wynikSkanowania.ogloszenia;
@@ -473,6 +502,10 @@
         : {...pozycja.resolver,queueItemIds:pozycja.elementy.map(element => element.id)})
     ];
     stan.decyzje = {};
+    renderuj();
+    const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:przygotowane.items});
+    if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się zapisać kolejki Eventis.");
+    stan.kolejka = zapis.items;
     for (const rozstrzygniecie of stan.rozstrzygniecia) {
       if (rozstrzygniecie.status !== "AUTO_MATCH") continue;
       await zapiszRozstrzygniecie(rozstrzygniecie,rozstrzygniecie.reason === "EXACT_MATCH" ? "exact" : "fuzzy");
@@ -481,6 +514,14 @@
     stan.komunikat = "";
     renderuj();
     uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
+    } catch (blad) {
+      stan.skanowanie.trwa = false;
+      stan.skanowanie.blad = blad?.message || String(blad);
+      stan.bladAnalizy = true;
+      stan.komunikat = `Nie udało się zakończyć analizy: ${stan.skanowanie.blad}`;
+      renderuj();
+      throw blad;
+    }
   }
 
   function renderujPreflight(rozstrzygniecie) {
@@ -502,7 +543,44 @@
     const akcje = status === "COMPLETE"
       ? `<button class="esync-btn good" data-preflight-skip="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Pomiń otwieranie</button><button class="esync-btn" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Otwórz mimo to</button>`
       : `<button class="esync-btn good" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>${brakujace ? "Otwórz i uzupełnij" : "Otwórz ręcznie"}</button>`;
-    return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(rozstrzygniecie.sourceTitle)}</div><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small ${status === "COMPLETE" ? "esync-success" : "esync-warning"}">${esc(opis)}</div>${szczegoly}<div class="esync-grid2" style="margin-top:5px">${akcje}</div><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></div></div>`;
+    return `<div class="esync-preflight"><div class="esync-akcje-glowne ${status === "COMPLETE" ? "esync-grid2" : ""}">${akcje}</div><details class="esync-szczegoly-kafelka"><summary>Szczegóły weryfikacji</summary><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small esync-opis-weryfikacji">${esc(opis)}</div>${szczegoly}<button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></details></div>`;
+  }
+
+  function renderujTerminyPozycji(rozstrzygniecie) {
+    const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja
+      && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle
+      && element.status !== "DONE");
+    return elementy.map(element => `<div class="esync-termin-kolejki"><span>${esc(element.start)}${element.end && element.end !== element.start ? ` → ${esc(element.end)}` : ""} · ${esc(element.city)}</span><span class="esync-akcje-terminu">${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : ""}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></span></div>`).join("");
+  }
+
+  function wygladPozycji(rozstrzygniecie) {
+    const klucz = kluczRozstrzygniecia(rozstrzygniecie);
+    const wynik = stan.preflight.wyniki[klucz];
+    const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle);
+    if (elementy.some(element => element.status === "ERROR") || wynik?.status === "ERROR" || wynik?.error) return {klasa:"blad",etykieta:"Błąd krytyczny"};
+    if (rozstrzygniecie.manualStatus === "CREATE_NEW" || (!rozstrzygniecie.selectedCandidate && rozstrzygniecie.manualStatus !== "SKIPPED")) return {klasa:"brak-dopasowania",etykieta:"Brak dopasowania — możliwe nowe ogłoszenie"};
+    if (wynik?.status === "COMPLETE") return {klasa:"kompletne",etykieta:"Wszystkie potwierdzone terminy są w Eventis"};
+    if (["MISSING_TERMS","COUNT_MATCH_BUT_DIFFERENT"].includes(wynik?.status)) return {klasa:"wymaga-uzupelnienia",etykieta:"Co najmniej jeden termin wymaga dodania"};
+    if (rozstrzygniecie.selectedCandidate && elementy.some(element => ["PENDING","NEEDS_ATTENTION"].includes(element.status))) return {klasa:"wymaga-uzupelnienia",etykieta:"Wymaga uzupełnienia w Eventis"};
+    return {klasa:"brak-dopasowania",etykieta:"Oczekuje na weryfikację"};
+  }
+
+  function renderujPozycjeSzkolenia(pozycja, indeks) {
+    const aktualna = aktualneRozstrzygniecie(pozycja);
+    const klucz = kluczRozstrzygniecia(pozycja);
+    const wyglad = wygladPozycji(aktualna);
+    const opisDopasowania = pozycja.status === "AUTO_MATCH" ? `Dopasowano automatycznie → Eventis #${esc(aktualna.selectedCandidate?.eventId || "?")}`
+      : pozycja.status === "KNOWN_MAPPING" ? `Zapamiętane przypisanie → ${esc(aktualna.selectedCandidate?.url || "")}`
+      : aktualna.manualStatus === "MANUAL_MATCH" ? `Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.` : "";
+    const zmianaMapowania = pozycja.status === "KNOWN_MAPPING" ? `<button class="esync-btn" data-zmien-mapowanie="${esc(klucz)}">Zmień przypisane wydarzenie</button>` : "";
+    const dopasowanie = opisDopasowania ? `<details class="esync-szczegoly-kafelka"><summary>Dopasowanie Eventis</summary><div class="esync-small esync-muted">${opisDopasowania}</div>${zmianaMapowania}</details>` : "";
+    const tworzenie = aktualna.manualStatus === "CREATE_NEW" ? '<div class="esync-info esync-small">Zostanie utworzone nowe ogłoszenie.</div>' : "";
+    const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
+    const kandydaci = pozycja.status === "AMBIGUOUS" && aktualna.manualStatus !== "CREATE_NEW" ? (pozycja.candidates || []).slice(0,5).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(klucz)}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>Zgodność: ${Math.round(kandydat.score*100)}% · ${esc(kandydat.url)}</small></label>`).join("") : "";
+    const recznyUrl = pozycja.status === "NOT_FOUND" && aktualna.manualStatus !== "CREATE_NEW" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(klucz)}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(klucz)}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div><button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
+    const wymagaDecyzji = !aktualna.selectedCandidate && aktualna.manualStatus !== "SKIPPED" && aktualna.manualStatus !== "CREATE_NEW";
+    const decyzje = wymagaDecyzji ? `<div class="esync-info esync-small">${pozycja.status === "AMBIGUOUS" ? "Wybierz właściwe wydarzenie Eventis." : "Nie znaleziono dopasowania w Eventis."}</div>${kandydaci}${recznyUrl}<button class="esync-btn good" data-utworz-nowe="${esc(klucz)}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie</button><button class="esync-btn warn" data-pomin-tytul="${esc(klucz)}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button>` : "";
+    return `<div class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}${dopasowanie}</div>`;
   }
 
   function renderujWyniki() {
@@ -511,23 +589,7 @@
     const znaneMapowania = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "KNOWN_MAPPING");
     const wymagajaWyboru = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "AMBIGUOUS").length;
     const nieZnaleziono = stan.rozstrzygniecia.filter(pozycja => pozycja.status === "NOT_FOUND").length;
-    const wymagajaceRozstrzygniecia = stan.rozstrzygniecia.filter(pozycja => pozycja.status !== "AUTO_MATCH").map((pozycja, indeks) => {
-      if (pozycja.status === "KNOWN_MAPPING") return "";
-      const aktualna = aktualneRozstrzygniecie(pozycja);
-      const liczby = liczbyTerminow(pozycja);
-      const wybrano = aktualna.manualStatus === "MANUAL_MATCH" ? `<div class="esync-success esync-small">Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.</div>` : "";
-      const tworzenie = aktualna.manualStatus === "CREATE_NEW" ? '<div class="esync-success esync-small">Potwierdzono utworzenie nowego ogłoszenia.</div>' : "";
-      const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
-      const kandydaci = pozycja.status === "AMBIGUOUS" ? (pozycja.candidates || []).slice(0,5).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(kluczRozstrzygniecia(pozycja))}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>Zgodność: ${Math.round(kandydat.score*100)}% · ${esc(kandydat.url)}</small></label>`).join("") : "";
-      const recznyUrl = pozycja.status === "NOT_FOUND" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(kluczRozstrzygniecia(pozycja))}" placeholder="https://eventis.pl/event/edit/123"><div class="esync-small esync-muted" style="margin-top:4px">Wklej adres edycji wydarzenia z Eventis, nie adres szkolenia SEMPER/IIST.</div><button class="esync-btn" data-zatwierdz-url="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div>` : "";
-      const szukaj = pozycja.status === "NOT_FOUND" ? `<button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
-      const utworzNowe = `<button class="esync-btn good" data-utworz-nowe="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie dla tego tytułu</button>`;
-      const wariant = pozycja.wariantLokalizacji ? `<div class="esync-info esync-small">3-dniowe - wariant lokalizacyjny: ${esc(pozycja.wariantLokalizacji)}.</div>` : "";
-      const komunikatWyboru = pozycja.reason === "LOCATION_VARIANT_UNCONFIRMED" ? '<div class="esync-warning esync-small">Nie potwierdzono wariantu miejscowości - wymagany wybór.</div>' : pozycja.status === "AMBIGUOUS" ? '<div class="esync-warning esync-small">Znaleziono podobne tytuły. Wybierz dokładnie jedno wydarzenie Eventis — bez wyboru żadna karta nie zostanie otwarta.</div>' : '<div class="esync-danger esync-small">Nie znaleziono automatycznego dopasowania.</div>';
-      return `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${liczby.potwierdzone} potwierdzone · ${liczby.odpotwierdzone} odpotwierdzone</div>${wariant}${komunikatWyboru}${kandydaci}${wybrano}${tworzenie}${pominieto}${recznyUrl}${szukaj}${utworzNowe}<button class="esync-btn warn" data-pomin-tytul="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button></div></div>`;
-    }).join("");
-    const znaneWiersze = znaneMapowania.map(pozycja => `<div class="esync-import-row"><div style="width:100%"><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-small esync-success">Zapamiętane przypisanie → ${esc(pozycja.selectedCandidate.url)}</div><button class="esync-btn" data-zmien-mapowanie="${esc(kluczRozstrzygniecia(pozycja))}" style="width:100%;margin-top:5px">Zmień przypisane wydarzenie</button></div></div>`).join("");
-    const wierszePreflightu = stan.rozstrzygniecia.map(aktualneRozstrzygniecie).map(renderujPreflight).join("");
+    const wierszeSzkolen = stan.rozstrzygniecia.map(renderujPozycjeSzkolenia).join("");
     const kompletne = stan.rozstrzygniecia.filter(pozycja => {
       const aktualna = aktualneRozstrzygniecie(pozycja);
       const wynik = stan.preflight.wyniki[kluczRozstrzygniecia(aktualna)];
@@ -537,24 +599,32 @@
     const postep = stan.preflight.trwa ? `<div class="esync-info esync-small">Weryfikacja terminów ${stan.preflight.sprawdzone}/${stan.preflight.lacznie}</div>` : "";
     const plan = finalnyPlanOtwarcia();
     const planOtwarcia = stan.planOtwarcia;
-    const planWiersze = plan.pozycje.map(pozycja => pozycja.status === "READY"
-      ? `<div class="esync-small">→ ${esc(pozycja.sourceTitle)} · ${stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`]?.status === "COMPLETE" ? "kompletne — oczekuje na decyzję" : stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`]?.missingConfirmedTerms?.length ? `brakuje ${stan.preflight.wyniki[`${pozycja.organization}|${pozycja.normalizedSourceTitle}`].missingConfirmedTerms.length} terminów — zostanie otwarte` : "można otworzyć"}</div>`
-      : pozycja.status === "CREATE_NEW"
-        ? `<div class="esync-small">＋ ${esc(pozycja.sourceTitle)} → nowe ogłoszenie</div>`
-      : `<div class="esync-small">○ ${esc(pozycja.sourceTitle)} → pominięte</div>`).join("")
-      + kompletne.filter(pozycja => !plan.pozycje.some(planowana => planowana.normalizedSourceTitle === pozycja.normalizedSourceTitle))
-        .map(pozycja => `<div class="esync-small">✓ ${esc(pozycja.sourceTitle)} · kompletne — pominięto otwieranie</div>`).join("");
     const podsumowanieOtwarcia = planOtwarcia ? `<div class="esync-import-summary"><span>Gotowe: <b>${planOtwarcia.gotowe}</b></span><span>Już otwarte: <b>${planOtwarcia.juzOtwarte.length}</b></span><span>Do otwarcia: <b>${planOtwarcia.doOtwarcia.length}</b></span><span>Kompletne: <b>${kompletne.length}</b></span><span>Wymagają uwagi: <b>${wymagajaUwagi}</b></span></div>${planOtwarcia.konflikty.length ? `<div class="esync-warning esync-small">Konflikty mapowań: ${planOtwarcia.konflikty.length}. Ten sam event nie zostanie otwarty drugi raz.</div>` : ""}<button id="esync-otworz-karty" class="esync-btn good" style="width:100%;margin-top:6px" ${planOtwarcia.doOtwarcia.length && !stan.preflight.trwa ? "" : "disabled"}>OTWÓRZ ${planOtwarcia.doOtwarcia.length} KART EVENTIS</button>` : '<div class="esync-small esync-muted">Sprawdzanie już otwartych kart…</div>';
-    return `<div class="esync-card"><div class="esync-section-title"><span>Podsumowanie resolucji</span><span>${stan.rozstrzygniecia.length} tytułów</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${znaneWiersze}${wymagajaceRozstrzygniecia}<div class="esync-divider"></div><div class="esync-section-title"><span>Preflight terminów</span></div>${postep}${wierszePreflightu || '<div class="esync-small esync-muted">Brak przypisanych wydarzeń do sprawdzenia.</div>'}<button id="esync-pomin-kompletne" class="esync-btn" ${kompletne.length && !stan.preflight.trwa ? "" : "disabled"}>Pomiń wszystkie kompletne</button><div class="esync-divider"></div><div class="esync-section-title"><span>Plan otwarcia</span></div>${planWiersze || '<div class="esync-small esync-muted">Brak pozycji w planie.</div>'}<div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Szkolenia do obsługi</span><span>${stan.rozstrzygniecia.length}</span></div><div class="esync-import-summary"><span>✓ automatycznie: <b>${automatyczne}</b></span><span>★ zapamiętane: <b>${znaneMapowania.length}</b></span><span>⚠ wybór: <b>${wymagajaWyboru}</b></span><span>✕ nie znaleziono: <b>${nieZnaleziono}</b></span></div>${stan.liczbaBledow?`<div class="esync-danger esync-small">Błędne rekordy: ${stan.liczbaBledow}. Nie trafią do kolejki.</div>`:""}${postep}${wierszeSzkolen || '<div class="esync-small esync-muted">Brak szkoleń do obsługi.</div>'}<button id="esync-pomin-kompletne" class="esync-btn" ${kompletne.length && !stan.preflight.trwa ? "" : "disabled"}>Pomiń wszystkie kompletne</button><div class="esync-divider"></div><div class="esync-import-summary"><span>Nierozstrzygnięte: <b>${plan.nierozstrzygniete}</b></span></div>${podsumowanieOtwarcia}</div>`;
   }
 
   function renderujSeryjnaKolejke() {
     const kolejka = NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(stan.kolejka,stan.organizacja);
+    const kolejkaWidoczna = kolejka.filter(element => element.status !== "DONE");
     const podsumowanie = NARZEDZIA_KOLEJKI.podsumujKolejke(kolejka);
+    const opisStatusu = element => {
+      if (element.status === "ERROR") return {klasa:"blad",etykieta:"Błąd krytyczny"};
+      if (element.status === "COMPLETED_EXISTING") return {klasa:"kompletne",etykieta:"Wszystkie terminy są w Eventis"};
+      return {klasa:"wymaga-uzupelnienia",etykieta:"Wymaga uzupełnienia w Eventis"};
+    };
+    const wiersze = stan.rekordy.length ? "" : kolejkaWidoczna.map(element => {
+      const status = opisStatusu(element);
+      const przycisk = element.status === "SKIPPED"
+        ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>`
+        : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status)
+          ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : "";
+      return `<div class="esync-import-row esync-kolejka-${status.klasa}"><span class="esync-dioda" title="${esc(status.etykieta)}"></span><div><div class="esync-term-main">${esc(element.title)}</div><div class="esync-term-sub">${esc(element.start)} · ${esc(element.city)} · ${esc(status.etykieta)}</div></div>${przycisk}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></div>`;
+    }).join("");
     const stanSkanowania = stan.skanowanie.trwa
       ? '<div class="esync-info esync-small">Wyszukiwanie ogłoszeń na wszystkich stronach listy Eventis…</div>'
       : `<div class="esync-small esync-muted" style="margin-top:6px">Przeszukane strony: ${stan.skanowanie.liczbaStron} · zapytania w polu wyszukiwania: ${stan.skanowanie.liczbaZapytan} · znalezione ogłoszenia: ${stan.ogloszenia.length}</div>${stan.skanowanie.blad?`<div class="esync-warning esync-small">Część stron nie została odczytana: ${esc(stan.skanowanie.blad)}</div>`:""}`;
-    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${kolejka.map(element => `<div class="esync-import-row"><div><div class="esync-term-main">${esc(element.title)}</div><div class="esync-term-sub">${esc(element.start)} · ${esc(element.city)} · ${esc(element.status)}</div>${stan.ustawienia.debug ? `<details><summary>Diagnostyka</summary><pre>${esc(JSON.stringify({queueItemId:element.id,signature:element.signature,status:element.status,eventisEventId:element.eventisEventId,tabId:element.tabId,createdAt:element.createdAt,updatedAt:element.updatedAt,completedAt:element.completedAt,pendingOperationId:element.pendingOperationId,historia:element.historia},null,2))}</pre></details>` : ""}</div>${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć do kolejki</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń ten termin</button>` : ""}</div>`).join("")}</div>`;
+    const zawartosc = wiersze || (stan.rekordy.length ? '<div class="esync-small esync-muted">Pozycje są pokazane niżej w jednej, scalonej liście.</div>' : '<div class="esync-small esync-muted">Brak aktywnych pozycji w kolejce.</div>');
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${zawartosc}<button id="esync-clear-queue" class="esync-btn danger" style="width:100%;margin-top:7px" ${stan.kolejka.length ? "" : "disabled"}>Wyczyść całą kolejkę (${stan.kolejka.length})</button></div>`;
   }
 
   function renderuj() {
@@ -564,20 +634,79 @@
       korzen.id = "esync-root";
       document.body.appendChild(korzen);
     }
-    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujSeryjnaKolejke()}<div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
+    const liczbaAktywnych = stan.kolejka.filter(element => element.status !== "DONE").length;
+    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body"><details id="esync-lista-kolejka" ${stan.pokazKolejke?"open":""}><summary>Seryjna kolejka Eventis (${liczbaAktywnych})</summary>${renderujSeryjnaKolejke()}</details><div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
+    const komunikat = $(".esync-body > .esync-success",korzen);
+    if (komunikat) {
+      if (stan.bladAnalizy) komunikat.classList.replace("esync-success","esync-danger");
+      $(".esync-body > .esync-card",korzen).after(komunikat);
+    }
+    $("#esync-lista-kolejka")?.addEventListener("toggle",zdarzenie => { stan.pokazKolejke = zdarzenie.currentTarget.open; });
+    const naglowek = $(".esync-head",korzen);
+    naglowek.style.cursor = "move";
+    naglowek.style.touchAction = "none";
+    naglowek.addEventListener("pointerdown",zdarzenie => {
+      if (zdarzenie.button !== 0 || zdarzenie.target.closest("button")) return;
+      zdarzenie.preventDefault();
+      const prostokat = korzen.getBoundingClientRect();
+      const przesuniecieX = zdarzenie.clientX - prostokat.left;
+      const przesuniecieY = zdarzenie.clientY - prostokat.top;
+      const przesun = ruch => {
+        korzen.style.right = "auto";
+        korzen.style.left = `${Math.max(0,Math.min(window.innerWidth - prostokat.width,ruch.clientX - przesuniecieX))}px`;
+        korzen.style.top = `${Math.max(0,Math.min(window.innerHeight - prostokat.height,ruch.clientY - przesuniecieY))}px`;
+      };
+      const zakoncz = () => {
+        document.removeEventListener("pointermove",przesun);
+        document.removeEventListener("pointerup",zakoncz);
+        document.removeEventListener("pointercancel",zakoncz);
+      };
+      document.addEventListener("pointermove",przesun);
+      document.addEventListener("pointerup",zakoncz);
+      document.addEventListener("pointercancel",zakoncz);
+    });
     $("#esync-lista-collapse")?.addEventListener("click",() => {
       korzen.classList.toggle("esync-collapsed");
       $("#esync-lista-collapse").textContent = korzen.classList.contains("esync-collapsed") ? "+" : "−";
     });
     $("#esync-lista-analizuj")?.addEventListener("click",obsluzAsynchronicznie(analizujWklejonyTekst));
+    $("#esync-clear-queue")?.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const zapis = await chrome.runtime.sendMessage({type:"CLEAR_QUEUE"});
+      if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się wyczyścić kolejki.");
+      stan.kolejka = zapis.items;
+      stan.rekordy = [];
+      stan.dopasowania = [];
+      stan.nierozpoznane = [];
+      stan.rozstrzygniecia = [];
+      stan.decyzje = {};
+      stan.preflight = {trwa:false,sprawdzone:0,lacznie:0,wyniki:{},pokolenie:stan.preflight.pokolenie+1};
+      stan.planOtwarcia = null;
+      stan.komunikat = "Wyczyszczono całą kolejkę.";
+      stan.bladAnalizy = false;
+      renderuj();
+    }));
+    $$('[data-queue-remove]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const zapis = await chrome.runtime.sendMessage({type:"REMOVE_QUEUE_ITEMS",itemIds:[przycisk.dataset.queueRemove]});
+      if (!zapis?.ok) throw new Error(zapis?.error || "Nie udało się usunąć terminu z kolejki.");
+      stan.kolejka = zapis.items;
+      await odswiezPlanOtwarcia();
+      renderuj();
+    })));
     for (const przycisk of $$('[data-queue-skip],[data-queue-restore]')) przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const id = przycisk.dataset.queueSkip || przycisk.dataset.queueRestore;
       const status = przycisk.dataset.queueSkip ? "SKIPPED" : "PENDING";
       const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
-      stan.kolejka = NARZEDZIA_KOLEJKI.migrujKolejke(eventisImportQueue).map(element => element.id === id ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,status) : element);
-      const zmieniony = stan.kolejka.find(element => element.id === id);
+      const kolejka = NARZEDZIA_KOLEJKI.migrujKolejke(eventisImportQueue).map(element => element.id === id ? NARZEDZIA_KOLEJKI.zmienStatusElementu(element,status) : element);
+      const zmieniony = kolejka.find(element => element.id === id);
       const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:[zmieniony]});
-      if (!zapis?.ok) throw new Error("Nie udało się zapisać statusu terminu.");
+      if (!zapis?.ok) {
+        stan.bladAnalizy = true;
+        stan.komunikat = zapis?.error || "Nie udało się zapisać statusu terminu.";
+        renderuj();
+        throw new Error(stan.komunikat);
+      }
+      stan.bladAnalizy = false;
+      stan.komunikat = "";
       stan.kolejka = zapis.items;
       await odswiezPlanOtwarcia();
       renderuj();
@@ -662,12 +791,16 @@
 
   async function inicjalizuj() {
     await chrome.runtime.sendMessage({type:"RECONCILE_QUEUE"});
-    const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion"]);
+    const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ustawienia = {...KONFIGURACJA.DEFAULT_SETTINGS,...(dane.settings || {})};
     stan.organizacja = wykryjOrganizacje();
     stan.kolejka = NARZEDZIA_KOLEJKI.reconcileQueueState(NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : []),dane.pendingOperations || {});
     if (dane.eventisQueueSchemaVersion !== 2) await chrome.storage.local.set({eventisImportQueue:stan.kolejka,eventisQueueSchemaVersion:2});
+    stan.mapowania = dane.mappings || {};
+    stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ogloszenia = pobierzOgloszeniaZDokumentu();
+    odtworzAnalizeTrwalejKolejki();
+    await odswiezPlanOtwarcia();
     renderuj();
   }
 

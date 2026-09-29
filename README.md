@@ -34,7 +34,7 @@ Pierwszy działający prototyp rozszerzenia Chrome Manifest V3 zastępującego p
 
 Zapamiętany link oznacza tylko: **„wiemy, gdzie szukać”**. Nie oznacza: **„powiązanie jest na pewno poprawne”**.
 
-Każde zapamiętane powiązanie jest pokazywane w stanie ostrzegawczym. Użytkownik widzi tytuł Eventis i tytuł SEMPER/IIST oraz wynik podobieństwa. Dopiero kliknięcie `Potwierdzam zgodność tytułu i linku` w bieżącej sesji odblokowuje przycisk uzupełniania terminów.
+Zapamiętane powiązanie jest pokazywane wraz z tytułami Eventis i SEMPER/IIST oraz wynikiem podobieństwa. Przy zgodności tytułów powyżej 95% rozszerzenie potwierdza je automatycznie w bieżącej sesji; przy wyniku 95% lub niższym użytkownik potwierdza je przyciskiem `Potwierdzam zgodność tytułu i linku`.
 
 ## Instalacja testowa
 
@@ -52,14 +52,14 @@ Każde zapamiętane powiązanie jest pokazywane w stanie ostrzegawczym. Użytkow
 2. Jeżeli rozszerzenie nie zna szkolenia, kliknij `Szukaj automatycznie` lub wklej prawidłowy link SEMPER.
 3. Po prawidłowym pobraniu link zostanie zapamiętany.
 4. Porównaj graficznie tytuł Eventis i tytuł źródłowy.
-5. Kliknij `Potwierdzam zgodność tytułu i linku`.
+5. Przy zgodności tytułów 95% lub niższej kliknij `Potwierdzam zgodność tytułu i linku`.
 6. Sprawdź listę potwierdzonych terminów i stan `JEST / BRAK`.
 7. Kliknij `Uzupełnij brakujące potwierdzone`.
 8. Zweryfikuj pola formularza Eventis.
 9. Zapisz Eventis ręcznie.
 10. Po powrocie na stronę rozszerzenie spróbuje potwierdzić zapis. Gdy Eventis nie pokaże jednoznacznego komunikatu sukcesu, pojawi się dodatkowy przycisk ręcznego potwierdzenia zapisu.
 
-Przy kolejnym wejściu do tego samego ogłoszenia URL powinien załadować się z pamięci bez ponownego ręcznego szukania, ale nadal będzie wymagał wizualnej kontroli.
+Przy kolejnym wejściu do tego samego ogłoszenia URL powinien załadować się z pamięci bez ponownego ręcznego szukania. Zgodność tytułu powyżej 95% zostanie potwierdzona automatycznie, a pozostałe przypadki nadal wymagają kontroli.
 
 ## Świadome ograniczenia v0.1.0
 

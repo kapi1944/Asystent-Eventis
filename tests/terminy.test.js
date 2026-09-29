@@ -126,6 +126,18 @@ test("wspólny odczyt formularza Eventis rozpoznaje datę końcową i ONLINE", (
   assert.deepEqual({start:termin.start,end:termin.end,city:termin.city},{start:"2026-11-18",end:"2026-11-19",city:"Online"});
 });
 
+test("odczyt formularza Eventis normalizuje polski format zakresu ONLINE", () => {
+  const pola = new Map([
+    ['input[name="eventDate[8][date_start]"]',{value:"14.10.2026"}],
+    ['input[name="eventDate[8][date_end]"]',{value:"16.10.2026"}],
+    ['input[name="eventDate[8][city]"]',{value:""}],
+    ['select[name="eventDate[8][is_online]"]',{value:"1"}]
+  ]);
+  const wiersz = {id:"li_eventdate_8",querySelector:selektor => pola.get(selektor) || null};
+  const [termin] = narzedzia.odczytajTerminyEventis({querySelectorAll:() => [wiersz]});
+  assert.deepEqual({start:termin.start,end:termin.end,city:termin.city},{start:"2026-10-14",end:"2026-10-16",city:"Online"});
+});
+
 test("wspólny odczyt SEMPER zachowuje wyłącznie potwierdzenie z oznaczenia", () => {
   const komorki = ["2026-11-18 do 2026-11-19","ONLINE","","1200 zł"].map(textContent => ({textContent}));
   const wiersz = {textContent:"2026-11-18 do 2026-11-19 ONLINE 1200 zł",children:komorki,querySelector:selektor => selektor === ".gw" ? {} : null};

@@ -17,9 +17,9 @@
 - [ ] Wklej poprawny link SEMPER/IIST i kliknij `Użyj i zapamiętaj`.
 - [ ] Zamknij kartę i otwórz ponownie to samo ogłoszenie.
 - [ ] Link ładuje się automatycznie z pamięci.
-- [ ] Panel pokazuje ŻÓŁTE ostrzeżenie, a nie zielone potwierdzenie.
-- [ ] `Uzupełnij brakujące` jest zablokowane do kliknięcia `Potwierdzam zgodność`.
-- [ ] Po potwierdzeniu przycisk może zostać odblokowany.
+- [ ] Przy zgodności tytułów powyżej 95% panel automatycznie pokazuje zielone potwierdzenie, bez przycisku potwierdzania.
+- [ ] Przy zgodności tytułów równej 95% lub niższej panel pokazuje ostrzeżenie, a `Uzupełnij brakujące` jest zablokowane do kliknięcia `Potwierdzam zgodność`.
+- [ ] Po ręcznym potwierdzeniu przycisk może zostać odblokowany.
 - [ ] `Zapomnij link` usuwa mapowanie.
 
 ## D. Ochrona przed złym linkiem
