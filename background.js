@@ -92,6 +92,8 @@ async function otworzPlanEventis(pozycje, organizacja) {
   for (let indeks = 0; indeks < zadania.length; indeks++) {
     try {
       const url = new URL(zadania[indeks].eventUrl);
+      url.searchParams.set("esyncSession",sessionId);
+      url.searchParams.set("esyncTask",String(zadania[indeks].taskId || zadania[indeks].eventId));
       if (zadania[indeks].typ === "CREATE_NEW") {
         url.searchParams.set("esyncNoweId",zadania[indeks].taskId);
         url.searchParams.set("esyncNowyTytul",zadania[indeks].sourceTitle);

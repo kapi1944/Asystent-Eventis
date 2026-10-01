@@ -87,6 +87,7 @@
         eventId:zadanie.eventId || zadanie.selectedCandidate?.eventId,
         eventUrl:zadanie.eventUrl || zadanie.selectedCandidate?.url,
         queueItemIds:[...(zadanie.queueItemIds || zadanie.identyfikatoryKolejki || [])],
+        queueContext:zadanie.queueContext || null,
         status:"PENDING",
         typ:zadanie.typ || "EDIT"
       }))
@@ -105,6 +106,10 @@
       return {...wynikBazowy,status:"INVALID",reason:"SESSION_TASK_NOT_FOUND",task:null,invalidMapping:false};
     }
     const organizacjaZadania = String(zadanie.organization || sesja.organization || "").toUpperCase();
+    if (zadanie.typ === "CREATE_NEW" && bezpiecznyUrlNowegoOgloszenia(daneKarty?.eventUrl)
+      && organizacja === organizacjaZadania && rzeczywistyTytul === zadanie.sourceTitle) {
+      return {...wynikBazowy,status:"VERIFIED",reason:"NEW_EVENT_SESSION_VERIFIED",task:zadanie,invalidMapping:false};
+    }
     const oczekiwanyEventId = String(zadanie.eventId || "");
     const oczekiwanyUrl = bezpiecznyUrlEdycjiEventis(zadanie.eventUrl);
     if (!organizacja || organizacja !== organizacjaZadania || !rzeczywistyEventId || rzeczywistyEventId !== oczekiwanyEventId || eventIdZUrl(oczekiwanyUrl) !== oczekiwanyEventId) {

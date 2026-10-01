@@ -124,7 +124,7 @@
   }
 
   function kluczTerminu(termin) {
-    return [termin.start,termin.end,normalizuj(termin.city)].join("|");
+    return kluczZgodnegoTerminu(termin);
   }
 
   function kluczIstniejacegoTerminu(termin) {
@@ -132,7 +132,37 @@
   }
 
   function kluczZgodnegoTerminu(termin) {
-    return [termin.start,termin.end || termin.start,normalizuj(termin.city)].join("|");
+    const lokalizacja = String(termin.city || termin.location || "");
+    const online = /\bonline\b/.test(normalizuj(`${termin.mode || ""} ${lokalizacja}`));
+    const poczatek = zakresDatZTresci(termin.start || termin.startDate)?.start || "";
+    const koniec = zakresDatZTresci(termin.end || termin.endDate || termin.start || termin.startDate)?.end || "";
+    return [poczatek,koniec,online ? "online" : normalizuj(lokalizacja)].join("|");
+  }
+
+  function scalPotwierdzeniaKolejki(terminy = [], kolejka = [], reczneKlucze = new Set()) {
+    const aktywne = kolejka.filter(element => !element.status || ["PENDING","ERROR","NEEDS_ATTENTION","WAITING_FOR_SAVE"].includes(element.status));
+    const dopasowaneId = new Set();
+    const wynik = usunDuplikatyTerminow(terminy).map(termin => {
+      const klucz = kluczZgodnegoTerminu(termin);
+      const kluczZrodla = kluczZgodnegoTerminu({...termin,start:termin.sourceStart || termin.start,end:termin.sourceEnd || termin.end});
+      const dopasowania = aktywne.filter(element => kluczZgodnegoTerminu(element) === kluczZrodla);
+      dopasowania.forEach(element => dopasowaneId.add(element.id || element.queueItemId));
+      const odpotwierdzony = dopasowania.some(element => (element.recordStatus || element.status) === "DECONFIRMED");
+      const potwierdzenia = dopasowania.filter(element => (element.recordStatus || element.status) === "CONFIRMED");
+      const confirmedOnSemper = Boolean(termin.confirmedOnSemper ?? termin.confirmed);
+      const confirmedByQueue = !odpotwierdzony && potwierdzenia.length > 0;
+      const confirmedManually = reczneKlucze.has(klucz);
+      return {...termin,canonicalTermKey:klucz,confirmedOnSemper,confirmedByQueue,confirmedManually,
+        effectiveConfirmed:confirmedOnSemper || confirmedByQueue || confirmedManually,
+        confirmationSource:confirmedOnSemper ? "semper" : confirmedByQueue ? "queue" : confirmedManually ? "manual" : null,
+        queueItemId:dopasowania[0]?.id || dopasowania[0]?.queueItemId || null,
+        queueMatchReason:odpotwierdzony ? "QUEUE_DECONFIRMED" : confirmedByQueue ? "CANONICAL_TERM_MATCH" : "NO_QUEUE_CONFIRMATION",
+        confirmationConflict:odpotwierdzony && (confirmedOnSemper || potwierdzenia.length > 0)};
+    });
+    const nierozwiazane = aktywne.filter(element => (element.recordStatus || element.status) === "CONFIRMED" && !dopasowaneId.has(element.id || element.queueItemId));
+    return {terms:wynik,effectiveConfirmedTerms:wynik.filter(termin => termin.effectiveConfirmed),
+      unmatchedQueueTerms:nierozwiazane,status:nierozwiazane.length || wynik.some(termin => termin.confirmationConflict) ? "NEEDS_ATTENTION" : "RECONCILED",
+      diagnostics:{queueTermsCount:aktywne.length,semperTermsCount:wynik.length,queueMatchedSemperCount:wynik.filter(termin => termin.queueItemId).length,effectiveConfirmedCount:wynik.filter(termin => termin.effectiveConfirmed).length}};
   }
 
   function odczytajTerminyEventis(dokument) {
@@ -173,7 +203,7 @@
   }
 
   function porownajPotwierdzoneTerminy(terminyZrodlowe = [], terminyEventis = []) {
-    const potwierdzone = usunDuplikatyTerminow(terminyZrodlowe.filter(termin => termin.confirmed));
+    const potwierdzone = usunDuplikatyTerminow(terminyZrodlowe.filter(termin => termin.effectiveConfirmed ?? termin.confirmed));
     const kluczeEventis = new Set(terminyEventis.map(kluczZgodnegoTerminu));
     const kluczePotwierdzone = new Set(potwierdzone.map(kluczZgodnegoTerminu));
     const zgodne = potwierdzone.filter(termin => kluczeEventis.has(kluczZgodnegoTerminu(termin)));
@@ -181,7 +211,7 @@
     const dodatkowe = terminyEventis.filter(termin => !kluczePotwierdzone.has(kluczZgodnegoTerminu(termin)));
     const status = !potwierdzone.length ? "UNVERIFIED" : !brakujace.length ? "COMPLETE"
       : terminyEventis.length === potwierdzone.length ? "COUNT_MATCH_BUT_DIFFERENT" : "MISSING_TERMS";
-    return {status,confirmedSemperTerms:potwierdzone,matchingEventisTerms:zgodne,missingConfirmedTerms:brakujace,extraEventisTerms:dodatkowe,eventisTerms:terminyEventis};
+    return {status,effectiveConfirmedTerms:potwierdzone,confirmedSemperTerms:potwierdzone.filter(termin => termin.confirmedOnSemper ?? termin.confirmed),matchingEventisTerms:zgodne,missingConfirmedTerms:brakujace,extraEventisTerms:dodatkowe,eventisTerms:terminyEventis};
   }
 
   function ustalWynikPreflightu(terminyZrodlowe, terminyEventis, blad = "") {
@@ -211,6 +241,7 @@
     termKey: kluczTerminu,
     existingKey: kluczIstniejacegoTerminu,
     kluczZgodnegoTerminu,
+    scalPotwierdzeniaKolejki,
     odczytajTerminyEventis,
     odczytajTerminySemper,
     porownajPotwierdzoneTerminy,

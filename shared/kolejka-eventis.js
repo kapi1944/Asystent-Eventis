@@ -4,6 +4,8 @@
   const NARZEDZIA_ARKUSZA = globalny.NarzedziaArkuszaEventis
     || (typeof require === "function" ? require("./arkusz") : null);
   if (!NARZEDZIA_ARKUSZA) throw new Error("Nie załadowano parsera ręcznego importu.");
+  const NARZEDZIA_TERMINOW = globalny.NarzedziaTerminowEventis
+    || (typeof require === "function" ? require("./terminy") : null);
 
   const STATUSY_KOLEJKI_EVENTIS = Object.freeze({
     OCZEKUJE: "PENDING",
@@ -15,16 +17,6 @@
     BLAD: "ERROR"
   });
   const DOZWOLONE_ORGANIZACJE = new Set(["SEMPER", "IIST"]);
-
-  function normalizujMiasto(wartosc) {
-    return String(wartosc || "")
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/ł/g, "l")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
 
   function sprawdzOrganizacje(organizacja) {
     if (!DOZWOLONE_ORGANIZACJE.has(organizacja)) throw new Error("Nieprawidłowa organizacja kolejki Eventis.");
@@ -165,12 +157,7 @@
   }
 
   function czyPasujeDoTerminu(element, termin) {
-    const miastoPasuje = normalizujMiasto(element.city) === normalizujMiasto(termin.city);
-    if (!miastoPasuje) return false;
-    if (termin.sourceStart && termin.sourceEnd) {
-      return element.start === termin.sourceStart && element.end === termin.sourceEnd;
-    }
-    return element.start === termin.start && element.end === termin.end;
+    return NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(element) === NARZEDZIA_TERMINOW.kluczZgodnegoTerminu({...termin,start:termin.sourceStart || termin.start,end:termin.sourceEnd || termin.end});
   }
 
   function dopasujElementKolejkiDoTerminow(element, terminy = []) {
@@ -178,7 +165,7 @@
   }
 
   function kluczTerminuEventis(termin) {
-    return [termin.start,termin.end || termin.start,normalizujMiasto(termin.city)].join("|");
+    return NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin);
   }
 
   function rozdzielTerminyDoWprowadzenia(terminy = [], istniejaceTerminy = []) {

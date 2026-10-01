@@ -305,23 +305,47 @@
   async function sprawdzTerminyWydarzenia(rozstrzygniecie) {
     const kandydat = rozstrzygniecie.selectedCandidate;
     const identyfikator = NARZEDZIA_LISTY.pobierzIdEventisZUrl(kandydat?.url);
-    if (!identyfikator || String(identyfikator) !== String(kandydat?.eventId)) throw new Error("Brak bezpiecznego adresu edycji wydarzenia Eventis.");
+    if (identyfikator && String(identyfikator) !== String(kandydat?.eventId)) throw new Error("Brak bezpiecznego adresu edycji wydarzenia Eventis.");
     let terminyZrodlowe = potwierdzoneTerminyTytulu(rozstrzygniecie);
     let zrodlo = "wklejona lista";
     const mapowanie = stan.mapowania[`${stan.organizacja}|${identyfikator}`];
-    if (stan.organizacja === "SEMPER" && mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt
-      && NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(mapowanie.sourceUrl)) {
-      const odpowiedzZrodla = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(mapowanie.sourceUrl)}});
+    let scalenie = null;
+    let kontekst = null;
+    if (stan.organizacja === "SEMPER") {
+      let adresZrodla = mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt ? mapowanie.sourceUrl : "";
+      if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) {
+        for (const wariant of NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(rozstrzygniecie.sourceTitle)) {
+          const wyszukanie = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php",method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
+          if (wyszukanie?.ok) adresZrodla = NARZEDZIA_WYSZUKIWANIA.urlZJsonSemper(wyszukanie.text);
+          if (!adresZrodla) {
+            const podpowiedzi = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj_auto.php",method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
+            const kandydaci = podpowiedzi?.ok ? NARZEDZIA_WYSZUKIWANIA.linkiZWyszukiwarkiSemper(podpowiedzi.text,wariant)
+              .filter(kandydat => NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,kandydat.title) >= stan.ustawienia.mappingWarningThreshold) : [];
+            if (kandydaci.length === 1) adresZrodla = kandydaci[0].url;
+          }
+          if (NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) break;
+        }
+      }
+      if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) throw new Error("NEEDS_ATTENTION: nie znaleziono jednoznacznej strony szkolenia SEMPER.");
+      const odpowiedzZrodla = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(adresZrodla)}});
       if (!odpowiedzZrodla?.ok || !NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(odpowiedzZrodla.finalUrl)) throw new Error("Nie udało się potwierdzić aktualnej strony szkolenia SEMPER.");
       const dokumentZrodla = new DOMParser().parseFromString(odpowiedzZrodla.text,"text/html");
-      terminyZrodlowe = NARZEDZIA_TERMINOW.odczytajTerminySemper(dokumentZrodla).filter(termin => termin.confirmed);
-      const zImportu = new Set(potwierdzoneTerminyTytulu(rozstrzygniecie).map(NARZEDZIA_TERMINOW.kluczZgodnegoTerminu));
-      const zAktualnejStrony = new Set(terminyZrodlowe.map(NARZEDZIA_TERMINOW.kluczZgodnegoTerminu));
-      if (zImportu.size !== zAktualnejStrony.size || [...zImportu].some(klucz => !zAktualnejStrony.has(klucz))) {
-        throw new Error("Wklejona lista różni się od bieżących potwierdzonych terminów SEMPER. Zaktualizuj listę.");
-      }
+      const tytulZrodla = dokumentZrodla.querySelector("h1")?.textContent || "";
+      if (NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytulZrodla) < stan.ustawienia.mappingWarningThreshold) throw new Error("NEEDS_ATTENTION: tytuł strony SEMPER wymaga weryfikacji.");
+      const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle);
+      scalenie = NARZEDZIA_TERMINOW.scalPotwierdzeniaKolejki(NARZEDZIA_TERMINOW.odczytajTerminySemper(dokumentZrodla),elementy);
+      terminyZrodlowe = scalenie.terms;
+      kontekst = {canonicalTitle:rozstrzygniecie.normalizedSourceTitle,queueTerms:elementy,sourceUrl:odpowiedzZrodla.finalUrl,targetEventisId:identyfikator || "",confirmationSource:"queue"};
       zrodlo = "bieżąca strona SEMPER";
     }
+    const zakoncz = terminyEventis => {
+      const porownanie = NARZEDZIA_TERMINOW.ustalWynikPreflightu(terminyZrodlowe,terminyEventis);
+      const diagnostyka = {...scalenie?.diagnostics,eventisMatchingCount:porownanie.matchingEventisTerms.length,missingCount:porownanie.missingConfirmedTerms.length};
+      if (stan.ustawienia.debug) console.debug("Eventis Sync terminy",{...diagnostyka,terms:terminyZrodlowe});
+      return {...porownanie,zrodlo,queueContext:kontekst,reconciliation:scalenie,diagnostics:diagnostyka,
+        status:scalenie?.status === "NEEDS_ATTENTION" ? "NEEDS_ATTENTION" : porownanie.status};
+    };
+    if (!identyfikator) return zakoncz([]);
     const adres = new URL(`/event/edit/${identyfikator}`,location.origin);
     const odpowiedz = await fetch(adres.href,{credentials:"include",redirect:"follow",cache:"no-store"});
     if (!odpowiedz.ok) throw new Error(`Eventis zwrócił HTTP ${odpowiedz.status}.`);
@@ -330,14 +354,13 @@
     if (!dokument.querySelector("form#eventForm")) throw new Error("Nie odnaleziono formularza wydarzenia Eventis.");
     const terminyEventis = NARZEDZIA_TERMINOW.odczytajTerminyEventis(dokument)
       .map(({start,end,city}) => ({start,end,city}));
-    return {...NARZEDZIA_TERMINOW.ustalWynikPreflightu(terminyZrodlowe,terminyEventis),zrodlo};
+    return zakoncz(terminyEventis);
   }
 
   async function uruchomPreflight(wybraneKlucze = null) {
     const pokolenie = ++stan.preflight.pokolenie;
     const rozstrzygniecia = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
       .filter(rozstrzygniecie => rozstrzygniecie.manualStatus !== "SKIPPED"
-        && NARZEDZIA_LISTY.pobierzIdEventisZUrl(rozstrzygniecie.selectedCandidate?.url)
         && (!wybraneKlucze || wybraneKlucze.has(kluczRozstrzygniecia(rozstrzygniecie))));
     for (const rozstrzygniecie of rozstrzygniecia) delete stan.preflight.wyniki[kluczRozstrzygniecia(rozstrzygniecie)];
     stan.preflight.trwa = true;
@@ -352,7 +375,7 @@
         try {
           const wynik = await sprawdzTerminyWydarzenia(rozstrzygniecie);
           if (pokolenie !== stan.preflight.pokolenie) return;
-          stan.preflight.wyniki[klucz] = {...wynik,eventId:rozstrzygniecie.selectedCandidate.eventId,checkedAt:new Date().toISOString()};
+          stan.preflight.wyniki[klucz] = {...wynik,eventId:rozstrzygniecie.selectedCandidate?.eventId || "",checkedAt:new Date().toISOString()};
           if (["MISSING_TERMS","COUNT_MATCH_BUT_DIFFERENT"].includes(wynik.status)) {
             const {eventisImportQueue = []} = await chrome.storage.local.get(["eventisImportQueue"]);
             const klucze = new Set(stan.rekordy.filter(rekord => !rekord.error && rekord.status === "CONFIRMED"
@@ -369,7 +392,7 @@
           }
         } catch (blad) {
           if (pokolenie !== stan.preflight.pokolenie) return;
-          stan.preflight.wyniki[klucz] = {...NARZEDZIA_TERMINOW.ustalWynikPreflightu([],null,blad?.message || String(blad)),eventId:rozstrzygniecie.selectedCandidate.eventId};
+          stan.preflight.wyniki[klucz] = {...NARZEDZIA_TERMINOW.ustalWynikPreflightu([],null,blad?.message || String(blad)),status:"NEEDS_ATTENTION",eventId:rozstrzygniecie.selectedCandidate?.eventId || ""};
         }
         stan.preflight.sprawdzone++;
         renderuj();
@@ -431,9 +454,14 @@
   function finalnyPlanOtwarcia() {
     const aktywne = new Set(stan.kolejka.filter(element => element.recordStatus === "CONFIRMED"
       && ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status)).map(element => element.id));
-    return NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+    const plan = NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
       .map(rozstrzygniecie => ({...rozstrzygniecie,queueItemIds:(rozstrzygniecie.queueItemIds || []).filter(id => aktywne.has(id))}))
       .filter(rozstrzygniecie => rozstrzygniecie.queueItemIds.length));
+    const pozycje = plan.pozycje.filter(pozycja => {
+      const wynik = stan.preflight.wyniki[kluczRozstrzygniecia(pozycja)];
+      return stan.organizacja !== "SEMPER" || (wynik?.queueContext && wynik.status !== "NEEDS_ATTENTION" && !wynik.error);
+    }).map(pozycja => ({...pozycja,queueContext:stan.preflight.wyniki[kluczRozstrzygniecia(pozycja)]?.queueContext}));
+    return {...plan,pozycje,gotoweDoOtwarcia:pozycje.filter(pozycja => ["READY","CREATE_NEW"].includes(pozycja.status)).length,nierozstrzygniete:plan.nierozstrzygniete + plan.pozycje.length - pozycje.length};
   }
 
   async function odswiezPlanOtwarcia() {
@@ -525,21 +553,23 @@
   }
 
   function renderujPreflight(rozstrzygniecie) {
-    if (rozstrzygniecie.manualStatus === "SKIPPED" || !NARZEDZIA_LISTY.pobierzIdEventisZUrl(rozstrzygniecie.selectedCandidate?.url)) return "";
+    if (rozstrzygniecie.manualStatus === "SKIPPED") return "";
     const klucz = kluczRozstrzygniecia(rozstrzygniecie);
     const wynik = stan.preflight.wyniki[klucz];
-    const aktualny = wynik && String(wynik.eventId) === String(rozstrzygniecie.selectedCandidate.eventId) ? wynik : null;
+    const aktualny = wynik && String(wynik.eventId) === String(rozstrzygniecie.selectedCandidate?.eventId || "") ? wynik : null;
     const status = aktualny?.status || "UNVERIFIED";
-    const potwierdzone = aktualny?.confirmedSemperTerms?.length ?? NARZEDZIA_TERMINOW.dedupeTerms(potwierdzoneTerminyTytulu(rozstrzygniecie)).length;
+    const potwierdzone = aktualny?.effectiveConfirmedTerms?.length ?? NARZEDZIA_TERMINOW.dedupeTerms(potwierdzoneTerminyTytulu(rozstrzygniecie)).length;
     const zgodne = aktualny?.matchingEventisTerms?.length;
     const brakujace = aktualny?.missingConfirmedTerms?.length;
-    const opis = status === "COMPLETE" ? "✓ Wszystkie potwierdzone terminy są już w Eventis"
+    const opis = status === "NEEDS_ATTENTION" ? aktualny?.error || "⚠ Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER lub wystąpił konflikt odpotwierdzenia."
+      : !rozstrzygniecie.selectedCandidate?.eventId && aktualny?.queueContext ? "Semper: termin znaleziony · Eventis: brak wydarzenia → zostanie utworzone nowe ogłoszenie po wyborze Utwórz nowe ogłoszenie."
+      : status === "COMPLETE" ? "✓ Wszystkie potwierdzone terminy są już w Eventis"
       : status === "COUNT_MATCH_BUT_DIFFERENT" ? `⚠ Liczby są równe, ale brakuje ${brakujace} potwierdzonych terminów`
       : status === "MISSING_TERMS" ? `⚠ Brakuje ${brakujace} potwierdzonych terminów`
       : aktualny?.error ? `Nie udało się zweryfikować: ${aktualny.error}`
       : aktualny ? "Nie wykryto potwierdzonych terminów do porównania" : "Oczekuje na weryfikację terminów";
     const pokazTermin = termin => `${termin.start}${termin.end && termin.end !== termin.start ? `–${termin.end}` : ""} · ${termin.city}`;
-    const szczegoly = aktualny?.confirmedSemperTerms ? `<details><summary>Pokaż terminy</summary><div class="esync-small">Potwierdzone SEMPER: ${esc(aktualny.confirmedSemperTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Brakujące: ${esc(aktualny.missingConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Pozostałe Eventis: ${esc(aktualny.extraEventisTerms.map(pokazTermin).join(", ") || "brak")}</div></details>` : "";
+    const szczegoly = aktualny?.effectiveConfirmedTerms ? `<details><summary>Pokaż terminy</summary><div class="esync-small">Potwierdzone skutecznie: ${esc(aktualny.effectiveConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Brakujące: ${esc(aktualny.missingConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Pozostałe Eventis: ${esc(aktualny.extraEventisTerms.map(pokazTermin).join(", ") || "brak")}</div></details>` : "";
     const akcje = status === "COMPLETE"
       ? `<button class="esync-btn good" data-preflight-skip="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Pomiń otwieranie</button><button class="esync-btn" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Otwórz mimo to</button>`
       : `<button class="esync-btn good" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>${brakujace ? "Otwórz i uzupełnij" : "Otwórz ręcznie"}</button>`;
@@ -550,7 +580,11 @@
     const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja
       && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle
       && element.status !== "DONE");
-    return elementy.map(element => `<div class="esync-termin-kolejki"><span>${esc(element.start)}${element.end && element.end !== element.start ? ` → ${esc(element.end)}` : ""} · ${esc(element.city)}</span><span class="esync-akcje-terminu">${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : ""}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></span></div>`).join("");
+    const terminyZrodla = stan.preflight.wyniki[kluczRozstrzygniecia(rozstrzygniecie)]?.reconciliation?.terms || [];
+    return elementy.map(element => {
+      const potwierdzonyKolejka = NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,terminyZrodla).some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper);
+      return `<div class="esync-termin-kolejki ${potwierdzonyKolejka ? "esync-termin-kolejki-niepotwierdzony" : ""}"><span>${esc(element.start)}${element.end && element.end !== element.start ? ` → ${esc(element.end)}` : ""} · ${esc(element.city)} ${potwierdzonyKolejka ? '<span class="esync-badge purple">KOLEJKA</span>' : ''}</span><span class="esync-akcje-terminu">${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : ""}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></span></div>`;
+    }).join("");
   }
 
   function wygladPozycji(rozstrzygniecie) {
@@ -569,6 +603,11 @@
     const aktualna = aktualneRozstrzygniecie(pozycja);
     const klucz = kluczRozstrzygniecia(pozycja);
     const wyglad = wygladPozycji(aktualna);
+    const wynikTerminow = stan.preflight.wyniki[klucz];
+    const oznaczenieKolejki = wynikTerminow?.status === "NEEDS_ATTENTION"
+      ? `<div class="esync-warning">⚠ ${esc(wynikTerminow.error || (wynikTerminow.reconciliation?.unmatchedQueueTerms.length ? "Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER." : "Konflikt odpotwierdzenia — wymaga uwagi."))}</div>`
+      : wynikTerminow?.reconciliation?.terms.some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper)
+      ? `<div class="esync-alarm-kolejki"><span class="esync-badge purple">KOLEJKA</span> 🟣 Potwierdzony w kolejce · Semper: termin znaleziony${aktualna.selectedCandidate?.eventId ? '' : '<div>Eventis: brak wydarzenia</div>'}</div>` : '';
     const opisDopasowania = pozycja.status === "AUTO_MATCH" ? `Dopasowano automatycznie → Eventis #${esc(aktualna.selectedCandidate?.eventId || "?")}`
       : pozycja.status === "KNOWN_MAPPING" ? `Zapamiętane przypisanie → ${esc(aktualna.selectedCandidate?.url || "")}`
       : aktualna.manualStatus === "MANUAL_MATCH" ? `Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.` : "";
@@ -580,7 +619,7 @@
     const recznyUrl = pozycja.status === "NOT_FOUND" && aktualna.manualStatus !== "CREATE_NEW" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(klucz)}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(klucz)}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div><button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
     const wymagaDecyzji = !aktualna.selectedCandidate && aktualna.manualStatus !== "SKIPPED" && aktualna.manualStatus !== "CREATE_NEW";
     const decyzje = wymagaDecyzji ? `<div class="esync-info esync-small">${pozycja.status === "AMBIGUOUS" ? "Wybierz właściwe wydarzenie Eventis." : "Nie znaleziono dopasowania w Eventis."}</div>${kandydaci}${recznyUrl}<button class="esync-btn good" data-utworz-nowe="${esc(klucz)}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie</button><button class="esync-btn warn" data-pomin-tytul="${esc(klucz)}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button>` : "";
-    return `<div class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}${dopasowanie}</div>`;
+    return `<div class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${oznaczenieKolejki}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}${dopasowanie}</div>`;
   }
 
   function renderujWyniki() {
@@ -723,13 +762,14 @@
     })));
     $$('[data-preflight-open]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.preflightOpen;
+      if (stan.organizacja === "SEMPER" && (!stan.preflight.wyniki[klucz]?.queueContext || stan.preflight.wyniki[klucz]?.status === "NEEDS_ATTENTION")) return pokazKomunikat("Najpierw zweryfikuj terminy SEMPER.");
       if (stan.preflight.wyniki[klucz]?.status === "COMPLETE") await ustawDecyzjeKompletnych(new Set([klucz]),false);
       const pozycja = finalnyPlanOtwarcia().pozycje.find(wpis => `${wpis.organization}|${wpis.normalizedSourceTitle}` === klucz)
         || NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
           .filter(wpis => kluczRozstrzygniecia(wpis) === klucz)
           .map(wpis => ({...wpis,queueItemIds:[]}))).pozycje[0];
       if (!pozycja) return pokazKomunikat("To wydarzenie nie ma aktywnych potwierdzonych terminów do otwarcia.");
-      const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:[pozycja],organization:stan.organizacja});
+      const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:[{...pozycja,queueContext:stan.preflight.wyniki[klucz]?.queueContext}],organization:stan.organizacja});
       if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć karty Eventis.");
       await odswiezPlanOtwarcia();
       renderuj();
