@@ -5,6 +5,41 @@ const assert = require("node:assert/strict");
 const narzedzia = require("../shared/arkusz");
 const kolejka = require("../shared/kolejka-eventis");
 
+test("wklejenie sześciu szkoleń z arkusza dekoduje cudzysłowy i zachowuje wielowierszową komórkę", () => {
+  const tytuly = [
+    "Wycena nieruchomości - najważniejsze zmiany i dyrektywy, sporządzenie i analiza operatu szacunkowego oraz najczęściej popełnianych błędów -3-dniowe warsztaty szkoleniowe w Zakopanem",
+    "Umowy i prawo dla działu zakupów w praktyce. 2-dniowe szkolenie warsztatowe.",
+    "Kontrola finansowa w projektach unijnych - aspekt praktyczny z analizą uprawnień kontrolujących oraz dowodów zbieranych w trakcie kontroli. 1-dniowe szkolenie warsztatowe. Certyfikowane szkolenie online",
+    "E-doręczenia w postępowaniu administracyjnym -1-dniowe warsztaty praktyczne. Certyfikowane szkolenie online",
+    "Kontrola i audyt inwestycji budowlanych w praktyce. Kompendium obowiązujących procedur -2 dniowe warsztaty szkoleniowe",
+    "Księgowość Projektów Unijnych. 2-dniowe warsztaty praktyczne. Możliwość indywidualnych konsultacji. Certyfikowane szkolenie online"
+  ];
+  const wiersze = [
+    `"| POTWIERDZONE SZKOLENIE | ""${tytuly[0]}"", 2026-10-06 do 2026-10-09, Zakopane, 2 osób\ndla wtajemniczonych szkolenie połączone z Prawem budowalnym i procesem inwestycyjnym dla praktyków w tym samym terminie w Zakopanym"`,
+    `| POTWIERDZONE SZKOLENIE | "${tytuly[1]}", 2026-10-08 do 2026-10-09, Warszawa, 4 osób UWAGA ZMIANA GODZIN 09-17`,
+    `| POTWIERDZONE SZKOLENIE | "${tytuly[2]}", 2026-10-14 do 2026-10-14, ONLINE, 2 osób`,
+    `| POTWIERDZONE SZKOLENIE | "${tytuly[3]}", 2026-11-17 do 2026-11-17, ONLINE, 1 osób`,
+    `| POTWIERDZONE SZKOLENIE | "${tytuly[4]}", 2026-11-18 do 2026-11-19, Warszawa, 4 osób`,
+    `| POTWIERDZONE SZKOLENIE | "${tytuly[5]}", 2026-11-19 do 2026-11-20, ONLINE, 2 osób`
+  ];
+  for (const separator of ["\n","\r\n"]) {
+    const analiza = narzedzia.analizujReczneWklejenie(wiersze.join(separator));
+    assert.deepEqual(analiza.errors,[]);
+    assert.deepEqual(analiza.records.map(rekord => rekord.title),tytuly);
+    assert.deepEqual(analiza.records.map(rekord => [rekord.start,rekord.end,rekord.city,rekord.participants]),[
+      ["2026-10-06","2026-10-09","Zakopane",2],
+      ["2026-10-08","2026-10-09","Warszawa",4],
+      ["2026-10-14","2026-10-14","Online",2],
+      ["2026-11-17","2026-11-17","Online",1],
+      ["2026-11-18","2026-11-19","Warszawa",4],
+      ["2026-11-19","2026-11-20","Online",2]
+    ]);
+    assert.match(analiza.records[0].rawText,/\ndla wtajemniczonych/);
+    const zwykly = narzedzia.parseManualRecordLine(`| POTWIERDZONE SZKOLENIE | "${tytuly[0]}", 2026-10-06 do 2026-10-09, Zakopane, 2 osób`);
+    assert.equal(narzedzia.recordKey(analiza.records[0]),narzedzia.recordKey(zwykly));
+  }
+});
+
 test("ujednolicony rekord arkusza zachowuje metadane wiersza i wartości źródłowe", () => {
   const rekord = narzedzia.utworzRekordArkusza({
     status:"CONFIRMED",

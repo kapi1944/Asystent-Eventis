@@ -312,26 +312,46 @@
     let scalenie = null;
     let kontekst = null;
     if (stan.organizacja === "SEMPER") {
+      const naglowkiWyszukiwania = {"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","X-Requested-With":"XMLHttpRequest"};
+      const stronyZrodla = new Map();
+      async function zweryfikujStroneZrodla(adres) {
+        const url = NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(adres);
+        if (stronyZrodla.has(url)) return stronyZrodla.get(url);
+        const odpowiedz = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url}});
+        if (!odpowiedz?.ok || !NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(odpowiedz.finalUrl)) throw new Error("Nie udało się potwierdzić aktualnej strony szkolenia SEMPER.");
+        const dokument = new DOMParser().parseFromString(odpowiedz.text,"text/html");
+        const tytul = (dokument.querySelector("h1") || dokument.querySelector("title"))?.textContent || "";
+        const wariant = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscWariantuLokalizacyjnego(rozstrzygniecie.sourceTitle,tytul);
+        const wynik = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytul) >= stan.ustawienia.mappingWarningThreshold
+          && (!wariant.wymagany || wariant.status === "ZGODNY") ? {odpowiedz,dokument} : null;
+        stronyZrodla.set(url,wynik);
+        return wynik;
+      }
       let adresZrodla = mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt ? mapowanie.sourceUrl : "";
       if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) {
         for (const wariant of NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(rozstrzygniecie.sourceTitle)) {
-          const wyszukanie = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php",method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
+          const wyszukanie = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php",method:"POST",headers:naglowkiWyszukiwania,body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
           if (wyszukanie?.ok) adresZrodla = NARZEDZIA_WYSZUKIWANIA.urlZJsonSemper(wyszukanie.text);
+          if (adresZrodla && !await zweryfikujStroneZrodla(adresZrodla)) adresZrodla = "";
           if (!adresZrodla) {
-            const podpowiedzi = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj_auto.php",method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8"},body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
+            const podpowiedzi = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj_auto.php",method:"POST",headers:naglowkiWyszukiwania,body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
             const kandydaci = podpowiedzi?.ok ? NARZEDZIA_WYSZUKIWANIA.linkiZWyszukiwarkiSemper(podpowiedzi.text,wariant)
-              .filter(kandydat => NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,kandydat.title) >= stan.ustawienia.mappingWarningThreshold) : [];
-            if (kandydaci.length === 1) adresZrodla = kandydaci[0].url;
+              .sort((pierwszy,drugi) => NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,drugi.title)
+                - NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,pierwszy.title)).slice(0,5) : [];
+            const zweryfikowani = new Map();
+            for (const kandydat of kandydaci) {
+              const strona = await zweryfikujStroneZrodla(kandydat.url);
+              if (strona) zweryfikowani.set(strona.odpowiedz.finalUrl,kandydat.url);
+            }
+            if (zweryfikowani.size === 1) adresZrodla = [...zweryfikowani.values()][0];
           }
           if (NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) break;
         }
       }
       if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) throw new Error("NEEDS_ATTENTION: nie znaleziono jednoznacznej strony szkolenia SEMPER.");
-      const odpowiedzZrodla = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(adresZrodla)}});
-      if (!odpowiedzZrodla?.ok || !NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(odpowiedzZrodla.finalUrl)) throw new Error("Nie udało się potwierdzić aktualnej strony szkolenia SEMPER.");
-      const dokumentZrodla = new DOMParser().parseFromString(odpowiedzZrodla.text,"text/html");
-      const tytulZrodla = dokumentZrodla.querySelector("h1")?.textContent || "";
-      if (NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytulZrodla) < stan.ustawienia.mappingWarningThreshold) throw new Error("NEEDS_ATTENTION: tytuł strony SEMPER wymaga weryfikacji.");
+      const stronaZrodla = await zweryfikujStroneZrodla(adresZrodla);
+      if (!stronaZrodla) throw new Error("NEEDS_ATTENTION: tytuł strony SEMPER wymaga weryfikacji.");
+      const {odpowiedz:odpowiedzZrodla,dokument:dokumentZrodla} = stronaZrodla;
       const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle);
       scalenie = NARZEDZIA_TERMINOW.scalPotwierdzeniaKolejki(NARZEDZIA_TERMINOW.odczytajTerminySemper(dokumentZrodla),elementy);
       terminyZrodlowe = scalenie.terms;
@@ -568,12 +588,10 @@
       : status === "MISSING_TERMS" ? `⚠ Brakuje ${brakujace} potwierdzonych terminów`
       : aktualny?.error ? `Nie udało się zweryfikować: ${aktualny.error}`
       : aktualny ? "Nie wykryto potwierdzonych terminów do porównania" : "Oczekuje na weryfikację terminów";
-    const pokazTermin = termin => `${termin.start}${termin.end && termin.end !== termin.start ? `–${termin.end}` : ""} · ${termin.city}`;
-    const szczegoly = aktualny?.effectiveConfirmedTerms ? `<details><summary>Pokaż terminy</summary><div class="esync-small">Potwierdzone skutecznie: ${esc(aktualny.effectiveConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Brakujące: ${esc(aktualny.missingConfirmedTerms.map(pokazTermin).join(", ") || "brak")}</div><div class="esync-small">Pozostałe Eventis: ${esc(aktualny.extraEventisTerms.map(pokazTermin).join(", ") || "brak")}</div></details>` : "";
     const akcje = status === "COMPLETE"
       ? `<button class="esync-btn good" data-preflight-skip="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Pomiń otwieranie</button><button class="esync-btn" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Otwórz mimo to</button>`
       : `<button class="esync-btn good" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>${brakujace ? "Otwórz i uzupełnij" : "Otwórz ręcznie"}</button>`;
-    return `<div class="esync-preflight"><div class="esync-akcje-glowne ${status === "COMPLETE" ? "esync-grid2" : ""}">${akcje}</div><details class="esync-szczegoly-kafelka"><summary>Szczegóły weryfikacji</summary><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small esync-opis-weryfikacji">${esc(opis)}</div>${szczegoly}<button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></details></div>`;
+    return `<div class="esync-preflight"><div class="esync-akcje-glowne ${status === "COMPLETE" ? "esync-grid2" : ""}">${akcje}</div><details class="esync-szczegoly-kafelka"><summary>Szczegóły weryfikacji</summary><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small esync-opis-weryfikacji">${esc(opis)}</div><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></details></div>`;
   }
 
   function renderujTerminyPozycji(rozstrzygniecie) {
@@ -581,9 +599,15 @@
       && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle
       && element.status !== "DONE");
     const terminyZrodla = stan.preflight.wyniki[kluczRozstrzygniecia(rozstrzygniecie)]?.reconciliation?.terms || [];
+    const widoczneKlucze = new Set();
     return elementy.map(element => {
+      const termin = NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,terminyZrodla)[0];
+      const kluczTerminu = termin?.canonicalTermKey || [element.start,element.end,String(element.city).toLowerCase()].join("|");
+      if (widoczneKlucze.has(kluczTerminu)) return "";
+      widoczneKlucze.add(kluczTerminu);
+      const statusTerminu = termin?.existsOnEventis === true ? '<span class="esync-badge green">Dodany w Eventis</span>' : termin?.missingOnEventis === true ? '<span class="esync-badge yellow">Brakuje w Eventis</span>' : '<span class="esync-badge gray">Oczekuje na weryfikację</span>';
       const potwierdzonyKolejka = NARZEDZIA_KOLEJKI.dopasujElementKolejkiDoTerminow(element,terminyZrodla).some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper);
-      return `<div class="esync-termin-kolejki ${potwierdzonyKolejka ? "esync-termin-kolejki-niepotwierdzony" : ""}"><span>${esc(element.start)}${element.end && element.end !== element.start ? ` → ${esc(element.end)}` : ""} · ${esc(element.city)} ${potwierdzonyKolejka ? '<span class="esync-badge purple">KOLEJKA</span>' : ''}</span><span class="esync-akcje-terminu">${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : ""}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></span></div>`;
+      return `<div class="esync-termin-kolejki ${potwierdzonyKolejka ? "esync-termin-kolejki-niepotwierdzony" : ""}"><span>${esc(termin?.start || element.start)}${(termin?.end || element.end) !== (termin?.start || element.start) ? ` → ${esc(termin?.end || element.end)}` : ""} · ${esc(termin?.city || element.city)} ${potwierdzonyKolejka ? '<span class="esync-badge purple">Potwierdzony z kolejki</span>' : ''} ${statusTerminu}</span><span class="esync-akcje-terminu">${element.status === "SKIPPED" ? `<button class="esync-btn" data-queue-restore="${esc(element.id)}">Przywróć</button>` : ["PENDING","ERROR","NEEDS_ATTENTION"].includes(element.status) ? `<button class="esync-btn warn" data-queue-skip="${esc(element.id)}">Pomiń</button>` : ""}<button class="esync-queue-remove" data-queue-remove="${esc(element.id)}" title="Usuń ten termin z kolejki" aria-label="Usuń ten termin z kolejki">×</button></span></div>`;
     }).join("");
   }
 
@@ -607,7 +631,7 @@
     const oznaczenieKolejki = wynikTerminow?.status === "NEEDS_ATTENTION"
       ? `<div class="esync-warning">⚠ ${esc(wynikTerminow.error || (wynikTerminow.reconciliation?.unmatchedQueueTerms.length ? "Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER." : "Konflikt odpotwierdzenia — wymaga uwagi."))}</div>`
       : wynikTerminow?.reconciliation?.terms.some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper)
-      ? `<div class="esync-alarm-kolejki"><span class="esync-badge purple">KOLEJKA</span> 🟣 Potwierdzony w kolejce · Semper: termin znaleziony${aktualna.selectedCandidate?.eventId ? '' : '<div>Eventis: brak wydarzenia</div>'}</div>` : '';
+      ? `<div class="esync-alarm-kolejki"><span class="esync-badge purple">Potwierdzony z kolejki</span> 🟣 Potwierdzony w kolejce · Semper: termin znaleziony${aktualna.selectedCandidate?.eventId ? '' : '<div>Eventis: brak wydarzenia</div>'}</div>` : '';
     const opisDopasowania = pozycja.status === "AUTO_MATCH" ? `Dopasowano automatycznie → Eventis #${esc(aktualna.selectedCandidate?.eventId || "?")}`
       : pozycja.status === "KNOWN_MAPPING" ? `Zapamiętane przypisanie → ${esc(aktualna.selectedCandidate?.url || "")}`
       : aktualna.manualStatus === "MANUAL_MATCH" ? `Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.` : "";
@@ -830,6 +854,13 @@
   }
 
   async function inicjalizuj() {
+    chrome.storage.onChanged.addListener((zmiany,obszar) => {
+      if (obszar !== "local" || !zmiany.eventisImportQueue) return;
+      stan.kolejka = Array.isArray(zmiany.eventisImportQueue.newValue) ? zmiany.eventisImportQueue.newValue : [];
+      odtworzAnalizeTrwalejKolejki();
+      odswiezPlanOtwarcia().then(renderuj).catch(blad => console.error("Odświeżenie kolejki Eventis",blad));
+      renderuj();
+    });
     await chrome.runtime.sendMessage({type:"RECONCILE_QUEUE"});
     const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ustawienia = {...KONFIGURACJA.DEFAULT_SETTINGS,...(dane.settings || {})};

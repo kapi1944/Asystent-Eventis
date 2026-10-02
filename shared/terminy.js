@@ -203,7 +203,14 @@
   }
 
   function porownajPotwierdzoneTerminy(terminyZrodlowe = [], terminyEventis = []) {
-    const potwierdzone = usunDuplikatyTerminow(terminyZrodlowe.filter(termin => termin.effectiveConfirmed ?? termin.confirmed));
+    const terminy = usunDuplikatyTerminow(terminyZrodlowe);
+    const kluczeIstniejace = new Set(terminyEventis.map(kluczZgodnegoTerminu));
+    for (const termin of terminy) {
+      termin.canonicalTermKey = kluczZgodnegoTerminu(termin);
+      termin.existsOnEventis = kluczeIstniejace.has(termin.canonicalTermKey);
+      termin.missingOnEventis = !termin.existsOnEventis;
+    }
+    const potwierdzone = terminy.filter(termin => termin.effectiveConfirmed ?? termin.confirmed);
     const kluczeEventis = new Set(terminyEventis.map(kluczZgodnegoTerminu));
     const kluczePotwierdzone = new Set(potwierdzone.map(kluczZgodnegoTerminu));
     const zgodne = potwierdzone.filter(termin => kluczeEventis.has(kluczZgodnegoTerminu(termin)));

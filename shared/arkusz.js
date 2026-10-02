@@ -73,10 +73,14 @@
   }
 
   function oczyscWierszRekordu(wartosc) {
-    const bezHtml = String(wartosc || "").replace(/<br\s*\/?\s*>/gi, " ");
+    let tekst = String(wartosc || "").trim();
+    if (/^"\s*(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\b/i.test(tekst) && tekst.endsWith('"')) {
+      tekst = tekst.slice(1, -1).replace(/""/g, '"');
+    }
+    const bezHtml = tekst.replace(/<br\s*\/?\s*>/gi, " ");
     const bezRamki = usunRamkeWierszaMarkdown(bezHtml);
     return bezRamki
-      .replace(/^\\?\|\s*(ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\s*\\?\|\s*/i, "$1 ")
+      .replace(/^(?:\\?\|\s*)?(ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\s*\\?\|\s*/i, "$1 ")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -150,10 +154,15 @@
   }
 
   function analizujReczneWklejenie(tekst) {
-    const rekordy = String(tekst || "")
-      .split(/\r?\n/)
-      .map(linia => oczyscLinie(linia))
-      .filter(linia => znajdzStatus(linia))
+    const wiersze = [];
+    for (const linia of String(tekst || "").split(/\r\n|[\r\n]/)) {
+      if (/^\s*"?\s*(?:\|\s*)?(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\b/i.test(linia)) {
+        wiersze.push(linia);
+      } else if (wiersze.length) {
+        wiersze[wiersze.length - 1] += `\n${linia}`;
+      }
+    }
+    const rekordy = wiersze
       .map(parsujLinieRekorduRecznego)
       .filter(Boolean);
     return { records: rekordy, errors: rekordy.filter(rekord => rekord.error) };
