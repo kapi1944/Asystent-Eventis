@@ -207,10 +207,11 @@ async function otworzNowaKarte() {
   const magazyn = {};
   const karty = [];
   const pozycja = {sourceTitle:element.title,normalizedSourceTitle:element.normalizedTitle,organization:"SEMPER",status:"CREATE_NEW",selectedCandidate:{url:"https://eventis.pl/event/add",matchType:"CREATE_NEW"},queueItemIds:[element.id],queueContext:{canonicalTitle:element.normalizedTitle,queueTerms:[element],sourceUrl:"https://www.szkolenia-semper.pl/component/trainings/details/ochrona-powietrza,123,html",confirmationSource:"queue"}};
-  const otworz = odczytajFunkcje("../background.js","async function otworzPlanEventis","async function fetchText",{
+  const otworz = odczytajFunkcje("../background.js","async function otworzPlanEventis","async function usunOsieroconeTytuly",{
     przygotujPlanOtwieraniaEventis:async pozycje => otwieranie.utworzPlanOtwierania(pozycje),
     identyfikatorSesjiOtwarcia:()=>"sesja-1",OTWIERANIE_WYDARZEN:otwieranie,URL,
-    chrome:{storage:{local:{get:async()=>magazyn,set:async dane=>Object.assign(magazyn,JSON.parse(JSON.stringify(dane)))}},tabs:{create:async karta=>karty.push(karta)}}
+    wykonajClaimSeryjnie:async (_,akcja)=>akcja(),usunOsieroconeTytuly:async()=>{},
+    chrome:{storage:{local:{get:async()=>magazyn,set:async dane=>Object.assign(magazyn,JSON.parse(JSON.stringify(dane)))}},tabs:{create:async karta=>{karty.push(karta);return {...karta,id:karty.length};}}}
   });
   await otworz([pozycja],"SEMPER");
   return {magazyn,karta:karty[0]};

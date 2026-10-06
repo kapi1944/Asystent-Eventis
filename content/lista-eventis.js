@@ -240,9 +240,18 @@
   }
 
   function elementyDotyczaceRekordow(kolejka, rekordy) {
-    const klucze = new Set(rekordy.filter(rekord => ["CONFIRMED","DECONFIRMED"].includes(rekord.status) && !rekord.error).map(NARZEDZIA_ARKUSZA.recordKey));
-    return kolejka.filter(element => element.organization === stan.organizacja && klucze.has(element.recordKey)
-      && ["PENDING","ERROR","NEEDS_ATTENTION","COMPLETED_EXISTING"].includes(element.status));
+    const wedlugRekordu = new Map(kolejka.filter(element => element.organization === stan.organizacja
+      && ["PENDING","ERROR","NEEDS_ATTENTION","COMPLETED_EXISTING"].includes(element.status))
+      .map(element => [element.recordKey,element]));
+    const wykorzystane = new Set();
+    return rekordy.filter(rekord => ["CONFIRMED","DECONFIRMED"].includes(rekord.status) && !rekord.error)
+      .flatMap(rekord => {
+        const klucz = NARZEDZIA_ARKUSZA.recordKey(rekord);
+        const element = wedlugRekordu.get(klucz);
+        if (!element || wykorzystane.has(klucz)) return [];
+        wykorzystane.add(klucz);
+        return [{...element,indeksWejsciowy:rekord.indeksWejsciowy}];
+      });
   }
 
   function odtworzAnalizeTrwalejKolejki() {
@@ -251,6 +260,7 @@
     stan.rekordy = aktywneElementy.map(element => ({
       status:element.recordStatus,
       title:element.title,
+      indeksWejsciowy:element.indeksWejsciowy,
       normalizedTitle:element.normalizedTitle,
       start:element.start,
       end:element.end,
@@ -264,12 +274,7 @@
     });
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
     stan.nierozpoznane = wynik.nierozpoznane;
-    stan.rozstrzygniecia = [
-      ...wynik.dopasowane.map(dopasowanie => ({...dopasowanie.resolver,queueItemIds:dopasowanie.elementy.map(element => element.id)})),
-      ...wynik.nierozpoznane.map(pozycja => pozycja.powod === "COLLISION"
-        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION",queueItemIds:pozycja.elementy.map(element => element.id)}
-        : {...pozycja.resolver,queueItemIds:pozycja.elementy.map(element => element.id)})
-    ];
+    stan.rozstrzygniecia = wynik.rozstrzygniecia;
   }
 
   function ocenGotowoscDopasowan(dopasowania) {
@@ -543,12 +548,7 @@
     });
     stan.dopasowania = ocenGotowoscDopasowan(wynik.dopasowane);
     stan.nierozpoznane = wynik.nierozpoznane;
-    stan.rozstrzygniecia = [
-      ...wynik.dopasowane.map(dopasowanie => ({...dopasowanie.resolver,queueItemIds:dopasowanie.elementy.map(element => element.id)})),
-      ...wynik.nierozpoznane.map(pozycja => pozycja.powod === "COLLISION"
-        ? {...pozycja.resolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION",queueItemIds:pozycja.elementy.map(element => element.id)}
-        : {...pozycja.resolver,queueItemIds:pozycja.elementy.map(element => element.id)})
-    ];
+    stan.rozstrzygniecia = wynik.rozstrzygniecia;
     stan.decyzje = {};
     renderuj();
     const zapis = await chrome.runtime.sendMessage({type:"MERGE_QUEUE_ITEMS",items:przygotowane.items});
@@ -561,7 +561,7 @@
     await odswiezPlanOtwarcia();
     stan.komunikat = "";
     renderuj();
-    uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
+    await uruchomPreflight();
     } catch (blad) {
       stan.skanowanie.trwa = false;
       stan.skanowanie.blad = blad?.message || String(blad);
@@ -807,7 +807,7 @@
       }
       await odswiezPlanOtwarcia();
       renderuj();
-      if (wybor) uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
+      if (wybor) await uruchomPreflight(new Set([pole.dataset.wyborKlucz]));
     })));
     $$('[data-pomin-tytul]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const zrodlo = stan.rozstrzygniecia.find(pozycja => kluczRozstrzygniecia(pozycja) === przycisk.dataset.pominTytul);
@@ -835,7 +835,7 @@
       await zapiszRozstrzygniecie(wybor,"manual");
       await odswiezPlanOtwarcia();
       renderuj();
-      uruchomPreflight().catch(blad => pokazKomunikat(blad?.message || String(blad)));
+      await uruchomPreflight(new Set([klucz]));
     })));
     $$('[data-zmien-mapowanie]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.zmienMapowanie;
@@ -845,7 +845,7 @@
       stan.magazynMapowan = MAPOWANIA_WYDARZEN.usunMapowanie(stan.magazynMapowan,zrodlo.organization,zrodlo.normalizedSourceTitle);
       await zapiszMagazynMapowan();
       const ponownyResolver = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul:zrodlo.sourceTitle,normalizedTitle:zrodlo.normalizedSourceTitle},stan.ogloszenia,zrodlo.organization);
-      stan.rozstrzygniecia[indeks] = {...ponownyResolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"CHANGE_MAPPING"};
+      stan.rozstrzygniecia[indeks] = {...zrodlo,...ponownyResolver,status:"AMBIGUOUS",selectedCandidate:null,reason:"CHANGE_MAPPING"};
       delete stan.decyzje[klucz];
       await odswiezPlanOtwarcia();
       renderuj();

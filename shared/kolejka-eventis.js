@@ -41,6 +41,7 @@
       status: STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,
       recordStatus: rekord.status,
       title: rekord.title,
+      indeksWejsciowy: rekord.indeksWejsciowy,
       normalizedTitle: rekord.normalizedTitle || "",
       start: rekord.start,
       end: rekord.end,

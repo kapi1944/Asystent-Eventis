@@ -255,6 +255,14 @@ test("obsługa zdarzeń nie wywołuje catch na wyniku forEach", () => {
   assert.match(kod,/obsluzAsynchronicznie\(analizujWklejonyTekst\)/);
 });
 
+test("analiza i ręczne przypisanie oczekują na ten sam preflight", () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
+  assert.match(kod,/await uruchomPreflight\(\);/);
+  assert.match(kod,/await uruchomPreflight\(new Set\(\[pole\.dataset\.wyborKlucz\]\)\);/);
+  assert.match(kod,/await uruchomPreflight\(new Set\(\[klucz\]\)\);/);
+  assert.doesNotMatch(kod,/uruchomPreflight\(\)\.catch/);
+});
+
 test("trwała kolejka odtwarza dopasowania i plan otwierania po wejściu na listę", () => {
   const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
   assert.match(kod,/odtworzAnalizeTrwalejKolejki\(\);/);

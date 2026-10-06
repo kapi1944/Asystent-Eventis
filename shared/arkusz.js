@@ -163,7 +163,10 @@
       }
     }
     const rekordy = wiersze
-      .map(parsujLinieRekorduRecznego)
+      .map((wiersz, indeksWejsciowy) => {
+        const rekord = parsujLinieRekorduRecznego(wiersz);
+        return rekord ? {...rekord,indeksWejsciowy} : null;
+      })
       .filter(Boolean);
     return { records: rekordy, errors: rekordy.filter(rekord => rekord.error) };
   }

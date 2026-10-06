@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "SEMPER / IIST Eventis Sync",
+  "name": "Asystent Eventis",
   "version": "0.1.1",
   "description": "Wspomaga bezpieczną synchronizację potwierdzonych terminów szkoleń SEMPER/IIST z ogłoszeniami Eventis.",
   "minimum_chrome_version": "120",
@@ -41,6 +41,8 @@
         "shared/mapowania-wydarzen-eventis.js",
         "shared/otwieranie-wydarzen-eventis.js",
         "shared/pola-rich-text.js",
+        "shared/kategorie-eventis.js",
+        "shared/kontroler-kategorii-eventis.js",
         "content/eventis.js"
       ],
       "css": ["content/eventis.css", "content/akcja-panelu.css", "content/porownanie-tytulow.css"],
@@ -69,7 +71,7 @@
   ],
   "options_page": "options/options.html",
   "action": {
-    "default_title": "SEMPER / IIST Eventis Sync"
+    "default_title": "Asystent Eventis"
   },
   "icons": {
     "16": "icons/icon16.png",

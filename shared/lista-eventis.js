@@ -184,9 +184,9 @@
         ? rozstrzygniecie.selectedCandidate
         : [STATUSY_RESOLVERA.AUTO_MATCH,"KNOWN_MAPPING"].includes(rozstrzygniecie.status) ? rozstrzygniecie.selectedCandidate : null;
       if (wybrany) {
-        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"READY",selectedCandidate:wybrany,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
+        pozycje.push({indeksWejsciowy:rozstrzygniecie.indeksWejsciowy,sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"READY",selectedCandidate:wybrany,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else if (rozstrzygniecie.manualStatus === "CREATE_NEW" && rozstrzygniecie.selectedCandidate?.matchType === "CREATE_NEW") {
-        pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"CREATE_NEW",selectedCandidate:rozstrzygniecie.selectedCandidate,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
+        pozycje.push({indeksWejsciowy:rozstrzygniecie.indeksWejsciowy,sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"CREATE_NEW",selectedCandidate:rozstrzygniecie.selectedCandidate,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else if (rozstrzygniecie.manualStatus === "SKIPPED") {
         pozycje.push({sourceTitle:rozstrzygniecie.sourceTitle,normalizedSourceTitle:rozstrzygniecie.normalizedSourceTitle,organization:rozstrzygniecie.organization,status:"SKIPPED",selectedCandidate:null,queueItemIds:[...(rozstrzygniecie.queueItemIds || rozstrzygniecie.identyfikatoryKolejki || [])]});
       } else {
@@ -202,7 +202,7 @@
       if (element.organization !== organizacja || !["PENDING", "ERROR", "NEEDS_ATTENTION", "COMPLETED_EXISTING"].includes(element.status)) continue;
       const klucz = element.normalizedTitle || NARZEDZIA_WYSZUKIWANIA.normalizujTytul(element.title);
       if (!klucz) continue;
-      if (!grupy.has(klucz)) grupy.set(klucz, { klucz, tytul:element.title, elementy:[] });
+      if (!grupy.has(klucz)) grupy.set(klucz, { klucz, tytul:element.title, indeksWejsciowy:element.indeksWejsciowy, elementy:[] });
       grupy.get(klucz).elementy.push(element);
     }
     return [...grupy.values()];
@@ -219,9 +219,10 @@
   function dopasujKolejkeDoOgloszen(elementy = [], ogloszenia = [], organizacja, opcje = {}) {
     const propozycje = pogrupujElementyKolejki(elementy,organizacja).map(grupa => {
       const zCache = typeof opcje.znajdzMapowanie === "function" ? opcje.znajdzMapowanie(grupa,organizacja) : null;
-      const resolver = zCache
+      const resolverBazowy = zCache
         ? {...zCache,sourceTitle:grupa.tytul,normalizedSourceTitle:grupa.klucz,organization:organizacja}
         : rozwiazGrupeTytulu(grupa,ogloszenia,organizacja,opcje);
+      const resolver = {...resolverBazowy,indeksWejsciowy:grupa.indeksWejsciowy};
       const kandydaci = resolver.candidates?.length ? resolver.candidates : resolver.selectedCandidate ? [resolver.selectedCandidate] : [];
       const wyniki = kandydaci.map(kandydat => ({
         ogloszenie:{eventisId:kandydat.eventId,url:kandydat.url,tytul:kandydat.title},
@@ -239,10 +240,16 @@
 
     const dopasowane = [];
     const nierozpoznane = [];
+    const rozstrzygniecia = [];
     for (const propozycja of propozycje) {
       const kolizja = propozycja.jednoznaczne
         ? (wedlugOgloszenia.get(propozycja.najlepszy.ogloszenie.eventisId) || []).length > 1
         : false;
+      rozstrzygniecia.push({
+        ...propozycja.resolver,
+        ...(kolizja ? {status:"AMBIGUOUS",selectedCandidate:null,reason:"COLLISION"} : {}),
+        queueItemIds:propozycja.grupa.elementy.map(element => element.id)
+      });
       if (propozycja.jednoznaczne && !kolizja) {
         dopasowane.push({
           tytul:propozycja.grupa.tytul,
@@ -261,7 +268,7 @@
         });
       }
     }
-    return { dopasowane, nierozpoznane };
+    return { dopasowane, nierozpoznane, rozstrzygniecia };
   }
 
   function czyMapowanieGotoweDoAutomatyzacji(mapowanie, prog) {

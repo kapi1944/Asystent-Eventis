@@ -15,8 +15,12 @@ function utworzElement(dane = {}) {
     parentElement:null,
     ckeditorInstance:null,
     zdarzenia:[],
+    wartosciPrzyZdarzeniach:[],
     closest() { return null; },
-    dispatchEvent(zdarzenie) { this.zdarzenia.push(zdarzenie.type); },
+    dispatchEvent(zdarzenie) {
+      this.zdarzenia.push(zdarzenie.type);
+      this.wartosciPrzyZdarzeniach.push(this.value);
+    },
     matches() { return false; },
     querySelectorAll() { return []; },
     ...dane
@@ -34,13 +38,14 @@ function utworzDokument(pola = [], elementyPoId = {}) {
   };
 }
 
-function utworzWorker(dokument, ckeditor) {
+function utworzWorker(dokument, ckeditor, dodatkowyWidok = {}) {
   let obslugaWiadomosci = null;
   const chrome = {
     runtime: {
       onInstalled:{ addListener() {} },
       onMessage:{ addListener(obsluga) { obslugaWiadomosci = obsluga; } }
     },
+    tabs:{onRemoved:{addListener() {}}},
     scripting: {
       async executeScript(konfiguracja) {
         if (konfiguracja.args.some(argument => argument === undefined || typeof argument === "function")) {
@@ -53,10 +58,11 @@ function utworzWorker(dokument, ckeditor) {
   const kontekst = {
     chrome,
     document:dokument,
-    window:{ CKEDITOR:ckeditor },
+    window:{ CKEDITOR:ckeditor, ...dodatkowyWidok },
     Event:class { constructor(type) { this.type = type; } },
     EventisSyncConfig:{ DEFAULT_SETTINGS:{} },
     KlientMostuArkuszaEventis:{},
+    NarzedziaOpisowSemper:require("../shared/opisy-semper"),
     importScripts() {},
     console,
     setTimeout,
@@ -72,15 +78,20 @@ function utworzWorker(dokument, ckeditor) {
 test("CKEditor 4 używa setData i updateElement, a wynik potwierdza aktualizację", async () => {
   const pole = utworzElement({id:"plan",name:"event[plan]"});
   const wywolania = [];
+  let tresc = "";
   const instancja = {
-    setData(html, potwierdz) { wywolania.push(["setData",html]); potwierdz(); },
-    updateElement() { wywolania.push(["updateElement"]); }
+    setData(html, potwierdz) { tresc = html; wywolania.push(["setData",html]); potwierdz(); },
+    getData() { return tresc; },
+    updateElement() { pole.value = tresc; wywolania.push(["updateElement"]); }
   };
   const wyslij = utworzWorker(utworzDokument([pole]),{instances:{plan:instancja}});
 
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[plan]",html:"<p>Program</p>"});
 
-  assert.deepEqual(wywolania,[["setData","<p>Program</p>"],["updateElement"]]);
+  assert.deepEqual(wywolania,[["setData","<p>Program</p>"],["updateElement"],
+    ["setData","<p>Program </p>"],["updateElement"],["setData","<p>Program</p>"],["updateElement"]]);
+  assert.equal(pole.value,"<p>Program</p>");
+  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","input","change","keyup","blur"]);
   assert.equal(wynik.ok,true);
   assert.equal(wynik.method,"ckeditor4");
   assert.equal(wynik.modelUpdated,true);
@@ -89,18 +100,22 @@ test("CKEditor 4 używa setData i updateElement, a wynik potwierdza aktualizacj�
 
 test("bezpośrednia instancja CKEditor aktualizuje model i element źródłowy", async () => {
   const wywolania = [];
+  let tresc = "";
   const pole = utworzElement({
     name:"event[information]",
     ckeditorInstance:{
-      setData(html) { wywolania.push(["setData",html]); },
-      updateSourceElement() { wywolania.push(["updateSourceElement"]); }
+      setData(html) { tresc = html; wywolania.push(["setData",html]); },
+      getData() { return tresc; },
+      updateSourceElement() { pole.value = tresc; wywolania.push(["updateSourceElement"]); }
     }
   });
   const wyslij = utworzWorker(utworzDokument([pole]));
 
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[information]",html:"<p>Cel</p>"});
 
-  assert.deepEqual(wywolania,[["setData","<p>Cel</p>"],["updateSourceElement"]]);
+  assert.deepEqual(wywolania,[["setData","<p>Cel</p>"],["updateSourceElement"],
+    ["setData","<p>Cel </p>"],["updateSourceElement"],["setData","<p>Cel</p>"],["updateSourceElement"]]);
+  assert.equal(pole.value,"<p>Cel</p>");
   assert.equal(wynik.ok,true);
   assert.equal(wynik.method,"ckeditor-instance");
   assert.equal(wynik.sourceUpdated,true);
@@ -113,12 +128,13 @@ test("zwykłe textarea otrzymuje wartość i zwraca sukces", async () => {
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[reason]",html:"<p>Korzyści</p>"});
 
   assert.equal(pole.value,"<p>Korzyści</p>");
-  assert.deepEqual(pole.zdarzenia,["input","change"]);
+  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","input","change","keyup","blur"]);
+  assert.deepEqual(pole.wartosciPrzyZdarzeniach,[...Array(4).fill("<p>Korzyści</p> "),...Array(4).fill("<p>Korzyści</p>")]);
   assert.equal(JSON.stringify(wynik),JSON.stringify({ok:true,method:"form-control",field:"event[reason]",modelUpdated:true,sourceUpdated:true}));
 });
 
 test("widoczny element CKEditor bez instancji nie jest traktowany jako sukces", async () => {
-  const editable = utworzElement({});
+  const editable = utworzElement({matches(selektor) { return selektor === ".ck-editor__editable" || selektor === '[contenteditable="true"]'; }});
   const obszar = utworzElement({querySelectorAll() { return [editable]; }});
   const pole = utworzElement({name:"event[forWho]",parentElement:obszar});
   const wyslij = utworzWorker(utworzDokument([pole]));
@@ -128,6 +144,164 @@ test("widoczny element CKEditor bez instancji nie jest traktowany jako sukces", 
   assert.equal(wynik.ok,false);
   assert.equal(wynik.code,"EDITOR_MODEL_UNAVAILABLE");
   assert.equal("innerHTML" in editable,false);
+});
+
+test("textarea używa natywnego settera, a touch powtarzany nie dokłada spacji", async () => {
+  const pole = utworzElement({name:"event[reason]",tagName:"TEXTAREA"});
+  let tresc = "";
+  let liczbaUstawien = 0;
+  Object.defineProperty(pole,"value",{get() { return tresc; },set() { throw new Error("Setter kontrolowanego komponentu"); }});
+  const prototyp = {};
+  Object.defineProperty(prototyp,"value",{set(wartosc) { tresc = wartosc; liczbaUstawien++; }});
+  const wyslij = utworzWorker(utworzDokument([pole]),null,{HTMLTextAreaElement:{prototype:prototyp}});
+  for (let licznik = 0; licznik < 3; licznik++) {
+    const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"ABC"});
+    assert.equal(wynik.ok,true);
+    assert.equal(pole.value,"ABC");
+  }
+  assert.equal(liczbaUstawien,9);
+  assert.equal(pole.wartosciPrzyZdarzeniach.filter(wartosc => wartosc === "ABC ").length,12);
+});
+
+test("puste textarea nie otrzymuje chwilowej spacji ani nie przechodzi walidacji wymaganej treści", async () => {
+  for (const html of ["","   "]) {
+    const pole = utworzElement({name:"event[plan]"});
+    const wyslij = utworzWorker(utworzDokument([pole]));
+    const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html});
+    assert.equal(wynik.ok,true);
+    assert.equal(pole.value,html);
+    assert.ok(pole.wartosciPrzyZdarzeniach.every(wartosc => wartosc === html));
+    assert.equal(pole.value.trim().length,0);
+  }
+});
+
+function utworzEdytowalny() {
+  let html = "";
+  let spacja = null;
+  const blok = {appendChild(wezel) { spacja = wezel; }};
+  const edytowalny = utworzElement({
+    matches(selektor) { return selektor === '[contenteditable="true"]'; },
+    querySelectorAll(selektor) { return selektor === "p,li,blockquote,td,th" ? [blok] : []; },
+    ownerDocument:{createTextNode(tresc) { return {textContent:tresc,remove() { spacja = null; }}; }}
+  });
+  Object.defineProperties(edytowalny,{
+    innerHTML:{get() { return spacja ? html.replace(/((?:<\/[^>]+>\s*)*)$/," $1") : html; },set(wartosc) { html = wartosc; spacja = null; }},
+    textContent:{get() { return html.replace(/<[^>]*>/g,"").replace(/&nbsp;/g," "); }}
+  });
+  return {edytowalny,blok};
+}
+
+test("contenteditable zachowuje identyczny HTML, bloki i źródło po wielokrotnym touch", async () => {
+  const {edytowalny,blok} = utworzEdytowalny();
+  const obszar = utworzElement({querySelectorAll() { return [edytowalny]; }});
+  const pole = utworzElement({name:"event[information]",parentElement:obszar});
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const html = "<p><strong>Cel</strong></p><ul><li>Pierwszy</li><li>Drugi</li></ul>";
+  for (let licznik = 0; licznik < 2; licznik++) {
+    const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html});
+    assert.equal(wynik.ok,true);
+    assert.equal(wynik.method,"contenteditable");
+    assert.equal(edytowalny.innerHTML,html);
+    assert.equal(pole.value,html);
+    assert.equal(edytowalny.querySelectorAll("p,li,blockquote,td,th")[0],blok);
+  }
+  assert.deepEqual(edytowalny.zdarzenia,Array(2).fill(["input","change","keyup","blur","input","change","keyup","blur"]).flat());
+  assert.ok(pole.wartosciPrzyZdarzeniach.includes("<p><strong>Cel</strong></p><ul><li>Pierwszy</li><li>Drugi </li></ul>"));
+});
+
+test("CKEditor 5 synchronizuje model i źródło oraz emituje InputEvent na właściwym edytorze", async () => {
+  const html = "<p>Cel</p><ol><li><strong>Program</strong></li></ol>";
+  const pole = utworzElement({name:"event[plan]"});
+  const zdarzenia = [];
+  const edytowalny = utworzElement({dispatchEvent(zdarzenie) { zdarzenia.push([zdarzenie.type,zdarzenie.inputType,zdarzenie.key]); }});
+  let tresc = "";
+  const wartosciModelu = [];
+  pole.ckeditorInstance = {
+    async setData(wartosc) { await Promise.resolve(); tresc = wartosc; wartosciModelu.push(wartosc); },
+    getData() { return tresc; },
+    updateSourceElement() { pole.value = tresc; },
+    ui:{getEditableElement() { return edytowalny; }}
+  };
+  class ZdarzenieEdycji { constructor(typ, dane) { this.type = typ; Object.assign(this,dane); } }
+  const wyslij = utworzWorker(utworzDokument([pole]),null,{InputEvent:ZdarzenieEdycji,KeyboardEvent:ZdarzenieEdycji});
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(wartosciModelu,[html,"<p>Cel</p><ol><li><strong>Program </strong></li></ol>",html]);
+  assert.equal(tresc,html);
+  assert.equal(pole.value,html);
+  assert.deepEqual(zdarzenia.filter(([typ]) => typ === "input"),[["input","insertText",undefined],["input","deleteContentBackward",undefined]]);
+  assert.deepEqual(zdarzenia.filter(([typ]) => typ === "keyup"),[["keyup",undefined," "],["keyup",undefined,"Backspace"]]);
+});
+
+test("CKEditor nie zwraca sukcesu przy pustym backing field mimo treści w modelu", async () => {
+  const pole = utworzElement({name:"event[plan]"});
+  let tresc = "";
+  pole.ckeditorInstance = {setData(html) { tresc = html; },getData() { return tresc; },updateSourceElement() {}};
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(wynik.ok,false);
+  assert.equal(wynik.code,"EDITOR_UPDATE_FAILED");
+  assert.equal(tresc,"<p>Program</p>");
+});
+
+test("pusty HTML edytora nie otrzymuje spacji", async () => {
+  const pole = utworzElement({name:"event[plan]"});
+  let tresc = "";
+  const wywolania = [];
+  pole.ckeditorInstance = {
+    setData(html) { tresc = html; wywolania.push(html); },
+    getData() { return tresc; },updateSourceElement() { pole.value = tresc; }
+  };
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p><br></p>"});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(wywolania,["<p><br></p>"]);
+  assert.equal(pole.value,"<p><br></p>");
+});
+
+test("inne pola nie uruchamiają workaroundu opisów", async () => {
+  const pole = utworzElement({name:"event[hours]"});
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"1 dzień"});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(pole.zdarzenia,["input","change"]);
+  assert.deepEqual(pole.wartosciPrzyZdarzeniach,["1 dzień","1 dzień"]);
+});
+
+test("CKEditor 4 korzysta z updateSourceElement i zdarzenia change własnego API", async () => {
+  const pole = utworzElement({id:"plan",name:"event[plan]"});
+  const edytowalny = utworzElement();
+  let tresc = "";
+  const zmianyModelu = [];
+  const instancja = {
+    setData(html, potwierdz) { tresc = html; setTimeout(potwierdz,0); },
+    getData() { return tresc; },
+    updateSourceElement() { pole.value = tresc; },
+    updateElement() { throw new Error("Nie powinno być użyte przy updateSourceElement"); },
+    editable() { return {$:edytowalny}; },
+    fire(typ) { zmianyModelu.push([typ,tresc,pole.value]); }
+  };
+  const wyslij = utworzWorker(utworzDokument([pole]),{instances:{plan:instancja}});
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(zmianyModelu,[["change","<p>Program </p>","<p>Program </p>"],["change","<p>Program</p>","<p>Program</p>"]]);
+  assert.deepEqual(edytowalny.zdarzenia,pole.zdarzenia);
+  assert.equal(pole.value,"<p>Program</p>");
+});
+
+test("awaria powiadomienia po dodaniu spacji przywraca dokładną treść modelu i źródła", async () => {
+  const pole = utworzElement({name:"event[plan]"});
+  let tresc = "";
+  pole.ckeditorInstance = {
+    setData(html) { tresc = html; },getData() { return tresc; },
+    updateSourceElement() { pole.value = tresc; },
+    fire() { if (tresc === "<p>Program </p>") throw new Error("Awaria zdarzenia"); }
+  };
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(wynik.ok,false);
+  assert.equal(tresc,"<p>Program</p>");
+  assert.equal(pole.value,"<p>Program</p>");
 });
 
 test("brak pola zwraca kontrolowany błąd zamiast sukcesu", async () => {

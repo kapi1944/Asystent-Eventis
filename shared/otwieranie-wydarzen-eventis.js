@@ -43,12 +43,15 @@
     const wedlugEventu = new Map();
     const wedlugNowegoOgloszenia = new Map();
     const konflikty = [];
+    const gotowe = [];
     for (const pozycja of pozycje) {
       if (pozycja?.status === "CREATE_NEW" && pozycja.selectedCandidate?.matchType === "CREATE_NEW") {
         const url = bezpiecznyUrlNowegoOgloszenia(pozycja.selectedCandidate.url);
         const taskId = kluczNowegoOgloszenia(pozycja);
         if (url && taskId && !wedlugNowegoOgloszenia.has(taskId)) {
-          wedlugNowegoOgloszenia.set(taskId,{...pozycja,taskId,eventId:"",eventUrl:url,typ:"CREATE_NEW"});
+          const zadanie = {...pozycja,taskId,eventId:"",eventUrl:url,typ:"CREATE_NEW"};
+          wedlugNowegoOgloszenia.set(taskId,zadanie);
+          gotowe.push(zadanie);
         }
         continue;
       }
@@ -63,12 +66,12 @@
         continue;
       }
       wedlugEventu.set(eventId,zadanie);
+      gotowe.push(zadanie);
     }
     const noweOtwarte = new Set(otwarteUrl.map(wartosc => {
       const bezpieczny = bezpiecznyUrlNowegoOgloszenia(wartosc);
       try { return bezpieczny ? new URL(bezpieczny).searchParams.get("esyncNoweId") || "" : ""; } catch (_) { return ""; }
     }).filter(Boolean));
-    const gotowe = [...wedlugEventu.values(),...wedlugNowegoOgloszenia.values()];
     const juzOtwarte = gotowe.filter(zadanie => zadanie.typ === "CREATE_NEW" ? noweOtwarte.has(zadanie.taskId) : otwarteEventy.has(zadanie.eventId));
     const doOtwarcia = gotowe.filter(zadanie => zadanie.typ === "CREATE_NEW" ? !noweOtwarte.has(zadanie.taskId) : !otwarteEventy.has(zadanie.eventId));
     return {gotowe:gotowe.length,juzOtwarte,doOtwarcia,konflikty};
@@ -82,6 +85,7 @@
       tasks:zadania.map(zadanie => ({
         taskId:String(zadanie.taskId || zadanie.eventId || zadanie.selectedCandidate?.eventId),
         sourceTitle:zadanie.sourceTitle,
+        indeksWejsciowy:zadanie.indeksWejsciowy,
         normalizedSourceTitle:zadanie.normalizedSourceTitle,
         organization:zadanie.organization || organizacja,
         eventId:zadanie.eventId || zadanie.selectedCandidate?.eventId,

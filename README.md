@@ -1,4 +1,4 @@
-# SEMPER / IIST Eventis Sync — v0.1.0
+# Asystent Eventis — v0.1.0
 
 Pierwszy działający prototyp rozszerzenia Chrome Manifest V3 zastępującego podstawowy workflow Tampermonkey na stronach `/event/add` i `/event/edit` w Eventis.
 
