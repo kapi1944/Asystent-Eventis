@@ -578,20 +578,11 @@
     const wynik = stan.preflight.wyniki[klucz];
     const aktualny = wynik && String(wynik.eventId) === String(rozstrzygniecie.selectedCandidate?.eventId || "") ? wynik : null;
     const status = aktualny?.status || "UNVERIFIED";
-    const potwierdzone = aktualny?.effectiveConfirmedTerms?.length ?? NARZEDZIA_TERMINOW.dedupeTerms(potwierdzoneTerminyTytulu(rozstrzygniecie)).length;
-    const zgodne = aktualny?.matchingEventisTerms?.length;
     const brakujace = aktualny?.missingConfirmedTerms?.length;
-    const opis = status === "NEEDS_ATTENTION" ? aktualny?.error || "⚠ Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER lub wystąpił konflikt odpotwierdzenia."
-      : !rozstrzygniecie.selectedCandidate?.eventId && aktualny?.queueContext ? "Semper: termin znaleziony · Eventis: brak wydarzenia → zostanie utworzone nowe ogłoszenie po wyborze Utwórz nowe ogłoszenie."
-      : status === "COMPLETE" ? "✓ Wszystkie potwierdzone terminy są już w Eventis"
-      : status === "COUNT_MATCH_BUT_DIFFERENT" ? `⚠ Liczby są równe, ale brakuje ${brakujace} potwierdzonych terminów`
-      : status === "MISSING_TERMS" ? `⚠ Brakuje ${brakujace} potwierdzonych terminów`
-      : aktualny?.error ? `Nie udało się zweryfikować: ${aktualny.error}`
-      : aktualny ? "Nie wykryto potwierdzonych terminów do porównania" : "Oczekuje na weryfikację terminów";
     const akcje = status === "COMPLETE"
       ? `<button class="esync-btn good" data-preflight-skip="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Pomiń otwieranie</button><button class="esync-btn" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Otwórz mimo to</button>`
       : `<button class="esync-btn good" data-preflight-open="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>${brakujace ? "Otwórz i uzupełnij" : "Otwórz ręcznie"}</button>`;
-    return `<div class="esync-preflight"><div class="esync-akcje-glowne ${status === "COMPLETE" ? "esync-grid2" : ""}">${akcje}</div><details class="esync-szczegoly-kafelka"><summary>Szczegóły weryfikacji</summary><div class="esync-term-sub">${esc(stan.organizacja)}: ${potwierdzone} potwierdzone · EVENTIS: ${zgodne ?? "?"} zgodne · Brakuje: ${brakujace ?? "?"}</div><div class="esync-small esync-muted">Źródło terminów: ${esc(aktualny?.zrodlo || "wklejona lista")}</div><div class="esync-small esync-opis-weryfikacji">${esc(opis)}</div><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button></details></div>`;
+    return `<div class="esync-preflight"><div class="esync-akcje-glowne ${status === "COMPLETE" ? "esync-grid2" : ""}">${akcje}</div></div>`;
   }
 
   function renderujTerminyPozycji(rozstrzygniecie) {
@@ -632,18 +623,13 @@
       ? `<div class="esync-warning">⚠ ${esc(wynikTerminow.error || (wynikTerminow.reconciliation?.unmatchedQueueTerms.length ? "Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER." : "Konflikt odpotwierdzenia — wymaga uwagi."))}</div>`
       : wynikTerminow?.reconciliation?.terms.some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper)
       ? `<div class="esync-alarm-kolejki"><span class="esync-badge purple">Potwierdzony z kolejki</span> 🟣 Potwierdzony w kolejce · Semper: termin znaleziony${aktualna.selectedCandidate?.eventId ? '' : '<div>Eventis: brak wydarzenia</div>'}</div>` : '';
-    const opisDopasowania = pozycja.status === "AUTO_MATCH" ? `Dopasowano automatycznie → Eventis #${esc(aktualna.selectedCandidate?.eventId || "?")}`
-      : pozycja.status === "KNOWN_MAPPING" ? `Zapamiętane przypisanie → ${esc(aktualna.selectedCandidate?.url || "")}`
-      : aktualna.manualStatus === "MANUAL_MATCH" ? `Wybrano Eventis #${esc(aktualna.selectedCandidate.eventId)}.` : "";
-    const zmianaMapowania = pozycja.status === "KNOWN_MAPPING" ? `<button class="esync-btn" data-zmien-mapowanie="${esc(klucz)}">Zmień przypisane wydarzenie</button>` : "";
-    const dopasowanie = opisDopasowania ? `<details class="esync-szczegoly-kafelka"><summary>Dopasowanie Eventis</summary><div class="esync-small esync-muted">${opisDopasowania}</div>${zmianaMapowania}</details>` : "";
     const tworzenie = aktualna.manualStatus === "CREATE_NEW" ? '<div class="esync-info esync-small">Zostanie utworzone nowe ogłoszenie.</div>' : "";
     const pominieto = aktualna.manualStatus === "SKIPPED" ? '<div class="esync-info esync-small">Tytuł pominięty.</div>' : "";
     const kandydaci = pozycja.status === "AMBIGUOUS" && aktualna.manualStatus !== "CREATE_NEW" ? (pozycja.candidates || []).slice(0,5).map(kandydat => `<label class="esync-choice"><input type="radio" name="esync-wybor-${indeks}" data-wybor-klucz="${esc(klucz)}" value="${esc(kandydat.eventId)}" ${aktualna.manualStatus === "MANUAL_MATCH" && aktualna.selectedCandidate.eventId === kandydat.eventId ? "checked" : ""}> <b>${esc(kandydat.title)}</b><small>Zgodność: ${Math.round(kandydat.score*100)}% · ${esc(kandydat.url)}</small></label>`).join("") : "";
-    const recznyUrl = pozycja.status === "NOT_FOUND" && aktualna.manualStatus !== "CREATE_NEW" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(klucz)}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(klucz)}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div><button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
+    const recznyUrl = ["NOT_FOUND","AMBIGUOUS"].includes(pozycja.status) && aktualna.manualStatus !== "CREATE_NEW" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(klucz)}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(klucz)}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div><button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
     const wymagaDecyzji = !aktualna.selectedCandidate && aktualna.manualStatus !== "SKIPPED" && aktualna.manualStatus !== "CREATE_NEW";
     const decyzje = wymagaDecyzji ? `<div class="esync-info esync-small">${pozycja.status === "AMBIGUOUS" ? "Wybierz właściwe wydarzenie Eventis." : "Nie znaleziono dopasowania w Eventis."}</div>${kandydaci}${recznyUrl}<button class="esync-btn good" data-utworz-nowe="${esc(klucz)}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie</button><button class="esync-btn warn" data-pomin-tytul="${esc(klucz)}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button>` : "";
-    return `<div class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${oznaczenieKolejki}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}${dopasowanie}</div>`;
+    return `<div data-klucz-karty="${esc(klucz)}" class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${oznaczenieKolejki}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}<div class="esync-grid2" style="margin-top:9px"><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button><button class="esync-btn" data-zmien-mapowanie="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Zmień przypisane</button></div></div>`;
   }
 
   function renderujWyniki() {
@@ -690,6 +676,30 @@
     return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${zawartosc}<button id="esync-clear-queue" class="esync-btn danger" style="width:100%;margin-top:7px" ${stan.kolejka.length ? "" : "disabled"}>Wyczyść całą kolejkę (${stan.kolejka.length})</button></div>`;
   }
 
+  function zapamietajWidok(korzen) {
+    const kontener = $(".esync-body",korzen);
+    if (!kontener) return null;
+    const gora = kontener.getBoundingClientRect().top;
+    const karty = $$("[data-klucz-karty]",kontener);
+    const karta = karty.find(element => element.getBoundingClientRect().bottom > gora);
+    return {scroll:kontener.scrollTop,klucz:karta?.dataset.kluczKarty,
+      przesuniecie:karta ? karta.getBoundingClientRect().top - gora : 0,
+      szczegoly:karty.map(element => ({klucz:element.dataset.kluczKarty,otwarte:$$("details",element).map(szczegoly => szczegoly.open)}))};
+  }
+
+  function przywrocWidok(korzen, widok) {
+    if (!widok) return;
+    const kontener = $(".esync-body",korzen);
+    const karty = $$("[data-klucz-karty]",kontener);
+    for (const karta of karty) {
+      const zapis = widok.szczegoly.find(element => element.klucz === karta.dataset.kluczKarty);
+      if (zapis) $$("details",karta).forEach((szczegoly,indeks) => { szczegoly.open = zapis.otwarte[indeks]; });
+    }
+    kontener.scrollTop = widok.scroll;
+    const karta = karty.find(element => element.dataset.kluczKarty === widok.klucz);
+    if (karta) kontener.scrollTop += karta.getBoundingClientRect().top - kontener.getBoundingClientRect().top - widok.przesuniecie;
+  }
+
   function renderuj() {
     let korzen = $("#esync-root");
     if (!korzen) {
@@ -697,6 +707,7 @@
       korzen.id = "esync-root";
       document.body.appendChild(korzen);
     }
+    const widok = zapamietajWidok(korzen);
     const liczbaAktywnych = stan.kolejka.filter(element => element.status !== "DONE").length;
     korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body"><details id="esync-lista-kolejka" ${stan.pokazKolejke?"open":""}><summary>Seryjna kolejka Eventis (${liczbaAktywnych})</summary>${renderujSeryjnaKolejke()}</details><div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
     const komunikat = $(".esync-body > .esync-success",korzen);
@@ -704,6 +715,7 @@
       if (stan.bladAnalizy) komunikat.classList.replace("esync-success","esync-danger");
       $(".esync-body > .esync-card",korzen).after(komunikat);
     }
+    przywrocWidok(korzen,widok);
     $("#esync-lista-kolejka")?.addEventListener("toggle",zdarzenie => { stan.pokazKolejke = zdarzenie.currentTarget.open; });
     const naglowek = $(".esync-head",korzen);
     naglowek.style.cursor = "move";
@@ -786,14 +798,24 @@
     })));
     $$('[data-preflight-open]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.preflightOpen;
-      if (stan.organizacja === "SEMPER" && (!stan.preflight.wyniki[klucz]?.queueContext || stan.preflight.wyniki[klucz]?.status === "NEEDS_ATTENTION")) return pokazKomunikat("Najpierw zweryfikuj terminy SEMPER.");
-      if (stan.preflight.wyniki[klucz]?.status === "COMPLETE") await ustawDecyzjeKompletnych(new Set([klucz]),false);
+      const rozstrzygniecie = stan.rozstrzygniecia.map(aktualneRozstrzygniecie).find(wpis => kluczRozstrzygniecia(wpis) === klucz);
+      const wynik = stan.preflight.wyniki[klucz];
+      const aktualnyWynik = wynik && String(wynik.eventId) === String(rozstrzygniecie?.selectedCandidate?.eventId || "") ? wynik : null;
+      if (stan.organizacja === "SEMPER" && (!aktualnyWynik?.queueContext || aktualnyWynik.status === "NEEDS_ATTENTION")) {
+        const pozycja = stan.rozstrzygniecia.map(aktualneRozstrzygniecie).find(wpis => kluczRozstrzygniecia(wpis) === klucz);
+        const kandydat = pozycja?.selectedCandidate;
+        if (!kandydat?.eventId || pozycja.manualStatus === "SKIPPED") return pokazKomunikat("Najpierw wybierz wydarzenie Eventis.");
+        const odpowiedz = await chrome.runtime.sendMessage({type:"OTWORZ_EVENTIS_RECZNIE",url:kandydat.url,eventId:kandydat.eventId});
+        if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć karty Eventis.");
+        return;
+      }
+      if (aktualnyWynik?.status === "COMPLETE") await ustawDecyzjeKompletnych(new Set([klucz]),false);
       const pozycja = finalnyPlanOtwarcia().pozycje.find(wpis => `${wpis.organization}|${wpis.normalizedSourceTitle}` === klucz)
         || NARZEDZIA_LISTY.utworzPlanOtwarcia(stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
           .filter(wpis => kluczRozstrzygniecia(wpis) === klucz)
           .map(wpis => ({...wpis,queueItemIds:[]}))).pozycje[0];
       if (!pozycja) return pokazKomunikat("To wydarzenie nie ma aktywnych potwierdzonych terminów do otwarcia.");
-      const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:[{...pozycja,queueContext:stan.preflight.wyniki[klucz]?.queueContext}],organization:stan.organizacja});
+      const odpowiedz = await chrome.runtime.sendMessage({type:"OPEN_EVENTIS_PLAN",plan:[{...pozycja,queueContext:aktualnyWynik?.queueContext}],organization:stan.organizacja});
       if (!odpowiedz?.ok) throw new Error(odpowiedz?.error || "Nie udało się otworzyć karty Eventis.");
       await odswiezPlanOtwarcia();
       renderuj();

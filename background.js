@@ -455,6 +455,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ok:true,...await przygotujPlanOtwieraniaEventis(message.plan)});
         break;
       }
+      case "OTWORZ_EVENTIS_RECZNIE": {
+        const adres = OTWIERANIE_WYDARZEN.bezpiecznyUrlEdycjiEventis(message.url);
+        if (!adres || OTWIERANIE_WYDARZEN.eventIdZUrl(adres) !== String(message.eventId)) throw new Error("Brak bezpiecznego adresu wydarzenia Eventis.");
+        const url = new URL(adres);
+        for (const parametr of ["esyncSession","esyncTask","esyncNoweId"]) url.searchParams.delete(parametr);
+        await chrome.tabs.create({url:url.href,active:true});
+        sendResponse({ok:true});
+        break;
+      }
       case "OPEN_EVENTIS_PLAN": {
         sendResponse(await otworzPlanEventis(message.plan,message.organization));
         break;
