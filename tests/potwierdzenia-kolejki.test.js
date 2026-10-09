@@ -123,6 +123,32 @@ test("preflight weryfikuje pełny tytuł SEMPER mimo skróconych podpowiedzi i o
   }
 });
 
+test("preflight rozpoznaje online w tabeli wariantu stacjonarnego po tytule i dokładnym terminie", async () => {
+  const tytul = "Zarządzanie projektem budowlanym w praktyce – klucz do sukcesu realizowanej inwestycji. 3-dniowe szkolenie praktyczne";
+  const adresy = [123,456].map(numer => `https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,${numer}.html`);
+  const terminListy = {start:"2026-11-25",end:"2026-11-27",city:"Online",confirmed:true};
+  for (const przypadek of ["zgodny","inna data","inne miasto","inny tytuł","niejednoznaczny"]) {
+    const sprawdz = odczytajFunkcje("../content/lista-eventis.js","async function sprawdzTerminyWydarzenia","async function uruchomPreflight",{
+      NARZEDZIA_LISTY:require("../shared/lista-eventis"),NARZEDZIA_WYSZUKIWANIA:wyszukiwanie,
+      NARZEDZIA_TERMINOW:{...terminy,odczytajTerminySemper:()=>[{...terminListy,
+        start:przypadek === "inna data" ? "2026-11-24" : terminListy.start,
+        city:przypadek === "inne miasto" ? "Zakopane" : "Online"}]},
+      stan:{organizacja:"SEMPER",mapowania:{},kolejka:[],ustawienia:{mappingWarningThreshold:.90}},
+      potwierdzoneTerminyTytulu:()=>[terminListy],URLSearchParams,console,
+      chrome:{runtime:{sendMessage:async wiadomosc => {
+        const adres = wiadomosc.payload.url;
+        if (adres.endsWith("_ajax_szukaj.php")) return {ok:true,text:"null"};
+        if (adres.endsWith("_ajax_szukaj_auto.php")) return {ok:true,text:adresy.slice(0,przypadek === "niejednoznaczny" ? 2 : 1).map(url=>`<a href="${url}">${tytul}</a>`).join("")};
+        return {ok:true,finalUrl:adres,text:`${przypadek === "inny tytuł" ? "Inne szkolenie" : tytul} w Zakopanem (zakwaterowanie i pełne wyżywienie w cenie szkolenia)`};
+      }}},
+      DOMParser:class {parseFromString(tekst) {return {querySelector:()=>({textContent:tekst})};}}
+    });
+    const rozstrzygniecie = {sourceTitle:`${tytul} online.`,normalizedSourceTitle:wyszukiwanie.normalizujTytul(`${tytul} online.`)};
+    if (przypadek === "zgodny") assert.equal((await sprawdz(rozstrzygniecie)).queueContext.sourceUrl,adresy[0]);
+    else await assert.rejects(sprawdz(rozstrzygniecie),/nie znaleziono jednoznacznej/);
+  }
+});
+
 test("lista odnajduje energetykę SEMPER przez AJAX i tytuł strony bez h1", async () => {
   const tytul = "Energetyka w samorządach 2026 - jak planować, finansować i realizować inwestycje z KPO i FEnIKS. 1-dniowe warsztaty szkoleniowe.";
   const tytulListy = `${tytul} Certyfikowane szkolenie online`;

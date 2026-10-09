@@ -11,10 +11,12 @@
 .esync-porownanie-terminu{grid-template-columns:minmax(0,1fr);row-gap:5px}
 .esync-porownanie-terminu>div:first-child{grid-row:1;min-width:0}
 .esync-porownanie-terminu>div:last-child{grid-row:2;display:flex;justify-content:flex-start;align-items:center;flex-wrap:wrap;gap:3px}
-.esync-porownanie-terminu>div:last-child>.esync-potwierdz-termin{margin-left:auto}
+.esync-porownanie-terminu>div:last-child>.esync-potwierdz-termin,.esync-porownanie-terminu>div:last-child>.esync-badge.purple{margin-left:auto}
 .esync-porownanie-terminu{margin-top:5px;padding:7px 6px;border-radius:8px}
 .esync-porownanie-terminu.esync-termin-obecny{background:#edfbf2}
 .esync-porownanie-terminu.esync-termin-brakujacy{background:#fff1e3}
+.esync-porownanie-terminu.esync-termin-kolejki-niepotwierdzony{border:2px solid #9333ea}
+.esync-porownanie-terminu.esync-termin-kolejki-brak-na-zrodle{background:#f3e8ff}
 .esync-badge.esync-zrodlo-potwierdzone{border-color:#60a5fa;background:#dbeafe;color:#1e40af}
 .esync-badge.esync-zrodlo-niepotwierdzone{border-color:#60a5fa;background:#e5e7eb;color:#475569}
 
@@ -31,3 +33,11 @@
 #esync-root .esync-head{padding:7px 10px}
 #esync-root .esync-head-title{font-size:12px}
 #esync-root .esync-icon-btn{width:28px;height:28px}
+#esync-root .esync-head-actions{flex-shrink:0;align-items:center}
+#esync-root #esync-org.esync-przelacznik-organizatora{display:inline-flex;align-items:center;gap:2px;width:auto;min-width:104px;height:28px;padding:2px;color:#64748b;background:#f1f5f9;border-color:#d8dee8;flex-shrink:0;font:700 10px/1.2 "Segoe UI",Arial,sans-serif;white-space:nowrap}
+#esync-root .esync-przelacznik-organizatora span{padding:5px 6px;border-radius:6px}
+#esync-root .esync-przelacznik-organizatora .esync-organizator-aktywny{color:#fff}
+#esync-root .esync-przelacznik-organizatora .semper{background:#a61b16}
+#esync-root .esync-przelacznik-organizatora .iist{background:#16628f}
+#esync-root .esync-przelacznik-organizatora:focus-visible{outline:2px solid #16628f;outline-offset:2px}
+#esync-root.esync-collapsed #esync-org.esync-przelacznik-organizatora{display:none}

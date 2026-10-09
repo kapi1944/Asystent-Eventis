@@ -39,6 +39,27 @@ test("dokładnie zgodny krótki tytuł ma pierwszeństwo przed scoringiem słów
   assert.equal(narzedzia.ocenZgodnoscTytulow("Szkolenie A","Szkolenie B"),0);
 });
 
+test("procent podobieństwa pomija informacje dodatkowe niezależnie od ich miejsca", () => {
+  const tytul = "Zarządzanie projektem budowlanym w praktyce w Zakopanem";
+  const dodatki = [
+    "(zakwaterowanie i pełne wyżywienie w cenie szkolenia)",
+    "(noclegi i wyżywienie w cenie szkolenia)",
+    "-3-dniowe warsztaty szkoleniowe",
+    "– 12 dniowe warsztaty szkoleniowe",
+    "-dniowe warsztaty szkoleniowe",
+    "Certyfikowane szkolenie online"
+  ];
+  for (const dodatek of dodatki) {
+    for (const rozszerzony of [`${dodatek}: ${tytul}`, `${tytul}. ${dodatek}`, tytul.replace("w Zakopanem", `${dodatek} w Zakopanem`)]) {
+      assert.equal(narzedzia.ocenZgodnoscTytulow(tytul, rozszerzony), 1);
+      assert.equal(narzedzia.ocenZgodnoscTytulow(rozszerzony, tytul), 1);
+    }
+  }
+  assert.equal(narzedzia.ocenZgodnoscTytulow("", dodatki.join(" ")), 0);
+  assert.ok(narzedzia.ocenZgodnoscTytulow(`${tytul} 2025`, `${tytul} 2026 ${dodatki.join(" ")}`) < 0.8);
+  assert.ok(narzedzia.ocenZgodnoscTytulow(tytul, tytul.replace("Zakopanem", "Warszawie")) < 1);
+});
+
 test("rozpoznawanie URL SEMPER przyjmuje details i odrzuca menu", () => {
   assert.equal(narzedzia.czySzczegolySemper("https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,123.html"),true);
   assert.equal(narzedzia.czySzczegolySemper("https://szkolenia-semper.pl/component/trainings/details/prawo,123,html"),true);

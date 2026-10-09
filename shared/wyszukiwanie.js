@@ -160,11 +160,15 @@
   }
 
   function ocenZgodnoscTytulow(tytulEventis, tytulZrodlowy) {
-    const znormalizowanyEventis = normalizujTytul(tytulEventis);
-    const znormalizowanyZrodlowy = normalizujTytul(tytulZrodlowy);
+    const oczyscTytulDoPorownania = tytul => normalizujTytul(tytul)
+      .replace(/\b(?:zakwaterowanie i pelne wyzywienie|noclegi i wyzywienie) w cenie szkolenia\b/g, " ")
+      .replace(/\b(?:\d+\s+)?dniowe warsztaty szkoleniowe\b/g, " ")
+      .replace(/\s+/g, " ").trim();
+    const znormalizowanyEventis = oczyscTytulDoPorownania(tytulEventis);
+    const znormalizowanyZrodlowy = oczyscTytulDoPorownania(tytulZrodlowy);
     if (znormalizowanyEventis && znormalizowanyEventis === znormalizowanyZrodlowy) return 1;
-    const listaA = istotneSlowa(tytulEventis);
-    const listaB = istotneSlowa(tytulZrodlowy);
+    const listaA = istotneSlowa(znormalizowanyEventis);
+    const listaB = istotneSlowa(znormalizowanyZrodlowy);
     const zbiorA = new Set(listaA);
     const zbiorB = new Set(listaB);
     if (!zbiorA.size || !zbiorB.size) return 0;
@@ -177,8 +181,8 @@
     const kolejnosc = (zgodnoscKolejnosci(listaA, listaB) + zgodnoscKolejnosci(listaB, listaA)) / 2;
     const specyficznosc = Math.min(1, wspolne / 4);
 
-    const liczbyA = znacznikiLiczbowe(tytulEventis);
-    const liczbyB = znacznikiLiczbowe(tytulZrodlowy);
+    const liczbyA = znacznikiLiczbowe(znormalizowanyEventis);
+    const liczbyB = znacznikiLiczbowe(znormalizowanyZrodlowy);
     const wspolneLiczby = [...liczbyA].filter(liczba => liczbyB.has(liczba)).length;
     const zgodnoscLiczb = liczbyA.size && liczbyB.size
       ? wspolneLiczby / new Set([...liczbyA, ...liczbyB]).size

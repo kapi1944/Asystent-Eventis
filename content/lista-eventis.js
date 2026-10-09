@@ -327,8 +327,16 @@
         const dokument = new DOMParser().parseFromString(odpowiedz.text,"text/html");
         const tytul = (dokument.querySelector("h1") || dokument.querySelector("title"))?.textContent || "";
         const wariant = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscWariantuLokalizacyjnego(rozstrzygniecie.sourceTitle,tytul);
+        const tytulOnline = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(rozstrzygniecie.sourceTitle).replace(/ online$/, "");
+        const tytulBezMiejsca = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul.replace(/\s+(?:w|we)\s+[\p{L}-]+\s*(?:\([^)]*\))?[.]?\s*$/iu,""));
+        const terminyListy = potwierdzoneTerminyTytulu(rozstrzygniecie);
+        const terminyStrony = NARZEDZIA_TERMINOW.odczytajTerminySemper(dokument);
+        const zgodnyTerminOnline = /\bonline\b/i.test(rozstrzygniecie.sourceTitle)
+          && tytulOnline === tytulBezMiejsca && terminyListy.length > 0
+          && terminyListy.every(termin => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin).endsWith("|online")
+            && terminyStrony.some(terminStrony => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(terminStrony) === NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin)));
         const wynik = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytul) >= stan.ustawienia.mappingWarningThreshold
-          && (!wariant.wymagany || wariant.status === "ZGODNY") ? {odpowiedz,dokument} : null;
+          && (!wariant.wymagany || wariant.status === "ZGODNY") || zgodnyTerminOnline ? {odpowiedz,dokument} : null;
         stronyZrodla.set(url,wynik);
         return wynik;
       }
