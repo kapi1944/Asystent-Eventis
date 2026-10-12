@@ -24,6 +24,7 @@
     kolejka:[],
     pokazKolejke:false,
     mapowania:{},
+    reczneAdresySemper:{},
     ogloszenia:[],
     dopasowania:[],
     nierozpoznane:[],
@@ -236,19 +237,35 @@
     });
   }
 
-  async function pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly) {
+  async function pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly, znaneOgloszenia = []) {
+    tytuly = tytuly.filter(tytul => NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},znaneOgloszenia,stan.organizacja).status !== "AUTO_MATCH");
+    if (!tytuly.length) return {ogloszenia:znaneOgloszenia,liczbaZapytan:0};
     const pole = znajdzPoleWyszukiwaniaOgloszen();
     if (!pole || !tytuly.length) return {ogloszenia:[],liczbaZapytan:0};
     const pierwotnaWartosc = pole.value;
-    let ogloszenia = [];
+    let ogloszenia = znaneOgloszenia;
     let liczbaZapytan = 0;
+    const wykonaneZapytania = new Set();
     try {
       for (const tytul of tytuly) {
-        const warianty = NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(tytul,5);
+        if (NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},ogloszenia,stan.organizacja).status === "AUTO_MATCH") continue;
+        const warianty = NARZEDZIA_WYSZUKIWANIA.generujZapytaniaEventis(tytul);
         for (const wariant of warianty) {
+          if (wykonaneZapytania.has(wariant)) continue;
           await zastosujFiltrWyszukiwania(pole,wariant);
+          wykonaneZapytania.add(wariant);
           liczbaZapytan++;
           ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,pobierzOgloszeniaZDokumentu(document,location.href));
+          const rozstrzygniecie = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},ogloszenia,stan.organizacja);
+          console.debug("[Eventis][dopasowanie]",{
+            ...NARZEDZIA_WYSZUKIWANIA.rozlozTytul(tytul),wariantZapytania:wariant,powod:rozstrzygniecie.reason,
+            kandydaci:rozstrzygniecie.candidates.map(kandydat => ({...kandydat,powod:
+              kandydat.eventId === rozstrzygniecie.selectedCandidate?.eventId ? rozstrzygniecie.reason
+              : ogloszenia.find(ogloszenie => String(ogloszenie.eventisId) === kandydat.eventId)?.tytuly.some(tytulKandydata => NARZEDZIA_WYSZUKIWANIA.czyKonfliktStruktury(tytul,tytulKandydata)) ? "KONFLIKT_DLUGOSCI_LUB_FORMULY"
+              : kandydat.zgodnoscWariantu?.wymagany && kandydat.zgodnoscWariantu.status !== "ZGODNY" ? "NIEZGODNY_WARIANT_LOKALIZACJI"
+              : kandydat.score < NARZEDZIA_LISTY.PROG_DOPASOWANIA ? "ZA_NISKA_ZGODNOSC_TYTULU" : "NIEJEDNOZNACZNE_DOPASOWANIE"}))
+          });
+          if (rozstrzygniecie.status === "AUTO_MATCH") break;
         }
       }
     } finally {
@@ -265,23 +282,30 @@
     let ostatniBlad = "";
 
     while (oczekujace.length && odwiedzone.size < MAKSYMALNA_LICZBA_STRON) {
-      const adres = oczekujace.shift();
-      if (odwiedzone.has(adres)) continue;
-      odwiedzone.add(adres);
-      try {
-        const wynik = await pobierzDokumentListy(adres);
+      const partia = [];
+      while (oczekujace.length && partia.length < 3 && odwiedzone.size < MAKSYMALNA_LICZBA_STRON) {
+        const adres = oczekujace.shift();
+        if (odwiedzone.has(adres)) continue;
+        odwiedzone.add(adres);
+        partia.push(adres);
+      }
+      const wyniki = await Promise.allSettled(partia.map(pobierzDokumentListy));
+      for (const rezultat of wyniki) {
+        if (rezultat.status === "rejected") {
+          ostatniBlad = rezultat.reason?.message || String(rezultat.reason);
+          continue;
+        }
+        const wynik = rezultat.value;
         ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,pobierzOgloszeniaZDokumentu(wynik.dokument,wynik.adres));
         for (const kolejnyAdres of pobierzAdresyPaginacji(wynik.dokument,wynik.adres)) {
           if (!odwiedzone.has(kolejnyAdres) && !oczekujace.includes(kolejnyAdres)) oczekujace.push(kolejnyAdres);
         }
-      } catch (blad) {
-        ostatniBlad = blad?.message || String(blad);
       }
     }
     if (oczekujace.length && odwiedzone.size >= MAKSYMALNA_LICZBA_STRON) {
       ostatniBlad = `Osiągnięto bezpieczny limit ${MAKSYMALNA_LICZBA_STRON} stron listy.`;
     }
-    const wynikPola = await pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly);
+    const wynikPola = await pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly,ogloszenia);
     ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,wynikPola.ogloszenia);
     return {ogloszenia,liczbaStron:odwiedzone.size,liczbaZapytan:wynikPola.liczbaZapytan,blad:ostatniBlad};
   }
@@ -383,6 +407,7 @@
           && terminyListy.every(termin => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin).endsWith("|online")
             && terminyStrony.some(terminStrony => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(terminStrony) === NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin)));
         const stronaInnejLokalizacji = /\bonline\b/i.test(rozstrzygniecie.sourceTitle)
+          && tytulOnline !== NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul)
           && tytulBezMiejsca !== NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul);
         const wynik = (!stronaInnejLokalizacji
           && NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytul) >= stan.ustawienia.mappingWarningThreshold
@@ -390,7 +415,8 @@
         stronyZrodla.set(url,wynik);
         return wynik;
       }
-      let adresZrodla = mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt ? mapowanie.sourceUrl : "";
+      let adresZrodla = stan.reczneAdresySemper?.[`${stan.organizacja}|${rozstrzygniecie.normalizedSourceTitle}`]
+        || (mapowanie?.status === "ACTIVE" && mapowanie.lastVerifiedAt ? mapowanie.sourceUrl : "");
       if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adresZrodla)) {
         for (const wariant of NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(rozstrzygniecie.sourceTitle)) {
           const wyszukanie = await chrome.runtime.sendMessage({type:"FETCH_TEXT",payload:{url:"https://www.szkolenia-semper.pl/__ajax/_ajax_szukaj.php",method:"POST",headers:naglowkiWyszukiwania,body:new URLSearchParams({opc:"szukaj",co:wariant}).toString()}});
@@ -674,6 +700,7 @@
     const klucz = kluczRozstrzygniecia(rozstrzygniecie);
     const wynik = stan.preflight.wyniki[klucz];
     const elementy = stan.kolejka.filter(element => element.organization === stan.organizacja && element.normalizedTitle === rozstrzygniecie.normalizedSourceTitle);
+    if (wynik?.status === "NEEDS_ATTENTION" && (!wynik.error || /^NEEDS_ATTENTION:/.test(wynik.error))) return {klasa:"brak-dopasowania",etykieta:"Wymaga weryfikacji"};
     if (elementy.some(element => element.status === "ERROR") || wynik?.status === "ERROR" || wynik?.error) return {klasa:"blad",etykieta:"Błąd krytyczny"};
     if (rozstrzygniecie.manualStatus === "CREATE_NEW" || (!rozstrzygniecie.selectedCandidate && rozstrzygniecie.manualStatus !== "SKIPPED")) return {klasa:"brak-dopasowania",etykieta:"Brak dopasowania — możliwe nowe ogłoszenie"};
     if (wynik?.status === "COMPLETE") return {klasa:"kompletne",etykieta:"Wszystkie potwierdzone terminy są w Eventis"};
@@ -687,6 +714,10 @@
     const klucz = kluczRozstrzygniecia(pozycja);
     const wyglad = wygladPozycji(aktualna);
     const wynikTerminow = stan.preflight.wyniki[klucz];
+    const adresSemper = stan.reczneAdresySemper[klucz] || wynikTerminow?.queueContext?.sourceUrl || "";
+    const problemPrzypisaniaSemper = Boolean(wynikTerminow && !wynikTerminow.queueContext?.sourceUrl);
+    const recznySemper = stan.organizacja === "SEMPER" && aktualna.manualStatus !== "SKIPPED"
+      ? `<div class="esync-manual-preview"><label class="esync-small">Strona szkolenia SEMPER<input class="esync-input" data-reczny-semper="${esc(klucz)}" value="${esc(adresSemper)}" placeholder="https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,325.html"></label><button class="esync-btn" data-zatwierdz-semper="${esc(klucz)}" style="width:100%;margin-top:5px" ${stan.preflight.trwa ? "disabled" : ""}>Użyj linku SEMPER i sprawdź</button></div>` : "";
     const oznaczenieKolejki = wynikTerminow?.status === "NEEDS_ATTENTION"
       ? `<div class="esync-warning">⚠ ${esc(wynikTerminow.error || (wynikTerminow.reconciliation?.unmatchedQueueTerms.length ? "Potwierdzony w kolejce, ale nie znaleziono odpowiadającego terminu SEMPER." : "Konflikt odpotwierdzenia — wymaga uwagi."))}</div>`
       : wynikTerminow?.reconciliation?.terms.some(termin => termin.confirmedByQueue && !termin.confirmedOnSemper)
@@ -697,7 +728,7 @@
     const recznyUrl = ["NOT_FOUND","AMBIGUOUS"].includes(pozycja.status) && aktualna.manualStatus !== "CREATE_NEW" ? `<div class="esync-manual-preview"><input class="esync-input" data-reczny-url="${esc(klucz)}" placeholder="https://eventis.pl/event/edit/123"><button class="esync-btn" data-zatwierdz-url="${esc(klucz)}" style="width:100%;margin-top:5px">Wybierz ręcznie URL Eventis</button></div><button class="esync-btn" data-ponow-wyszukiwanie="1" style="width:100%;margin-top:5px">Wyszukaj ponownie</button>` : "";
     const wymagaDecyzji = !aktualna.selectedCandidate && aktualna.manualStatus !== "SKIPPED" && aktualna.manualStatus !== "CREATE_NEW";
     const decyzje = wymagaDecyzji ? `<div class="esync-info esync-small">${pozycja.status === "AMBIGUOUS" ? "Wybierz właściwe wydarzenie Eventis." : "Nie znaleziono dopasowania w Eventis."}</div>${kandydaci}${recznyUrl}<button class="esync-btn good" data-utworz-nowe="${esc(klucz)}" style="width:100%;margin-top:5px">Utwórz nowe ogłoszenie</button><button class="esync-btn warn" data-pomin-tytul="${esc(klucz)}" style="width:100%;margin-top:5px">Pomiń ten tytuł</button>` : "";
-    return `<div data-klucz-karty="${esc(klucz)}" class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${oznaczenieKolejki}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}<div class="esync-grid2" style="margin-top:9px"><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button><button class="esync-btn" data-zmien-mapowanie="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Zmień przypisane</button></div></div>`;
+    return `<div data-klucz-karty="${esc(klucz)}" class="esync-pozycja-szkolenia esync-kolejka-${wyglad.klasa}"><div class="esync-naglowek-szkolenia"><span class="esync-dioda" title="${esc(wyglad.etykieta)}"></span><div><div class="esync-term-main">${esc(pozycja.sourceTitle)}</div><div class="esync-term-sub">${esc(wyglad.etykieta)}</div></div></div>${renderujTerminyPozycji(pozycja)}${oznaczenieKolejki}${problemPrzypisaniaSemper ? recznySemper : ""}${tworzenie}${pominieto}${decyzje}${renderujPreflight(aktualna)}<div class="esync-grid2" style="margin-top:9px"><button class="esync-btn" data-preflight-retry="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Sprawdź ponownie</button><button class="esync-btn" data-zmien-mapowanie="${esc(klucz)}" ${stan.preflight.trwa ? "disabled" : ""}>Zmień przypisane</button></div>${recznySemper && !problemPrzypisaniaSemper ? `<details class="esync-manual-preview"><summary>Zmień link SEMPER</summary>${recznySemper}</details>` : ""}</div>`;
   }
 
   function renderujWyniki() {
@@ -914,6 +945,17 @@
       await odswiezPlanOtwarcia();
       renderuj();
     })));
+    $$('[data-zatwierdz-semper]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
+      const klucz = przycisk.dataset.zatwierdzSemper;
+      const pole = $$('[data-reczny-semper]').find(element => element.dataset.recznySemper === klucz);
+      const adres = NARZEDZIA_WYSZUKIWANIA.absolutnyUrlSemper(pole?.value || "");
+      if (!NARZEDZIA_WYSZUKIWANIA.czySzczegolySemper(adres)) return pokazKomunikat("Wklej pełny link do strony szkolenia SEMPER.");
+      const dane = await chrome.storage.local.get(["reczneAdresySemper"]);
+      const adresy = {...dane.reczneAdresySemper,[klucz]:adres};
+      await chrome.storage.local.set({reczneAdresySemper:adresy});
+      stan.reczneAdresySemper = adresy;
+      await uruchomPreflight(new Set([klucz]));
+    })));
     $$('[data-zatwierdz-url]').forEach(przycisk => przycisk.addEventListener("click",obsluzAsynchronicznie(async () => {
       const klucz = przycisk.dataset.zatwierdzUrl;
       const pole = $$('[data-reczny-url]').find(element => element.dataset.recznyUrl === klucz);
@@ -945,20 +987,22 @@
 
   async function inicjalizuj() {
     chrome.storage.onChanged.addListener((zmiany,obszar) => {
-      if (obszar !== "local" || !zmiany.eventisImportQueue) return;
-      stan.kolejka = Array.isArray(zmiany.eventisImportQueue.newValue) ? zmiany.eventisImportQueue.newValue : [];
+      if (obszar !== "local" || (!zmiany.eventisImportQueue && !zmiany[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN])) return;
+      if (zmiany[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]) stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(zmiany[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN].newValue);
+      if (zmiany.eventisImportQueue) stan.kolejka = Array.isArray(zmiany.eventisImportQueue.newValue) ? zmiany.eventisImportQueue.newValue : [];
       odtworzAnalizeTrwalejKolejki();
       odswiezPlanOtwarcia().then(renderuj).catch(blad => console.error("Odświeżenie kolejki Eventis",blad));
       renderuj();
     });
     await chrome.runtime.sendMessage({type:"RECONCILE_QUEUE"});
-    const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+    const dane = await chrome.storage.local.get(["settings","eventisImportQueue","pendingOperations","eventisQueueSchemaVersion","reczneAdresySemper","mappings",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     stan.ustawienia = {...KONFIGURACJA.DEFAULT_SETTINGS,...(dane.settings || {})};
     stan.organizacja = wykryjOrganizacje();
     stan.kolejka = NARZEDZIA_KOLEJKI.reconcileQueueState(NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(dane.eventisImportQueue) ? dane.eventisImportQueue : []),dane.pendingOperations || {});
     if (dane.eventisQueueSchemaVersion !== 2) await chrome.storage.local.set({eventisImportQueue:stan.kolejka,eventisQueueSchemaVersion:2});
     stan.mapowania = dane.mappings || {};
     stan.magazynMapowan = MAPOWANIA_WYDARZEN.normalizujMagazynMapowan(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+    stan.reczneAdresySemper = dane.reczneAdresySemper || {};
     stan.ogloszenia = pobierzOgloszeniaZDokumentu();
     odtworzAnalizeTrwalejKolejki();
     await odswiezPlanOtwarcia();

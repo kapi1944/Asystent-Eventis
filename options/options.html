@@ -81,6 +81,16 @@
         <button id="clearMappingsBtn" class="danger">Usuń zapamiętane powiązania</button>
       </div>
       <p class="hint">Kolejka oznaczeń arkusza pozostaje lokalna. Bridge działa obecnie wyłącznie w trybie odczytu i nie wysyła wpisów z kolejki.</p>
+      <h2>Blokady oczekujących operacji</h2>
+      <label>Ogłoszenie z oczekującą operacją
+        <select id="oczekujacaOperacja"><option value="">Ładowanie…</option></select>
+      </label>
+      <div class="buttons">
+        <button type="button" id="zwolnijBlokadeBtn" disabled>Zwolnij blokadę</button>
+        <button type="button" id="odswiezBlokadyBtn">Odśwież listę</button>
+      </div>
+      <p class="hint">Zwolnienie blokady nie usuwa danych formularza ani linków i nie potwierdza zapisu. Powiązane pozycje kolejki będą wymagały sprawdzenia.</p>
+      <div class="bridge-status" id="statusBlokady" aria-live="polite"></div>
     </section>
 
     <div class="savebar">

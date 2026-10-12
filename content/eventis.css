@@ -20,6 +20,7 @@
 .esync-badge.esync-zrodlo-potwierdzone{border-color:#60a5fa;background:#dbeafe;color:#1e40af}
 .esync-badge.esync-zrodlo-niepotwierdzone{border-color:#60a5fa;background:#e5e7eb;color:#475569}
 
+#esync-root[hidden]{display:none!important}
 #esync-root .esync-kategorie summary{cursor:pointer;font-weight:700;font-size:12px}
 #esync-root .esync-kategorie summary small{float:right;color:#667085}
 #esync-root .esync-kategorie-lista{display:flex;flex-direction:column;gap:5px;margin-bottom:7px}

@@ -248,6 +248,52 @@ test("CKEditor 5 synchronizuje model i źródło oraz emituje InputEvent na wła
   assert.deepEqual(zdarzenia.filter(([typ]) => typ === "keyup"),[["keyup",undefined," "],["keyup",undefined,"Backspace"]]);
 });
 
+test("CKEditor 5 wpisuje spację i usuwa ją w modelu bez ponownego ustawiania opisu", async () => {
+  const pole = utworzElement({name:"event[hours]"});
+  const czynnosci = [];
+  let tresc = "";
+  const akapit = {childCount:1,getChild() { return {is() { return false; }}; },is(typ) { return typ === "element"; }};
+  const korzen = {childCount:1,getChild() { return akapit; }};
+  const pozycja = {getShiftedBy(przesuniecie) { return {przesuniecie}; }};
+  const pisarz = {
+    createPositionAt(element, miejsce) {
+      assert.equal(element,akapit);
+      assert.equal(miejsce,"end");
+      return pozycja;
+    },
+    insertText(znak, miejsce) {
+      assert.equal(znak," ");
+      assert.equal(miejsce,pozycja);
+      tresc = "<p>2 dni </p>";
+      czynnosci.push("spacja");
+    },
+    remove(zakres) {
+      assert.equal(zakres.poczatek,pozycja);
+      assert.equal(zakres.koniec.przesuniecie,1);
+      tresc = "<p>2 dni</p>";
+      czynnosci.push("usunięcie");
+    }
+  };
+  const edytowalny = utworzElement({focus() { czynnosci.push("focus"); },blur() { czynnosci.push("blur"); }});
+  pole.ckeditorInstance = {
+    setData(html) { tresc = html; czynnosci.push("setData"); },
+    getData() { return tresc; },
+    updateSourceElement() { pole.value = tresc; },
+    ui:{getEditableElement() { return edytowalny; }},
+    model:{
+      document:{getRoot() { return korzen; }},
+      change(zmien) { zmien(pisarz); },
+      createRange(poczatek, koniec) { return {poczatek,koniec}; }
+    }
+  };
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>2 dni</p>"});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(czynnosci,["setData","focus","spacja","usunięcie","blur"]);
+  assert.equal(pole.value,"<p>2 dni</p>");
+  assert.deepEqual(pole.wartosciPrzyZdarzeniach,[...Array(5).fill("<p>2 dni </p>"),...Array(5).fill("<p>2 dni</p>")]);
+});
+
 test("CKEditor nie zwraca sukcesu przy pustym backing field mimo treści w modelu", async () => {
   const pole = utworzElement({name:"event[plan]"});
   let tresc = "";

@@ -1,0 +1,7 @@
+body{margin:0;font:13px/1.4 "Segoe UI",Arial,sans-serif;background:#fafbfd;overflow-x:hidden}nav{display:flex;flex-wrap:wrap;gap:8px;padding:8px}nav button{padding:6px;cursor:pointer}#komunikat{font-size:11px;color:#596579}
+#esync-root{position:static!important;width:100%!important;max-height:none;border:0;border-radius:0;box-shadow:none;backdrop-filter:none;overflow-wrap:anywhere}#esync-root.esync-collapsed{height:auto;border-radius:0}#esync-root .esync-body{max-height:none;overflow-x:hidden}#esync-root .esync-head{cursor:default!important;flex-wrap:wrap}#esync-root .esync-head-text{min-width:0}#esync-root input,#esync-root select,#esync-root textarea{max-width:100%;min-width:0}#esync-root .esync-grid2{grid-template-columns:repeat(2,minmax(0,1fr))}#esync-root .esync-row,#esync-root .esync-termin-kolejki,#esync-root .esync-akcje-terminu{flex-wrap:wrap}#esync-root .esync-naglowek-szkolenia>div{min-width:0}#esync-root .esync-panel-action{position:static}#esync-tryb-panelu{display:none}
+@media(max-width:340px){#esync-root .esync-grid2{grid-template-columns:minmax(0,1fr)}}
+body{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+nav{flex-shrink:0}
+#esync-root{flex:1;min-height:0}
+#esync-root .esync-body{overflow-y:auto}

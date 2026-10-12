@@ -74,13 +74,13 @@
 
   function oczyscWierszRekordu(wartosc) {
     let tekst = String(wartosc || "").trim();
-    if (/^"\s*(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\b/i.test(tekst) && tekst.endsWith('"')) {
+    if (/^"\s*(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE|BUR\s+NA\s+SZKOLENIU)\b/i.test(tekst) && tekst.endsWith('"')) {
       tekst = tekst.slice(1, -1).replace(/""/g, '"');
     }
     const bezHtml = tekst.replace(/<br\s*\/?\s*>/gi, " ");
     const bezRamki = usunRamkeWierszaMarkdown(bezHtml);
     return bezRamki
-      .replace(/^(?:\\?\|\s*)?(ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\s*\\?\|\s*/i, "$1 ")
+      .replace(/^(?:\\?\|\s*)?(ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE|BUR\s+NA\s+SZKOLENIU)\s*\\?\|\s*/i, "$1 ")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -88,6 +88,7 @@
   function znajdzStatus(tekst) {
     if (/ODPOTWIERDZONE/i.test(tekst)) return STATUSY_REKORDU_ARKUSZA.ODPOTWIERDZONY;
     if (/POTWIERDZONE\s+SZKOLENIE/i.test(tekst)) return STATUSY_REKORDU_ARKUSZA.POTWIERDZONY;
+    if (/^BUR\s+NA\s+SZKOLENIU\b/i.test(tekst)) return STATUSY_REKORDU_ARKUSZA.POTWIERDZONY;
     return null;
   }
 
@@ -111,6 +112,7 @@
     return tekst
       .replace(/^ODPOTWIERDZONE\s*/i, "")
       .replace(/^POTWIERDZONE\s+SZKOLENIE\s*/i, "")
+      .replace(/^BUR\s+NA\s+SZKOLENIU\s*/i, "")
       .trim();
   }
 
@@ -156,7 +158,7 @@
   function analizujReczneWklejenie(tekst) {
     const wiersze = [];
     for (const linia of String(tekst || "").split(/\r\n|[\r\n]/)) {
-      if (/^\s*"?\s*(?:\|\s*)?(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE)\b/i.test(linia)) {
+      if (/^\s*"?\s*(?:\|\s*)?(?:\\?\|\s*)?(?:ODPOTWIERDZONE|POTWIERDZONE\s+SZKOLENIE|BUR\s+NA\s+SZKOLENIU)\b/i.test(linia)) {
         wiersze.push(linia);
       } else if (wiersze.length) {
         wiersze[wiersze.length - 1] += `\n${linia}`;

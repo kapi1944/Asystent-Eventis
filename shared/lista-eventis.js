@@ -56,10 +56,15 @@
       if (!ogloszenie?.eventisId || !ogloszenie.url) continue;
       if (ogloszenie.organization && ogloszenie.organization !== organizacja) continue;
       const tytuly = Array.isArray(ogloszenie.tytuly) ? ogloszenie.tytuly : [ogloszenie.tytul];
+      const konfliktWariantu = tytuly.some(tytul =>
+        NARZEDZIA_WYSZUKIWANIA.czyKonfliktStruktury(sourceTitle,tytul)
+        && NARZEDZIA_WYSZUKIWANIA.ocenTytulEventis(
+          NARZEDZIA_WYSZUKIWANIA.rozlozTytul(sourceTitle).rdzenTytulu,
+          NARZEDZIA_WYSZUKIWANIA.rozlozTytul(tytul).rdzenTytulu) >= PROG_DOPASOWANIA);
       for (const tytul of tytuly) {
         const normalizedTitle = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul);
         if (!normalizedTitle) continue;
-        const score = NARZEDZIA_WYSZUKIWANIA.ocenWynikWyszukiwania(normalizedSourceTitle,normalizedTitle);
+        const score = konfliktWariantu ? 0 : NARZEDZIA_WYSZUKIWANIA.ocenTytulEventis(sourceTitle,tytul);
         const kandydat = {
           eventId:String(ogloszenie.eventisId),
           url:ogloszenie.url,
@@ -84,9 +89,9 @@
     const przewaga = Number(opcje.minimalnaPrzewaga ?? MINIMALNA_PRZEWAGA);
     const candidates = kandydaciEventis(ogloszenia,organizacja,normalizedSourceTitle,sourceTitle);
     const wariant = NARZEDZIA_WYSZUKIWANIA.rozpoznajWariantLokalizacyjnyTrzydniowy(sourceTitle);
-    const kandydaciDoAutoWyboru = wariant
-      ? candidates.filter(kandydat => kandydat.zgodnoscWariantu?.status === "ZGODNY")
-      : candidates;
+    const kandydaciDoAutoWyboru = candidates.filter(kandydat =>
+      kandydat.score > 0 && !NARZEDZIA_WYSZUKIWANIA.czyKonfliktStruktury(sourceTitle,kandydat.title)
+      && (!wariant || kandydat.zgodnoscWariantu?.status === "ZGODNY"));
     const exactMatches = kandydaciDoAutoWyboru.filter(kandydat => kandydat.matchType === "EXACT");
 
     if (exactMatches.length === 1) {
@@ -174,6 +179,13 @@
   function wybierzRecznyUrlEventis(rozstrzygniecie, wartosc) {
     const kandydat = utworzKandydataZUrlEventis(wartosc,rozstrzygniecie?.sourceTitle);
     return kandydat ? {...rozstrzygniecie,selectedCandidate:kandydat,manualStatus:"MANUAL_MATCH"} : null;
+  }
+
+  function pobierzBiezaceOgloszenie(dokument, adres) {
+    const eventisId = pobierzIdEventisZUrl(adres);
+    const pole = dokument.querySelector('textarea[name="event[title]"],input[name="event[title]"],#title');
+    const tytul = String(pole?.value || pole?.textContent || "").trim();
+    return eventisId && tytul ? {eventisId,url:adres,tytuly:[tytul]} : null;
   }
 
   function utworzPlanOtwarcia(rozstrzygniecia = []) {
@@ -323,6 +335,7 @@
     scalOgloszeniaEventis,
     pobierzIdEventisZUrl,
     utworzKandydataZUrlEventis,
+    pobierzBiezaceOgloszenie,
     pogrupujElementyKolejki,
     rozwiazGrupeTytulu,
     wybierzKandydataRozstrzygniecia,

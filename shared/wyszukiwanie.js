@@ -124,6 +124,68 @@
     }).slice(0, limit);
   }
 
+  function rozlozTytul(tytul) {
+    const oryginalnyTytul = oczyscLinie(tytul);
+    const kwalifikatory = [];
+    let liczbaDni = null;
+    let rdzenTytulu = oryginalnyTytul.replace(/\b(?:(\d+)\s*[-–—]?\s*dniow(?:e|y|a|ego|ych|ym|ymi)|(?:jedno|dwu|trzy)dniow(?:e|y|a|ego|ych|ym|ymi))\b/gi, fragment => {
+      liczbaDni = Number(fragment.match(/\d+/)?.[0]) || (/^jedno/i.test(fragment) ? 1 : /^dwu/i.test(fragment) ? 2 : 3);
+      return " ";
+    });
+    const formuly = [];
+    rdzenTytulu = rdzenTytulu.replace(/\b(?:certyfikowane\s+szkolenie\s+online|szkolenie\s+online|online|stacjonarn(?:e|y|a)|warsztaty(?:\s+(?:praktyczne|szkoleniowe))?|szkolenie\s+praktyczne|próbny\s+egzamin)\b/gi, fragment => {
+      kwalifikatory.push(fragment);
+      if (/online/i.test(fragment)) formuly.push("ONLINE");
+      if (/stacjonarn/i.test(fragment)) formuly.push("STACJONARNE");
+      return " ";
+    });
+    rdzenTytulu = usunKoncowkeMarketingowa(rdzenTytulu)
+      .replace(/\[\s*\]|\(\s*\)/g," ").replace(/\s+/g," ").replace(/\s+([.,;])/g,"$1").trim();
+    return {oryginalnyTytul,rdzenTytulu,liczbaDni,formula:[...new Set(formuly)].join("/"),kwalifikatory};
+  }
+
+  function czyKonfliktStruktury(tytul, kandydat) {
+    const zrodlo = rozlozTytul(tytul);
+    const cel = rozlozTytul(kandydat);
+    return Boolean(zrodlo.liczbaDni && cel.liczbaDni && zrodlo.liczbaDni !== cel.liczbaDni)
+      || Boolean(zrodlo.formula && cel.formula && zrodlo.formula !== cel.formula);
+  }
+
+  function generujZapytaniaEventis(tytul) {
+    const {oryginalnyTytul,rdzenTytulu} = rozlozTytul(tytul);
+    const segment = rdzenTytulu.split(/\.\s+/)[0].replace(/[.]+$/,"");
+    const poczatek = tytulPrzedPierwszymSeparatorem(segment);
+    const warianty = [oryginalnyTytul,rdzenTytulu,poczatek,istotneSlowa(rdzenTytulu).slice(0,9).join(" ")];
+    const widziane = new Set();
+    return warianty.filter(wariant => {
+      const klucz = normalizujTytul(wariant);
+      if (klucz.length < 12 || istotneSlowa(wariant).length < 2 || widziane.has(klucz)) return false;
+      widziane.add(klucz);
+      return true;
+    });
+  }
+
+  function ocenTytulEventis(tytul, kandydat) {
+    if (czyKonfliktStruktury(tytul,kandydat)) return 0;
+    const zrodlo = rozlozTytul(tytul);
+    const cel = rozlozTytul(kandydat);
+    const rdzenZrodla = normalizujTytul(zrodlo.rdzenTytulu);
+    const rdzenCelu = normalizujTytul(cel.rdzenTytulu);
+    if (rdzenZrodla && rdzenZrodla === rdzenCelu) return 1;
+    let wynik = ocenWynikWyszukiwania(zrodlo.rdzenTytulu,cel.rdzenTytulu);
+    const tokenyZrodla = zbiorTokenow(zrodlo.rdzenTytulu);
+    const tokenyCelu = zbiorTokenow(cel.rdzenTytulu);
+    const rozne = [...tokenyZrodla].filter(slowo => !tokenyCelu.has(slowo));
+    const inne = [...tokenyCelu].filter(slowo => !tokenyZrodla.has(slowo));
+    // Podobny początek nie może ukryć odmiennego tematu w dalszej części tytułu.
+    if (rozne.length && inne.length) wynik = Math.min(wynik,0.77);
+    else {
+      if (zrodlo.liczbaDni && zrodlo.liczbaDni === cel.liczbaDni) wynik += 0.02;
+      if (zrodlo.formula && zrodlo.formula === cel.formula) wynik += 0.01;
+    }
+    return Math.min(1,wynik);
+  }
+
   function znacznikiLiczbowe(wartosc) {
     const tekst = normalizujTytul(wartosc);
     const wynik = new Set();
@@ -338,6 +400,10 @@
     zbiorTokenow,
     usunKoncowkeMarketingowa,
     generujWariantyZapytania,
+    rozlozTytul,
+    czyKonfliktStruktury,
+    generujZapytaniaEventis,
+    ocenTytulEventis,
     ocenZgodnoscTytulow,
     ocenWynikWyszukiwania,
     absolutnyUrlSemper,

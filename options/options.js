@@ -46,7 +46,51 @@ async function load() {
   $("sheetBridgeKey").placeholder = zapisanyKluczMostu ? "Klucz jest zapisany — wpisz nowy, aby zastąpić" : "Wpisz klucz Bridge";
   uzupelnijListeKart([],s.sheetName || "");
   $("stats").textContent = `Powiązania: ${Object.keys(mappings).length} • wpisy audytu: ${auditLog.length} • oczekujące oznaczenia arkusza: ${sheetOutbox.filter(x=>x.status!=="DONE").length}`;
+  await odswiezListeBlokad();
 }
+
+async function odswiezListeBlokad() {
+  const {pendingOperations = {}} = await chrome.storage.local.get(["pendingOperations"]);
+  const lista = $("oczekujacaOperacja");
+  const poprzedniWybor = lista.value;
+  lista.replaceChildren();
+  const opisyStatusow = {CLAIMED:"wypełnianie formularza",WAITING_FOR_SAVE:"oczekiwanie na zapis",SAVE_SUBMITTED:"zapis bez potwierdzenia"};
+  for (const [klucz,operacja] of Object.entries(pendingOperations)) {
+    const opcja = document.createElement("option");
+    opcja.value = klucz;
+    opcja.dataset.identyfikatorOperacji = operacja.operationId || operacja.id || "";
+    opcja.textContent = `${operacja.organization || ""} · ${operacja.eventisTitleAtStart || operacja.eventisTitle || operacja.eventisIdAtStart || operacja.eventisId || "Ogłoszenie"} · ${opisyStatusow[operacja.status] || "oczekująca operacja"}`;
+    lista.appendChild(opcja);
+  }
+  if (!lista.options.length) {
+    const opcja = document.createElement("option");
+    opcja.value = "";
+    opcja.textContent = "Brak oczekujących operacji";
+    lista.appendChild(opcja);
+  } else if (pendingOperations[poprzedniWybor]) lista.value = poprzedniWybor;
+  $("zwolnijBlokadeBtn").disabled = !lista.value;
+}
+
+$("odswiezBlokadyBtn").addEventListener("click",odswiezListeBlokad);
+$("zwolnijBlokadeBtn").addEventListener("click",async()=>{
+  const lista = $("oczekujacaOperacja");
+  const opcja = lista.selectedOptions[0];
+  if (!opcja?.value) return;
+  const przycisk = $("zwolnijBlokadeBtn");
+  const status = $("statusBlokady");
+  przycisk.disabled = true;
+  try {
+    const wynik = await chrome.runtime.sendMessage({type:"RELEASE_PENDING_OPERATION",klucz:opcja.value,identyfikatorOperacji:opcja.dataset.identyfikatorOperacji});
+    if (!wynik?.ok) throw new Error(wynik?.message || "Nie udało się zwolnić blokady.");
+    status.textContent = "Blokada zwolniona. Odśwież kartę ogłoszenia Eventis i sprawdź terminy przed zapisem.";
+    status.classList.remove("error");
+  } catch (blad) {
+    status.textContent = blad.message;
+    status.classList.add("error");
+  } finally {
+    await odswiezListeBlokad();
+  }
+});
 
 async function save(czyPokazacStatus=true) {
   const settings = {

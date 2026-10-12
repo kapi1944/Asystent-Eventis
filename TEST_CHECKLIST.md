@@ -55,3 +55,16 @@
 - [ ] Potwierdzony zapis nowego terminu tworzy lokalny wpis `PENDING_SHEET_MAPPING`.
 - [ ] `Zarejestruj potwierdzone, które już istnieją` również tworzy wpis.
 - [ ] Idempotency key zapobiega wielokrotnemu dodaniu tego samego wpisu operatora.
+
+## Matcher i panel boczny Chrome
+- [ ] Przeładuj rozszerzenie w chrome://extensions i odśwież otwarte karty Eventis.
+- [ ] Na /company wklej rekord kierownika składowiska z 2-dniowym szkoleniem, próbnym egzaminem i dopiskiem online: analiza wybiera #89180.
+- [ ] Wybierz ikonę „Panel boczny”: cała nakładka znika, a wyszukiwarka, tytuły, terminy i akcje Eventis pozostają dostępne.
+- [ ] W panelu bocznym sprawdź import, otwieranie i uzupełnianie, ponowną weryfikację, zmianę przypisania, URL, nowe ogłoszenie i pomijanie.
+- [ ] Odśwież /company: preferencja bocznego pozostaje zachowana; ikoną rozszerzenia możesz ponownie otworzyć zamknięty panel.
+- [ ] Wybierz „Panel pływający”: nakładka wraca; jeśli Chrome nie zamknie bocznego automatycznie, zamknij go ręcznie.
+- [ ] Sprawdź panel przy 280, 350, 450 i 700 px: brak poziomego przewijania.
+- [ ] Zmień aktywną kartę Eventis: panel pokazuje jej stan; kliknięcie ze starego widoku nie wykonuje akcji na innej karcie.
+- [ ] Z aktywnym rekordem kolejki otwórz /event/edit/89180: „Użyj bieżącego ogłoszenia #89180” zapisuje przypisanie; po ponownej analizie i zmianie dopisku nadal działa.
+- [ ] Na stronie niezgodnego szkolenia brak propozycji użycia bieżącego ogłoszenia. Wariant 2-dniowy nie przypisuje się automatycznie do 3-dniowego.
+- [ ] Sprawdź tryb na przeglądarce bez sidePanel.open: floating pozostaje dostępny.

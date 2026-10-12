@@ -76,6 +76,27 @@ test("manualny parser rozpoznaje POTWIERDZONE SZKOLENIE i dane ONLINE", () => {
   assert.equal(rekord.participants,12);
 });
 
+test("BUR NA SZKOLENIU jest potwierdzonym rekordem bez zmiany tytułu i klucza", () => {
+  const tytul = "Kontrola finansowa w projektach unijnych - aspekt praktyczny z analizą uprawnień kontrolujących oraz dowodów zbieranych w trakcie kontroli. 1-dniowe szkolenie warsztatowe. Certyfikowane szkolenie online";
+  const wpis = `| BUR NA SZKOLENIU | "${tytul}", 2026-10-14 do 2026-10-14, ONLINE`;
+  const potwierdzony = narzedzia.parseManualRecordLine(wpis.replace("BUR NA SZKOLENIU","POTWIERDZONE SZKOLENIE"));
+  for (const wariant of [wpis,`"${wpis}"`,wpis.replace("BUR NA SZKOLENIU","bur na szkoleniu"),wpis.replaceAll("|","\\|")]) {
+    const rekordy = narzedzia.parseManualPaste(wariant);
+    assert.equal(rekordy.length,1);
+    assert.equal(rekordy[0].status,"CONFIRMED");
+    assert.equal(rekordy[0].title,tytul);
+    assert.equal(rekordy[0].start,"2026-10-14");
+    assert.equal(rekordy[0].end,"2026-10-14");
+    assert.equal(rekordy[0].city,"Online");
+    assert.equal(rekordy[0].error,undefined);
+    assert.equal(narzedzia.recordKey(rekordy[0]),narzedzia.recordKey(potwierdzony));
+  }
+  const mieszane = narzedzia.parseManualPaste(`${wpis}\n| ODPOTWIERDZONE | "Prawo pracy", 2026-10-15, ONLINE\n${wpis.replace("BUR NA SZKOLENIU","POTWIERDZONE SZKOLENIE")}`);
+  assert.deepEqual(mieszane.map(rekord => rekord.status),["CONFIRMED","DECONFIRMED","CONFIRMED"]);
+  const bezCudzyslowu = narzedzia.parseManualRecordLine("BUR NA SZKOLENIU Prawo pracy, 2026-10-14, ONLINE");
+  assert.equal(bezCudzyslowu.title,"Prawo pracy");
+});
+
 test("manualny parser rozpoznaje ODPOTWIERDZONE, miasto i skrócony zakres", () => {
   const rekord = narzedzia.parseManualRecordLine(
     'ODPOTWIERDZONE "Prawo pracy" 28-29.09.2026 Warszawa 8 osób'

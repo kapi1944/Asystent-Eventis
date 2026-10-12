@@ -6,6 +6,39 @@ const OTWIERANIE_WYDARZEN = globalThis.OtwieranieWydarzenEventis;
 const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
 const kolejkiClaimowOperacji = new Map();
 
+function czyKartaPaneluEventis(adres) {
+  return /^https:\/\/(?:[\w-]+\.)*eventis\.pl\/(?:company(?:\/|$|\?)|event\/(?:edit|add)(?:\/|$|\?))/i.test(adres || "");
+}
+
+async function ustawDostepnoscPanelu(karta) {
+  if (!chrome.sidePanel?.setOptions || !karta?.id) return;
+  await chrome.sidePanel.setOptions({tabId:karta.id,path:"sidepanel.html",enabled:czyKartaPaneluEventis(karta.url)});
+}
+
+if (chrome.sidePanel?.setOptions) {
+  chrome.sidePanel.setOptions({enabled:false})
+    .then(() => chrome.tabs.query({}))
+    .then(karty => Promise.all(karty.map(ustawDostepnoscPanelu)))
+    .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+  chrome.tabs.onUpdated?.addListener((identyfikator,zmiany,karta) => {
+    if (zmiany.url !== undefined || zmiany.status === "complete") {
+      ustawDostepnoscPanelu({...karta,id:identyfikator,url:zmiany.url ?? karta.url})
+        .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+    }
+  });
+  chrome.tabs.onActivated?.addListener(({tabId:identyfikator}) => {
+    chrome.tabs.get(identyfikator).then(ustawDostepnoscPanelu)
+      .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+  });
+}
+
+chrome.action?.onClicked?.addListener(karta => {
+  if (!chrome.sidePanel?.open || !karta?.id || !czyKartaPaneluEventis(karta.url)) return;
+  chrome.sidePanel.open({tabId:karta.id})
+    .then(() => chrome.storage.local.set({eventisTrybPanelu:"boczny"}))
+    .catch(blad => console.warn("Otwarcie panelu bocznego",blad));
+});
+
 async function wykonajClaimSeryjnie(kluczClaimu, akcja) {
   const poprzedni = kolejkiClaimowOperacji.get(kluczClaimu) || Promise.resolve();
   const biezacy = poprzedni.catch(() => {}).then(akcja);
@@ -54,6 +87,27 @@ async function wykonajAkcjeMostuArkusza(akcja) {
   } catch (_) {
     return KLIENT_MOSTU_ARKUSZA.utworzWynikBledu("INTERNAL_ERROR","");
   }
+}
+
+async function zwolnijBlokadeOperacji(klucz, identyfikatorOperacji) {
+  return wykonajClaimSeryjnie("pendingOperations",() => wykonajClaimSeryjnie("eventisImportQueue",async()=>{
+    const {pendingOperations = {},eventisImportQueue = []} = await chrome.storage.local.get(["pendingOperations","eventisImportQueue"]);
+    const operacja = pendingOperations[klucz];
+    if (!operacja) return {ok:true};
+    if (!identyfikatorOperacji || (operacja.operationId || operacja.id) !== identyfikatorOperacji) {
+      return {ok:false,message:"Operacja zmieniła się. Odśwież listę blokad i wybierz ją ponownie."};
+    }
+    const wiek = Date.now() - Date.parse(operacja.saveRequestedAt || operacja.updatedAt || operacja.createdAt);
+    if ((operacja.status === "CLAIMED" && wiek < 120000)
+      || (operacja.status === "SAVE_SUBMITTED" && wiek < globalThis.NarzedziaOperacjiEventis.CZAS_OCZEKIWANIA_ZAPISU)) {
+      return {ok:false,message:"Trwa wypełnianie lub zapis formularza. Poczekaj na zakończenie i odśwież listę blokad."};
+    }
+    const kolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,operacja,
+      NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI,"Zwolniono blokadę w ustawieniach. Sprawdź terminy w Eventis przed ponowieniem.");
+    delete pendingOperations[klucz];
+    await chrome.storage.local.set({pendingOperations,eventisImportQueue:kolejka});
+    return {ok:true};
+  }));
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
@@ -229,12 +283,33 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
         } else {
           // Spacja trafia przed końcowe znaczniki, bez zmiany struktury HTML.
           const zeSpacja = czyHtml ? tresc.replace(/((?:<\/[^>]+>\s*)*)$/, " $1") : tresc + " ";
+          const model = instancja?.model;
+          const korzen = model?.document?.getRoot?.();
+          let zakresSpacji = null;
+          const czyEdycjaModelu = korzen && typeof model.change === "function"
+            && typeof model.createRange === "function";
           try {
-            await ustaw(zeSpacja);
+            element?.focus?.();
+            if (czyEdycjaModelu) {
+              model.change(pisarz => {
+                let koniec = korzen;
+                while (koniec.getChild?.(koniec.childCount - 1)?.is?.("element")) {
+                  koniec = koniec.getChild(koniec.childCount - 1);
+                }
+                const pozycja = pisarz.createPositionAt(koniec,"end");
+                pisarz.insertText(" ",pozycja);
+                zakresSpacji = model.createRange(pozycja,pozycja.getShiftedBy(1));
+              });
+            } else {
+              await ustaw(zeSpacja);
+            }
             powiadom(false);
+            await new Promise(rozwiaz => setTimeout(rozwiaz,50));
           } finally {
-            await ustaw(tresc);
+            if (zakresSpacji) model.change(pisarz => pisarz.remove(zakresSpacji));
+            else await ustaw(tresc);
             powiadom(true);
+            element?.blur?.();
           }
         }
         if (odczytaj() !== tresc || (field && field.value !== tresc)) {
@@ -357,6 +432,28 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     switch (message?.type) {
+      case "CZY_PANEL_BOCZNY": {
+        sendResponse({ok:true,obslugiwany:typeof chrome.sidePanel?.open === "function"});
+        break;
+      }
+      case "OTWORZ_PANEL_BOCZNY": {
+        if (!chrome.sidePanel?.open || !sender.tab?.id) throw new Error("Panel boczny jest niedostępny. Pozostawiono panel pływający.");
+        if (!czyKartaPaneluEventis(sender.url || sender.tab.url)) throw new Error("Otwórz aktywną kartę listy lub edycji Eventis.");
+        await chrome.sidePanel.open({tabId:sender.tab.id});
+        await chrome.storage.local.set({eventisTrybPanelu:"boczny"});
+        sendResponse({ok:true});
+        break;
+      }
+      case "PRZEKAZ_DO_PANELU": {
+        if (sender.tab || sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("Nieprawidłowy nadawca panelu.");
+        const [karta] = await chrome.tabs.query({active:true,lastFocusedWindow:true});
+        if (!karta?.id || !czyKartaPaneluEventis(karta.url)) throw new Error("Otwórz aktywną kartę listy lub edycji Eventis.");
+        if (message.identyfikatorKarty && message.identyfikatorKarty !== karta.id) throw new Error("Aktywna karta zmieniła się. Odśwież panel.");
+        if (!["POBIERZ_WIDOK_PANELU","AKCJA_PANELU"].includes(message.wiadomosc?.type)) throw new Error("Nieobsługiwany komunikat panelu.");
+        const wynik = await chrome.tabs.sendMessage(karta.id,message.wiadomosc);
+        sendResponse({...wynik,identyfikatorKarty:karta.id});
+        break;
+      }
       case "FETCH_TEXT": {
         const result = await fetchText(message.payload);
         sendResponse({ ok: true, ...result });
@@ -388,6 +485,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           zapisz:async pendingOperations => chrome.storage.local.set({pendingOperations})
         },{...operacja,tabId:sender.tab.id}));
         sendResponse(wynik);
+        break;
+      }
+      case "RELEASE_PENDING_OPERATION": {
+        sendResponse(await zwolnijBlokadeOperacji(message.klucz,message.identyfikatorOperacji));
         break;
       }
       case "GET_TAB_CONTEXT": {

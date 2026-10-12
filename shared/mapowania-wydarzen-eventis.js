@@ -73,8 +73,15 @@
   }
 
   function pobierzBezpieczneMapowanie(magazyn, organizacja, normalizedTitle, sourceTitle) {
-    const wpis = pobierzMapowanie(magazyn,organizacja,normalizedTitle);
+    const tytul = sourceTitle || normalizedTitle;
+    const zgodne = Object.values(normalizujMagazynMapowan(magazyn).entries).filter(wpis =>
+      wpis.status === "ACTIVE" && wpis.organization === String(organizacja || "").toUpperCase()
+      && NARZEDZIA_WYSZUKIWANIA.ocenTytulEventis(tytul,wpis.sourceTitle) === 1);
+    const wpis = pobierzMapowanie(magazyn,organizacja,normalizedTitle)
+      || (new Set(zgodne.map(wpis => wpis.eventId)).size === 1 ? zgodne[0] : null);
     if (!wpis) return null;
+    if (NARZEDZIA_WYSZUKIWANIA.czyKonfliktStruktury(tytul,wpis.eventTitle)
+      || NARZEDZIA_WYSZUKIWANIA.ocenTytulEventis(tytul,wpis.sourceTitle) < 0.93) return null;
     const zgodnosc = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscWariantuLokalizacyjnego(sourceTitle || normalizedTitle,wpis.eventTitle);
     return zgodnosc.wymagany && zgodnosc.status !== "ZGODNY" ? null : wpis;
   }
@@ -99,6 +106,8 @@
 
   function usunMapowanie(magazyn, organizacja, normalizedTitle) {
     const wynik = normalizujMagazynMapowan(magazyn);
+    const zapamietane = pobierzBezpieczneMapowanie(wynik,organizacja,normalizedTitle,normalizedTitle);
+    if (zapamietane) delete wynik.entries[kluczMapowania(organizacja,zapamietane.normalizedTitle)];
     delete wynik.entries[kluczMapowania(organizacja,normalizedTitle)];
     return wynik;
   }

@@ -74,11 +74,13 @@
     manualMatches: [],
     manualPreview: null,
     eventisImportQueue: [],
+    przypisaneRecznieBiezacejKarty: [],
     tabId: null,
     pendingOperation: null,
     pendingLooksSaved: false,
     zapis: {saveState:"IDLE"},
     trwaRozpoczynanieZapisu: false,
+    trwaWypelnianieOperacji: false,
     weryfikacjaOtwartejKarty: null,
     przypisaneElementyKolejki: [],
     formularzZmieniony: false,
@@ -237,7 +239,7 @@
 
   async function loadSettingsAndState() {
     state.tabId = (await chrome.runtime.sendMessage({type:"GET_TAB_CONTEXT"}))?.tabId || null;
-    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue","eventisQueueSchemaVersion"]);
+    const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue","eventisQueueSchemaVersion",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
@@ -247,6 +249,10 @@
     const pendingOperations = data.pendingOperations || {};
     state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
     state.eventisImportQueue = NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : []);
+    state.przypisaneRecznieBiezacejKarty = kandydaciBiezacegoOgloszenia().filter(grupa => {
+      const mapowanie = MAPOWANIA_WYDARZEN.pobierzBezpieczneMapowanie(data[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN],state.organization,grupa.klucz,grupa.tytul);
+      return String(mapowanie?.eventId || "") === String(state.eventisId);
+    }).flatMap(grupa => grupa.elementy.map(element => element.id));
     if (data.eventisQueueSchemaVersion !== 2) await storageSet({eventisImportQueue:state.eventisImportQueue,eventisQueueSchemaVersion:2});
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
@@ -302,6 +308,7 @@
   }
 
   async function forgetMapping() {
+    if (!await zwolnijOczekujacaOperacje()) return;
     const { mappings = {} } = await storageGet(["mappings"]);
     const key = mappingKey(state.organization,state.eventisId);
     delete mappings[key];
@@ -775,6 +782,7 @@
   }
 
   async function zapiszFormularzZPanelu(wymusZapis = false) {
+    if (state.trwaWypelnianieOperacji) return toast("Trwa wypełnianie formularza. Poczekaj na zakończenie.");
     if (!NARZEDZIA_OPERACJI.czyMoznaRozpoczacZapis(state.zapis,state.trwaRozpoczynanieZapisu)) return;
     if (!state.formularzZmieniony && !wymusZapis) return;
     const formularz = $("#eventForm");
@@ -1113,6 +1121,15 @@
   }
 
   async function uzyskajClaimOperacji(operacja) {
+    if (czyMoznaKontynuowacOperacje(state.pendingOperation,operacja.queueItemIds.length > 0)) {
+      const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
+      const aktualna = pendingOperations[kluczStorageOperacji(state.pendingOperation)];
+      if (identyfikatorOperacji(aktualna) === identyfikatorOperacji(state.pendingOperation)
+        && czyMoznaKontynuowacOperacje(aktualna,operacja.queueItemIds.length > 0)) {
+        state.pendingOperation=aktualna;
+        return {ok:true,operacja:aktualna};
+      }
+    }
     const wynik = await chrome.runtime.sendMessage({type:"CLAIM_PENDING_OPERATION",operation:operacja});
     if (!wynik.ok) {
       state.pendingOperation=wynik.operacja || null;
@@ -1139,8 +1156,8 @@
     }
     const potwierdzona = {
       ...pendingOperations[key],
-      expectedTerms:terms.map(przygotujTerminDoKolejki),
-      queueItemIds:[...queueItemIds],
+      expectedTerms:unikalneTerminy([...(operacja.status === "WAITING_FOR_SAVE" ? terminyOperacji(operacja) : []),...terms]).map(przygotujTerminDoKolejki),
+      queueItemIds:[...new Set([...(operacja.status === "WAITING_FOR_SAVE" ? operacja.queueItemIds || [] : []),...queueItemIds])],
       skipSheetOutbox:queueItemIds.length>0,
       status:"WAITING_FOR_SAVE",
       filledAt:new Date().toISOString()
@@ -1151,21 +1168,64 @@
     await storageSet({pendingOperations});
     await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== aktualnaKolejka[indeks]));
     state.pendingOperation=potwierdzona;
+    state.zapis={saveState:"IDLE"};
     return potwierdzona;
   }
 
-  async function sprawdzBrakOczekujacejOperacji() {
-    if (state.pendingOperation) {
-      render();
-      toast("Najpierw rozlicz poprzednią operację oczekującą na zapis Eventis.");
+  function czyTrwaZapis() {
+    return state.trwaRozpoczynanieZapisu || trwaRozstrzyganieZapisu
+      || ["PREPARING_SAVE","SUBMITTING","WAITING_FOR_EVENTIS"].includes(state.zapis?.saveState);
+  }
+
+  function czyMoznaKontynuowacOperacje(operacja,zKolejki) {
+    return !!operacja && !czyTrwaZapis() && operacja.status === "WAITING_FOR_SAVE"
+      && operacja.createdPageLoadId === PAGE_LOAD_ID && operacja.organization === state.organization
+      && operacja.sourceUrl === state.source?.url && !!operacja.skipSheetOutbox === zKolejki;
+  }
+
+  async function zwolnijOczekujacaOperacje() {
+    if (state.trwaWypelnianieOperacji) {
+      toast("Trwa wypełnianie formularza. Poczekaj na zakończenie.");
+      return false;
+    }
+    if (czyTrwaZapis()) {
+      toast("Trwa zapis Eventis. Poczekaj na jego wynik.");
+      return false;
+    }
+    const { pendingOperations = {}, eventisImportQueue = [] } = await storageGet(["pendingOperations","eventisImportQueue"]);
+    const operacja = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
+    if (operacja?.status === "CLAIMED") {
+      toast("Trwa wypełnianie formularza. Poczekaj na zakończenie.");
+      return false;
+    }
+    if (operacja) {
+      const kolejka = NARZEDZIA_KOLEJKI.rozliczElementyOperacji(eventisImportQueue,operacja,
+        NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI,"Przerwano oczekiwanie na zapis. Sprawdź terminy w Eventis przed ponowieniem.");
+      delete pendingOperations[kluczStorageOperacji(operacja)];
+      await storageSet({pendingOperations});
+      await zapiszElementyKolejki(kolejka.filter((element,indeks) => element !== eventisImportQueue[indeks]));
+    }
+    zakonczObserwacjeZapisu();
+    sessionStorage.removeItem(KLUCZ_OCZEKUJACEGO_ZAPISU);
+    sessionStorage.removeItem(KLUCZ_ZAMKNIECIA_PO_ZAPISIE);
+    state.pendingOperation=null;
+    state.pendingLooksSaved=false;
+    state.zapis={saveState:"IDLE"};
+    return true;
+  }
+
+  async function sprawdzBrakOczekujacejOperacji(zKolejki = false) {
+    if (state.trwaWypelnianieOperacji) return false;
+    if (czyTrwaZapis()) {
+      toast("Trwa zapis Eventis. Poczekaj na jego wynik.");
       return false;
     }
     const { pendingOperations = {} } = await storageGet(["pendingOperations"]);
     const operacja = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
-    if (!operacja) return true;
     state.pendingOperation=operacja;
+    if (!operacja || czyMoznaKontynuowacOperacje(operacja,zKolejki)) return true;
     render();
-    toast("Najpierw rozlicz poprzednią operację oczekującą na zapis Eventis.");
+    toast(czyTrwaZapis() ? "Trwa zapis Eventis. Poczekaj na jego wynik." : "Poprzednia operacja wymaga sprawdzenia. Użyj „Zwolnij blokadę” przy ogłoszeniu lub w Ustawienia → Pamięć rozszerzenia.");
     return false;
   }
 
@@ -1450,7 +1510,9 @@
     const elementy = state.weryfikacjaOtwartejKarty
       ? state.przypisaneElementyKolejki
       : NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization)
-        .filter(element => String(element.normalizedTitle || "") === normalize(state.eventisTitle));
+        .filter(element => String(element.normalizedTitle || "") === normalize(state.eventisTitle)
+          || ((state.przypisaneRecznieBiezacejKarty || []).includes(element.id)
+            && NARZEDZIA_WYSZUKIWANIA.ocenTytulEventis(element.title,state.eventisTitle) >= NARZEDZIA_LISTY.PROG_DOPASOWANIA));
     return elementy
       .filter(element => [NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.OCZEKUJE, NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.BLAD,NARZEDZIA_KOLEJKI.STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status))
       .map(element => ({
@@ -1475,7 +1537,7 @@
   async function wprowadzTerminyZKolejki(identyfikatoryDozwolone = null) {
     if (!state.mappingVerifiedThisSession) return toast("Najpierw zweryfikuj zgodność źródła szkolenia.");
     if (!state.source || !state.sourceTerms.length) return toast("Najpierw załaduj źródło SEMPER/IIST.");
-    if (!await sprawdzBrakOczekujacejOperacji()) return;
+    if (!await sprawdzBrakOczekujacejOperacji(true)) return;
     await odswiezKolejke();
     const dozwolone = identyfikatoryDozwolone ? new Set(identyfikatoryDozwolone) : null;
     const dopasowania=dopasowaniaKolejkiDoBiezacegoTytulu().filter(dopasowanie =>
@@ -1517,6 +1579,8 @@
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
         async operacja => {
+          state.trwaWypelnianieOperacji=true;
+          try {
           const wynikWprowadzenia=await addSelectedTerms(unikalneTerminy(termy));
           if (wynikWprowadzenia.bledy.length) {
             const bledyWedlugTerminu=new Map(wynikWprowadzenia.bledy.map(blad => [existingKey(blad.termin),blad.komunikat]));
@@ -1531,6 +1595,7 @@
           if (!powiazanie.terms.length) return {wynikWprowadzenia,powiazanie,operacja};
           const potwierdzonaOperacja=await potwierdzOperacjeOczekujaca(operacja,powiazanie.terms,powiazanie.queueItemIds);
           return {wynikWprowadzenia,powiazanie,operacja:potwierdzonaOperacja};
+          } finally { state.trwaWypelnianieOperacji=false; }
         }
       );
       if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
@@ -1760,7 +1825,7 @@
       }else{
         state.status="SEARCH_EMPTY";
         state.searchFinalReason="no-search-results";
-        state.searchMessage=`Nie znaleziono szkolenia w wyszukiwarce ${state.organization}. Możesz podać link ręcznie.`;
+        state.searchMessage = kandydaciBiezacegoOgloszenia().length ? `Bieżące ogłoszenie #${state.eventisId} pasuje do kolejki. Nie znaleziono jego źródła ${state.organization}; możesz podać link źródła ręcznie.` : `Nie znaleziono szkolenia w wyszukiwarce ${state.organization}. Możesz podać link ręcznie.`;
       }
       zapiszDiagnostykeWyszukiwania({provider:state.organization,finalReason:state.searchFinalReason,topCandidate:najlepszy?.title||null,searchScore:najlepszy?.searchScore||0,verificationScore:najlepszy?.verificationScore||0});
       render();
@@ -1806,11 +1871,14 @@
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
         async operacja => {
+          state.trwaWypelnianieOperacji=true;
+          try {
           const wynikWprowadzenia=await addSelectedTerms(chosen);
           if (!wynikWprowadzenia.dodane.length) return wynikWprowadzenia;
           await fillEventDetailsIfAdd(state.source,wynikWprowadzenia.dodane);
           await potwierdzOperacjeOczekujaca(operacja,wynikWprowadzenia.dodane);
           return wynikWprowadzenia;
+          } finally { state.trwaWypelnianieOperacji=false; }
         }
       );
       if (!wykonanie.ok) throw new Error("Dla tego ogłoszenia trwa już inna operacja importu. Zakończ ją lub wróć do karty, w której została rozpoczęta.");
@@ -1830,7 +1898,7 @@
 
   async function switchOrganization(org) {
     if (!['SEMPER','IIST'].includes(org)||org===state.organization) return;
-    if (state.pendingOperation) return toast("Najpierw rozlicz operację oczekującą na zapis przed zmianą profilu.");
+    if (!await zwolnijOczekujacaOperacje()) return;
     state.searchRequestId++;
     state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
     const { mappings={}, pendingOperations={} }=await storageGet(["mappings","pendingOperations"]);
@@ -1945,6 +2013,12 @@
   }
 
   function renderPendingCard(){
+    const karta = renderujStanOperacji();
+    return karta + (state.pendingOperation && state.pendingOperation.status !== "CLAIMED" && !czyTrwaZapis()
+      ? `<div class="esync-card"><button id="esync-release-operation" class="esync-btn" style="width:100%">Zwolnij blokadę</button><div class="esync-small">Przerwij oczekiwanie bez potwierdzania zapisu. Dane w formularzu pozostaną; pozycje kolejki będą wymagały sprawdzenia.</div></div>` : "");
+  }
+
+  function renderujStanOperacji(){
     if (state.zapis?.saveState === "PREPARING_SAVE" || state.zapis?.saveState === "SUBMITTING") return `<div class="esync-card"><div class="esync-info"><b>Zapisywanie zmian w Eventis…</b></div></div>`;
     if (state.zapis?.saveState === "WAITING_FOR_EVENTIS") return `<div class="esync-card"><div class="esync-info"><b>Oczekiwanie na potwierdzenie Eventis…</b></div></div>`;
     if (state.zapis?.saveState === "SUCCESS") return `<div class="esync-card"><div class="esync-success"><b>✓ Zmiany zostały zapisane w Eventis.</b></div></div>`;
@@ -1978,6 +2052,18 @@
     </div>`;
   }
 
+  function kandydaciBiezacegoOgloszenia() {
+    const ogloszenie = NARZEDZIA_LISTY.pobierzBiezaceOgloszenie(document,location.href);
+    if (!ogloszenie) return [];
+    return NARZEDZIA_LISTY.pogrupujElementyKolejki(state.eventisImportQueue,state.organization)
+      .filter(grupa => NARZEDZIA_LISTY.rozwiazGrupeTytulu(grupa,[ogloszenie],state.organization).status === "AUTO_MATCH");
+  }
+
+  function renderujBiezaceOgloszenie() {
+    const identyfikator = NARZEDZIA_LISTY.pobierzIdEventisZUrl(location.href);
+    return kandydaciBiezacegoOgloszenia().map(grupa => `<div class="esync-info"><div class="esync-small">${esc(grupa.tytul)}</div><button class="esync-btn" data-biezace-ogloszenie="${esc(grupa.klucz)}">Użyj bieżącego ogłoszenia #${esc(identyfikator)}</button></div>`).join("");
+  }
+
   function renderKolejkaCard() {
     const kolejkaOrganizacji=NARZEDZIA_KOLEJKI.filtrujKolejkeOrganizacji(state.eventisImportQueue,state.organization);
     const podsumowanie=NARZEDZIA_KOLEJKI.podsumujKolejke(kolejkaOrganizacji);
@@ -2005,7 +2091,7 @@
     const dopasowaniaKolejki=dopasowaniaKolejkiDoBiezacegoTytulu();
     const gotoweTerminyKolejki=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowaniaKolejki.filter(dopasowanie=>dopasowanie.element.recordStatus === "CONFIRMED")).jednoznaczne;
     const liczbaNiepotwierdzonychNaZrodle=gotoweTerminyKolejki.filter(czyTerminKolejkiNiepotwierdzonyNaZrodle).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-przelacznik-organizatora" id="esync-org" role="switch" aria-checked="${state.organization==='IIST'}" aria-label="Organizator: SEMPER lub IIST" title="Zmień organizatora na ${state.organization==='SEMPER'?'IIST':'SEMPER'}"><span class="${state.organization==='SEMPER'?'esync-organizator-aktywny semper':''}">SEMPER</span><span class="${state.organization==='IIST'?'esync-organizator-aktywny iist':''}">IIST</span></button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${MODE === "add" ? '<div id="esync-kategorie"></div>' : ""}${renderTermsCard()}${renderPendingCard()}${renderKolejkaCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action">${liczbaNiepotwierdzonychNaZrodle?`<div class="esync-alarm-kolejki" style="margin-top:0">Brak (${liczbaNiepotwierdzonychNaZrodle}) ${liczbaNiepotwierdzonychNaZrodle===1?'terminu':'terminów'} z kolejki potwierdzonych na ${esc(state.organization)}</div>`:''}${gotoweTerminyKolejki.length?`<button id="esync-add-queue-terms" class="esync-btn good" ${state.mappingVerifiedThisSession?'':'disabled'}>Wprowadź terminy z kolejki (${gotoweTerminyKolejki.length})</button>`:''}<button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-przelacznik-organizatora" id="esync-org" role="switch" aria-checked="${state.organization==='IIST'}" aria-label="Organizator: SEMPER lub IIST" title="Zmień organizatora na ${state.organization==='SEMPER'?'IIST':'SEMPER'}"><span class="${state.organization==='SEMPER'?'esync-organizator-aktywny semper':''}">SEMPER</span><span class="${state.organization==='IIST'?'esync-organizator-aktywny iist':''}">IIST</span></button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${MODE === "add" ? '<div id="esync-kategorie"></div>' : ""}${renderTermsCard()}${renderPendingCard()}${renderujBiezaceOgloszenie()}${renderKolejkaCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action">${liczbaNiepotwierdzonychNaZrodle?`<div class="esync-alarm-kolejki" style="margin-top:0">Brak (${liczbaNiepotwierdzonychNaZrodle}) ${liczbaNiepotwierdzonychNaZrodle===1?'terminu':'terminów'} z kolejki potwierdzonych na ${esc(state.organization)}</div>`:''}${gotoweTerminyKolejki.length?`<button id="esync-add-queue-terms" class="esync-btn good" ${state.mappingVerifiedThisSession?'':'disabled'}>Wprowadź terminy z kolejki (${gotoweTerminyKolejki.length})</button>`:''}<button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
     $(".esync-head-title",root).textContent = "Eventis";
     $(".esync-head-sub",root).remove();
     const naglowek = $(".esync-head",root);
@@ -2041,13 +2127,32 @@
   }
 
   function bindUI() {
+    $$('[data-biezace-ogloszenie]',$("#esync-root") || document).forEach(przycisk => przycisk.addEventListener("click",async () => {
+      const grupa = kandydaciBiezacegoOgloszenia().find(grupa => grupa.klucz === przycisk.dataset.biezaceOgloszenie);
+      if (!grupa) return;
+      const identyfikator = NARZEDZIA_LISTY.pobierzIdEventisZUrl(location.href);
+      const dane = await storageGet([MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
+      await chrome.storage.local.set({[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]:MAPOWANIA_WYDARZEN.zapiszMapowanie(dane[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN],{
+        organization:state.organization,sourceTitle:grupa.tytul,normalizedTitle:grupa.klucz,eventId:identyfikator,eventUrl:location.href,eventTitle:getEventisTitle(),resolutionSource:"manual"
+      })});
+      state.przypisaneRecznieBiezacejKarty = [...new Set([...state.przypisaneRecznieBiezacejKarty,...grupa.elementy.map(element => element.id)])];
+      toast(`Zapamiętano bieżące ogłoszenie #${identyfikator}.`);
+      render();
+    }));
     $("#esync-collapse")?.addEventListener("click",()=>{$("#esync-root")?.classList.toggle("esync-collapsed");});
     $("#esync-settings")?.addEventListener("click",()=>chrome.runtime.sendMessage({type:"OPEN_OPTIONS"}));
     $("#esync-org")?.addEventListener("click",()=>switchOrganization(state.organization==="SEMPER"?"IIST":"SEMPER"));
     $("#esync-load-url")?.addEventListener("click",onLoadUrl);
     $("#esync-search")?.addEventListener("click",onSearch);
     $("#esync-open-source")?.addEventListener("click",()=>{if(state.source?.url)window.open(state.source.url,"_blank","noopener");});
-    $("#esync-forget")?.addEventListener("click",async()=>{if(confirm("Usunąć zapamiętane powiązanie dla tego ogłoszenia?")){await forgetMapping();render();}});
+    $("#esync-forget")?.addEventListener("click",async()=>{if(confirm("Usunąć zapamiętane powiązanie dla tego ogłoszenia? Oczekiwanie na wcześniejszy zapis zostanie przerwane bez usuwania danych z formularza.")){await forgetMapping();render();}});
+    $("#esync-release-operation")?.addEventListener("click",async()=>{
+      if (await zwolnijOczekujacaOperacje()) {
+        compareTerms();
+        render();
+        toast("Blokada zwolniona. Sprawdź dane formularza przed zapisem.");
+      }
+    });
     $("#esync-verify")?.addEventListener("click",verifyMapping);
     $("#esync-refresh")?.addEventListener("click",()=>{compareTerms();render();});
     $$('[data-reczne-potwierdzenie]',$("#esync-root")||document).forEach(przycisk=>przycisk.addEventListener("click",()=>przelaczRecznePotwierdzenie(przycisk.dataset.recznePotwierdzenie)));
