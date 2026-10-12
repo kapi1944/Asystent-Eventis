@@ -205,6 +205,7 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
           ? new widok.KeyboardEvent("keyup",{bubbles:true,key:usuwanie ? "Backspace" : " ",code:usuwanie ? "Backspace" : "Space"})
           : new Zdarzenie("keyup",{bubbles:true}));
         element.dispatchEvent(new Zdarzenie("blur",{bubbles:false}));
+        element.dispatchEvent(new Zdarzenie("focusout",{bubbles:true}));
       };
       const dotknijEdytor = async (odczytaj, ustaw, synchronizuj, element, instancja, czyHtml = true) => {
         const tresc = odczytaj();
@@ -242,9 +243,13 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
       };
 
       const areas = [bezposredniEdytor, field?.parentElement, field?.closest(".form-group"), field?.closest(".row")].filter(Boolean);
-      const edytowalneElementy = areas.flatMap(area => area.matches?.('[contenteditable="true"]')
+      const edytowalneElementy = areas.map(area => area.matches?.('[contenteditable="true"]')
         ? [area]
-        : Array.from(area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')));
+        : Array.from(area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')))
+        .find(elementy => elementy.length) || [];
+      if (edytowalneElementy.length > 1 && !field?.ckeditorInstance) {
+        return blad("EDITOR_MODEL_UNAVAILABLE", `Nie można jednoznacznie wskazać edytora pola „${nazwaPola}”.`);
+      }
 
       try {
         const instancjaCkeditora4 = field && window.CKEDITOR?.instances
@@ -338,7 +343,8 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
       return blad("EDITOR_MODEL_UNAVAILABLE", `Nie znaleziono obsługiwanej instancji edytora pola „${nazwaPola}”.`);
     },
     args: [nazwaPola, wartoscHtml, identyfikatorEdytora,
-      globalThis.NarzedziaOpisowSemper.MAPOWANIE_POL_OPISOWYCH.some(({pole}) => pole === nazwaPola)]
+      nazwaPola === "event[hours]" || identyfikatorEdytora === "eventHours"
+        || globalThis.NarzedziaOpisowSemper.MAPOWANIE_POL_OPISOWYCH.some(({pole}) => pole === nazwaPola)]
   });
   return result || {
     ok: false,

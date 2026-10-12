@@ -47,6 +47,7 @@ test('ponowna weryfikacja nie usuwa ręcznego przypisania',async()=>{
   const pozycja=odtworz();
   const stan={rozstrzygniecia:[pozycja],decyzje:{klucz:pozycja},preflight:{pokolenie:0,wyniki:{}}};
   await funkcja('async function uruchomPreflight','async function ustawDecyzjeKompletnych',{
+    odswiezDopasowaniaZListy:()=>new Set(),
     stan,aktualneRozstrzygniecie:()=>stan.decyzje.klucz,kluczRozstrzygniecia:()=> 'klucz',
     sprawdzTerminyWydarzenia:async()=>({status:'NEEDS_ATTENTION'}),renderuj:()=>{},odswiezPlanOtwarcia:async()=>{}
   })(new Set(['klucz']));

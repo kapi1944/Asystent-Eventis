@@ -77,6 +77,13 @@
   }
 
   function znajdzKontenerOgloszenia(link, identyfikatorEventis, adresStrony) {
+    const wiersz = link.closest("tr");
+    if (wiersz) {
+      const identyfikatory = new Set($$('a[href*="/event/edit"]',wiersz).map(kandydat => {
+        try { return NARZEDZIA_LISTY.pobierzIdEventisZUrl(new URL(kandydat.getAttribute("href"),adresStrony).href); } catch (_) { return ""; }
+      }).filter(Boolean));
+      if (identyfikatory.size === 1 && identyfikatory.has(identyfikatorEventis)) return wiersz;
+    }
     let element = link.parentElement;
     for (let poziom = 0; element && element !== link.ownerDocument.body && poziom < 9; poziom++, element = element.parentElement) {
       const identyfikatory = new Set($$('a[href*="/event/edit"]',element).map(kandydat => {
@@ -109,7 +116,9 @@
         dodajKandydata(tytuly,element.textContent);
       }
       dodajKandydata(tytuly,kontener?.textContent);
-      wedlugId.set(eventisId,{eventisId,url:url.href,tytuly});
+      const kontenerTerminow = kontener?.closest("tr") || kontener;
+      const terminy = kontenerTerminow ? NARZEDZIA_TERMINOW.odczytajTerminyListyEventis(kontenerTerminow) : [];
+      wedlugId.set(eventisId,{eventisId,url:url.href,tytuly,terminy});
     }
     return [...wedlugId.values()];
   }
@@ -127,6 +136,44 @@
       if (jestWPaginacji || maParametrStrony || wygladaJakNawigacja) adresy.add(adres);
     }
     return [...adresy];
+  }
+
+  function odswiezDopasowaniaZListy() {
+    const widoczne = pobierzOgloszeniaZDokumentu();
+    const poprzednie = stan.ogloszenia;
+    stan.ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(poprzednie,widoczne);
+    const zmienioneKlucze = new Set();
+    stan.rozstrzygniecia = stan.rozstrzygniecia.map(pozycja => {
+      const klucz = kluczRozstrzygniecia(pozycja);
+      const aktualna = aktualneRozstrzygniecie(pozycja);
+      const rozwiazana = aktualna.manualStatus || pozycja.status === "KNOWN_MAPPING" ? pozycja
+        : {...pozycja,...NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul:pozycja.sourceTitle},stan.ogloszenia,pozycja.organization)};
+      const identyfikator = aktualna.manualStatus ? aktualna.selectedCandidate?.eventId : rozwiazana.selectedCandidate?.eventId;
+      const noweOgloszenie = widoczne.find(ogloszenie => String(ogloszenie.eventisId) === String(identyfikator));
+      const stareOgloszenie = poprzednie.find(ogloszenie => String(ogloszenie.eventisId) === String(identyfikator));
+      if (identyfikator !== aktualna.selectedCandidate?.eventId || (noweOgloszenie
+        && JSON.stringify(noweOgloszenie.terminy) !== JSON.stringify(stareOgloszenie?.terminy))) zmienioneKlucze.add(klucz);
+      return rozwiazana;
+    });
+    return zmienioneKlucze;
+  }
+
+  function obserwujListeOgloszen() {
+    let licznik = null;
+    const odswiez = async () => {
+      if (stan.skanowanie.trwa || stan.preflight.trwa) {
+        licznik = setTimeout(() => odswiez().catch(blad => console.error("Odświeżenie terminów Eventis",blad)),300);
+        return;
+      }
+      const zmienioneKlucze = odswiezDopasowaniaZListy();
+      if (zmienioneKlucze.size) await uruchomPreflight(zmienioneKlucze);
+    };
+    new MutationObserver(zmiany => {
+      if (!zmiany.some(zmiana => !zmiana.target.closest?.("#esync-root")
+        && [...zmiana.addedNodes,...zmiana.removedNodes].some(wezel => wezel.nodeType === 1))) return;
+      clearTimeout(licznik);
+      licznik = setTimeout(() => odswiez().catch(blad => console.error("Odświeżenie terminów Eventis",blad)),300);
+    }).observe(document.body,{childList:true,subtree:true});
   }
 
   async function pobierzDokumentListy(adres) {
@@ -335,8 +382,11 @@
           && tytulOnline === tytulBezMiejsca && terminyListy.length > 0
           && terminyListy.every(termin => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin).endsWith("|online")
             && terminyStrony.some(terminStrony => NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(terminStrony) === NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(termin)));
-        const wynik = NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytul) >= stan.ustawienia.mappingWarningThreshold
-          && (!wariant.wymagany || wariant.status === "ZGODNY") || zgodnyTerminOnline ? {odpowiedz,dokument} : null;
+        const stronaInnejLokalizacji = /\bonline\b/i.test(rozstrzygniecie.sourceTitle)
+          && tytulBezMiejsca !== NARZEDZIA_WYSZUKIWANIA.normalizujTytul(tytul);
+        const wynik = (!stronaInnejLokalizacji
+          && NARZEDZIA_WYSZUKIWANIA.ocenZgodnoscTytulow(rozstrzygniecie.sourceTitle,tytul) >= stan.ustawienia.mappingWarningThreshold
+          && (!wariant.wymagany || wariant.status === "ZGODNY")) || zgodnyTerminOnline ? {odpowiedz,dokument} : null;
         stronyZrodla.set(url,wynik);
         return wynik;
       }
@@ -378,7 +428,15 @@
       return {...porownanie,zrodlo,queueContext:kontekst,reconciliation:scalenie,diagnostics:diagnostyka,
         status:scalenie?.status === "NEEDS_ATTENTION" ? "NEEDS_ATTENTION" : porownanie.status};
     };
-    if (!identyfikator) return zakoncz([]);
+    if (!identyfikator) {
+      const wynik = zakoncz([]);
+      if (kandydat?.matchType === "CREATE_NEW") return wynik;
+      for (const termin of scalenie?.terms || []) {
+        delete termin.existsOnEventis;
+        delete termin.missingOnEventis;
+      }
+      return {...wynik,status:"UNVERIFIED",missingConfirmedTerms:[]};
+    }
     const adres = new URL(`/event/edit/${identyfikator}`,location.origin);
     const odpowiedz = await fetch(adres.href,{credentials:"include",redirect:"follow",cache:"no-store"});
     if (!odpowiedz.ok) throw new Error(`Eventis zwrócił HTTP ${odpowiedz.status}.`);
@@ -387,10 +445,12 @@
     if (!dokument.querySelector("form#eventForm")) throw new Error("Nie odnaleziono formularza wydarzenia Eventis.");
     const terminyEventis = NARZEDZIA_TERMINOW.odczytajTerminyEventis(dokument)
       .map(({start,end,city}) => ({start,end,city}));
-    return zakoncz(terminyEventis);
+    const terminyListy = stan.ogloszenia?.find(ogloszenie => String(ogloszenie.eventisId) === identyfikator)?.terminy || [];
+    return zakoncz(terminyEventis.length ? terminyEventis : terminyListy);
   }
 
   async function uruchomPreflight(wybraneKlucze = null) {
+    odswiezDopasowaniaZListy();
     const pokolenie = ++stan.preflight.pokolenie;
     const rozstrzygniecia = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
       .filter(rozstrzygniecie => rozstrzygniecie.manualStatus !== "SKIPPED"
@@ -905,5 +965,5 @@
     renderuj();
   }
 
-  inicjalizuj().catch(blad => console.error("Kolejka listy Eventis",blad));
+  inicjalizuj().then(obserwujListeOgloszen).catch(blad => console.error("Kolejka listy Eventis",blad));
 })();

@@ -49,6 +49,7 @@ test("równoległe odpowiedzi B D C A nie zmieniają kolejności żadnego render
   const zakonczone = [];
   let liczbaRenderow = 0;
   const uruchom = odczytajFunkcje("async function uruchomPreflight","async function ustawDecyzjeKompletnych",{
+    odswiezDopasowaniaZListy:()=>new Set(),
     stan,aktualneRozstrzygniecie:pozycja=>pozycja,kluczRozstrzygniecia:pozycja=>pozycja.normalizedSourceTitle,
     sprawdzTerminyWydarzenia:pozycja=>new Promise(rozwiaz=>setTimeout(()=>{
       zakonczone.push(pozycja.indeksWejsciowy);rozwiaz({status:"NEEDS_ATTENTION"});

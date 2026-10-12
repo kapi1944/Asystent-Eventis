@@ -17,6 +17,30 @@ function odczytajFunkcje(plik, poczatek, koniec, kontekst) {
   return vm.runInNewContext(`${kod.slice(kod.indexOf(poczatek),kod.indexOf(koniec,kod.indexOf(poczatek)))}; ${poczatek.match(/function (\w+)/)[1]}`,kontekst);
 }
 
+test("lista oznacza ogłoszenie na zielono także gdy zapisany termin jest tylko w opcjach listy", async () => {
+  const lista = require("../shared/lista-eventis");
+  const klucz = "IIST|szkolenie";
+  const pozycja = {organization:"IIST",normalizedSourceTitle:"szkolenie",selectedCandidate:{eventId:"89393",url:"https://eventis.pl/event/edit/89393"}};
+  for (const miasto of ["Online","Warszawa"]) {
+    const stan = {organizacja:"IIST",ustawienia:{},mapowania:{},ogloszenia:[
+      {eventisId:"inne",terminy:[termin]},
+      {eventisId:"89393",terminy:[{...termin,city:miasto}]}
+    ],preflight:{wyniki:{}},kolejka:[]};
+    const sprawdz = odczytajFunkcje("../content/lista-eventis.js","async function sprawdzTerminyWydarzenia","async function uruchomPreflight",{
+      stan,NARZEDZIA_LISTY:lista,NARZEDZIA_TERMINOW:terminy,
+      potwierdzoneTerminyTytulu:()=>[{...termin,confirmed:true}],location:{origin:"https://eventis.pl"},URL,
+      fetch:async()=>({ok:true,url:pozycja.selectedCandidate.url,text:async()=>"formularz"}),
+      DOMParser:class {parseFromString() {return {querySelector:()=>({}),querySelectorAll:()=>[]};}}
+    });
+    stan.preflight.wyniki[klucz] = {...await sprawdz(pozycja),eventId:"89393"};
+    const wyglad = odczytajFunkcje("../content/lista-eventis.js","function wygladPozycji","function renderujPozycjeSzkolenia",{
+      stan,kluczRozstrzygniecia:()=>klucz
+    })(pozycja);
+    assert.equal(stan.preflight.wyniki[klucz].status,miasto === "Online" ? "COMPLETE" : "COUNT_MATCH_BUT_DIFFERENT");
+    assert.equal(wyglad.klasa,miasto === "Online" ? "kompletne" : "wymaga-uzupelnienia");
+  }
+});
+
 test("natywny zapis bez zmian zachowuje przypisanie kolejki przed przeładowaniem", () => {
   const magazyn = {};
   const stan = {eventisId:"123",eventisTitle:"Inny wariant tytułu Eventis",zapis:{saveState:"IDLE"},weryfikacjaOtwartejKarty:{status:"VERIFIED",task:{normalizedSourceTitle:element.normalizedTitle}}};
@@ -74,7 +98,7 @@ test("lista odświeża widoczne szkolenia po zapisie w innej karcie", async () =
   let obslugaZmiany;
   let odtworzenia = 0;
   const stan = {};
-  const inicjalizuj = odczytajFunkcje("../content/lista-eventis.js","async function inicjalizuj","  inicjalizuj().catch",{
+  const inicjalizuj = odczytajFunkcje("../content/lista-eventis.js","async function inicjalizuj","  inicjalizuj().then",{
     stan,chrome:{storage:{onChanged:{addListener:obsluga=>{obslugaZmiany=obsluga;}},local:{get:async()=>({eventisImportQueue:[],eventisQueueSchemaVersion:2})}},runtime:{sendMessage:async()=>({})}},
     NARZEDZIA_KOLEJKI:kolejka,KONFIGURACJA:{DEFAULT_SETTINGS:{}},MAPOWANIA_WYDARZEN:{KLUCZ_STORAGE_MAPOWAN:"mapowania",normalizujMagazynMapowan:()=>({})},
     wykryjOrganizacje:()=>"SEMPER",pobierzOgloszeniaZDokumentu:()=>[],
@@ -225,7 +249,9 @@ test("5: preflight /company odczytuje SEMPER także bez wydarzenia Eventis", asy
   const wynik = await sprawdz({sourceTitle:element.title,normalizedSourceTitle:element.normalizedTitle});
   assert.equal(zapytania.length,2);
   assert.equal(wynik.reconciliation.terms[0].confirmedByQueue,true);
-  assert.equal(wynik.missingConfirmedTerms.length,1);
+  assert.equal(wynik.status,"UNVERIFIED");
+  assert.equal(wynik.missingConfirmedTerms.length,0);
+  assert.equal(wynik.reconciliation.terms[0].missingOnEventis,undefined);
   assert.equal(wynik.queueContext.targetEventisId,"");
 });
 

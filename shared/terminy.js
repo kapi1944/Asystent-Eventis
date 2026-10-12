@@ -202,6 +202,17 @@
     return usunDuplikatyTerminow(terminy);
   }
 
+  function odczytajTerminyListyEventis(kontener) {
+    const terminy = [];
+    for (const opcja of kontener.querySelectorAll("select option")) {
+      const tekst = String(opcja.textContent || "").trim();
+      const zakres = zakresDatZTresci(tekst);
+      const miasto = miastoZTresci(tekst);
+      if (zakres && miasto) terminy.push({...zakres,city:miasto});
+    }
+    return usunDuplikatyTerminow(terminy);
+  }
+
   function porownajPotwierdzoneTerminy(terminyZrodlowe = [], terminyEventis = []) {
     const terminy = usunDuplikatyTerminow(terminyZrodlowe);
     const kluczeIstniejace = new Set(terminyEventis.map(kluczZgodnegoTerminu));
@@ -251,6 +262,7 @@
     scalPotwierdzeniaKolejki,
     odczytajTerminyEventis,
     odczytajTerminySemper,
+    odczytajTerminyListyEventis,
     porownajPotwierdzoneTerminy,
     ustalWynikPreflightu,
     dedupeTerms: usunDuplikatyTerminow,

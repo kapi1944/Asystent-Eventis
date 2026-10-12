@@ -146,3 +146,13 @@ test("wspólny odczyt SEMPER zachowuje wyłącznie potwierdzenie z oznaczenia", 
   assert.deepEqual({start:termin.start,end:termin.end,city:termin.city,confirmed:termin.confirmed},
     {start:"2026-11-18",end:"2026-11-19",city:"Online",confirmed:true});
 });
+
+test("lista Eventis odczytuje wszystkie zapisane terminy z opcji ogłoszenia", () => {
+  const kontener = {querySelectorAll:() => [
+    "Online - 16-17.11.2026", "Warszawa 21-22.9.2026", "Online - 16-17.11.2026", "Wybierz termin"
+  ].map(textContent => ({textContent}))};
+  assert.deepEqual(narzedzia.odczytajTerminyListyEventis(kontener),[
+    {start:"2026-09-21",end:"2026-09-22",city:"Warszawa"},
+    {start:"2026-11-16",end:"2026-11-17",city:"Online"}
+  ]);
+});

@@ -91,7 +91,7 @@ test("CKEditor 4 używa setData i updateElement, a wynik potwierdza aktualizacj�
   assert.deepEqual(wywolania,[["setData","<p>Program</p>"],["updateElement"],
     ["setData","<p>Program </p>"],["updateElement"],["setData","<p>Program</p>"],["updateElement"]]);
   assert.equal(pole.value,"<p>Program</p>");
-  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","input","change","keyup","blur"]);
+  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","focusout","input","change","keyup","blur","focusout"]);
   assert.equal(wynik.ok,true);
   assert.equal(wynik.method,"ckeditor4");
   assert.equal(wynik.modelUpdated,true);
@@ -128,8 +128,8 @@ test("zwykłe textarea otrzymuje wartość i zwraca sukces", async () => {
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[reason]",html:"<p>Korzyści</p>"});
 
   assert.equal(pole.value,"<p>Korzyści</p>");
-  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","input","change","keyup","blur"]);
-  assert.deepEqual(pole.wartosciPrzyZdarzeniach,[...Array(4).fill("<p>Korzyści</p> "),...Array(4).fill("<p>Korzyści</p>")]);
+  assert.deepEqual(pole.zdarzenia,["input","change","keyup","blur","focusout","input","change","keyup","blur","focusout"]);
+  assert.deepEqual(pole.wartosciPrzyZdarzeniach,[...Array(5).fill("<p>Korzyści</p> "),...Array(5).fill("<p>Korzyści</p>")]);
   assert.equal(JSON.stringify(wynik),JSON.stringify({ok:true,method:"form-control",field:"event[reason]",modelUpdated:true,sourceUpdated:true}));
 });
 
@@ -146,6 +146,21 @@ test("widoczny element CKEditor bez instancji nie jest traktowany jako sukces", 
   assert.equal("innerHTML" in editable,false);
 });
 
+test("wyszukiwanie instancji pozostaje przy edytorze danego pola zamiast sąsiedniego opisu", async () => {
+  const lokalny = utworzElement({matches(selektor) { return selektor === ".ck-editor__editable"; }});
+  let zmienionoSasiada = false;
+  const sasiedni = utworzElement({ckeditorInstance:{setData() { zmienionoSasiada = true; }}});
+  const pole = utworzElement({name:"event[plan]",
+    parentElement:utworzElement({querySelectorAll() { return [lokalny]; }}),
+    closest() { return utworzElement({querySelectorAll() { return [lokalny,sasiedni]; }}); }
+  });
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(wynik.ok,false);
+  assert.equal(wynik.code,"EDITOR_MODEL_UNAVAILABLE");
+  assert.equal(zmienionoSasiada,false);
+});
+
 test("textarea używa natywnego settera, a touch powtarzany nie dokłada spacji", async () => {
   const pole = utworzElement({name:"event[reason]",tagName:"TEXTAREA"});
   let tresc = "";
@@ -160,7 +175,7 @@ test("textarea używa natywnego settera, a touch powtarzany nie dokłada spacji"
     assert.equal(pole.value,"ABC");
   }
   assert.equal(liczbaUstawien,9);
-  assert.equal(pole.wartosciPrzyZdarzeniach.filter(wartosc => wartosc === "ABC ").length,12);
+  assert.equal(pole.wartosciPrzyZdarzeniach.filter(wartosc => wartosc === "ABC ").length,15);
 });
 
 test("puste textarea nie otrzymuje chwilowej spacji ani nie przechodzi walidacji wymaganej treści", async () => {
@@ -205,7 +220,7 @@ test("contenteditable zachowuje identyczny HTML, bloki i źródło po wielokrotn
     assert.equal(pole.value,html);
     assert.equal(edytowalny.querySelectorAll("p,li,blockquote,td,th")[0],blok);
   }
-  assert.deepEqual(edytowalny.zdarzenia,Array(2).fill(["input","change","keyup","blur","input","change","keyup","blur"]).flat());
+  assert.deepEqual(edytowalny.zdarzenia,Array(2).fill(["input","change","keyup","blur","focusout","input","change","keyup","blur","focusout"]).flat());
   assert.ok(pole.wartosciPrzyZdarzeniach.includes("<p><strong>Cel</strong></p><ul><li>Pierwszy</li><li>Drugi </li></ul>"));
 });
 
@@ -259,13 +274,32 @@ test("pusty HTML edytora nie otrzymuje spacji", async () => {
   assert.equal(pole.value,"<p><br></p>");
 });
 
-test("inne pola nie uruchamiają workaroundu opisów", async () => {
-  const pole = utworzElement({name:"event[hours]"});
+test("zwykłe pole nie uruchamia procedury edycji opisów", async () => {
+  const pole = utworzElement({name:"event[title]"});
   const wyslij = utworzWorker(utworzDokument([pole]));
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"1 dzień"});
   assert.equal(wynik.ok,true);
   assert.deepEqual(pole.zdarzenia,["input","change"]);
   assert.deepEqual(pole.wartosciPrzyZdarzeniach,["1 dzień","1 dzień"]);
+});
+
+test("czas trwania powiadamia walidację delegowaną przez focusout po synchronizacji źródła", async () => {
+  let tresc = "";
+  const sprawdzoneWartosci = [];
+  const edytowalny = utworzElement({dispatchEvent(zdarzenie) {
+    if (zdarzenie.type === "focusout" && zdarzenie.bubbles) sprawdzoneWartosci.push(pole.value);
+  }});
+  const pole = utworzElement({name:"event[hours]",ckeditorInstance:{
+    setData(html) { tresc = html; },getData() { return tresc; },
+    updateSourceElement() { pole.value = tresc; },
+    ui:{getEditableElement() { return edytowalny; }}
+  }});
+  class Zdarzenie { constructor(typ, dane) { this.type = typ; Object.assign(this,dane); } }
+  const wyslij = utworzWorker(utworzDokument([pole]),null,{Event:Zdarzenie});
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>2 dni</p>"});
+  assert.equal(wynik.ok,true);
+  assert.deepEqual(sprawdzoneWartosci,["<p>2 dni </p>","<p>2 dni</p>"]);
+  assert.equal(pole.value,"<p>2 dni</p>");
 });
 
 test("CKEditor 4 korzysta z updateSourceElement i zdarzenia change własnego API", async () => {
