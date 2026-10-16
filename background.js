@@ -7,7 +7,7 @@ const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
 const kolejkiClaimowOperacji = new Map();
 
 function czyKartaPaneluEventis(adres) {
-  return /^https:\/\/(?:[\w-]+\.)*eventis\.pl\/(?:company(?:\/|$|\?)|event\/(?:edit|add)(?:\/|$|\?))/i.test(adres || "");
+  return /^https:\/\/(?:[\w-]+\.)*eventis\.pl\//i.test(adres || "");
 }
 
 async function ustawDostepnoscPanelu(karta) {

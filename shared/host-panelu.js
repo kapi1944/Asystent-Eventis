@@ -7,6 +7,15 @@
   let wersja = 0;
   let ostatniHtml = "";
 
+  if (!/^\/company\/?$|^\/company\/listevents(?:\/|$)|^\/event\/(?:edit|add)(?:\/|$)/i.test(location.pathname)
+      && !document.querySelector("#esync-root")) {
+    const korzen = document.createElement("aside");
+    korzen.id = "esync-root";
+    korzen.innerHTML = '<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis</div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń lub rozwiń panel" aria-label="Zwiń lub rozwiń panel">−</button></div></div><div class="esync-body"><p>Otwórz listę ogłoszeń lub edycję wydarzenia, aby skorzystać z asystenta.</p><a class="esync-link" href="https://eventis.pl/company/listevents">Przejdź do listy ogłoszeń</a></div>';
+    korzen.querySelector("#esync-collapse").addEventListener("click",() => korzen.classList.toggle("esync-collapsed"));
+    document.body.appendChild(korzen);
+  }
+
   function pobierzWidok() {
     const korzen = document.querySelector("#esync-root");
     if (!korzen) return {ok:false,error:"Panel Eventis jeszcze się ładuje."};
@@ -38,7 +47,11 @@
 
   chrome.runtime.onMessage.addListener((wiadomosc, nadawca, odpowiedz) => {
     if (nadawca.id !== chrome.runtime.id) return;
-    if (wiadomosc?.type === "POBIERZ_WIDOK_PANELU") odpowiedz(pobierzWidok());
+    if (wiadomosc?.type === "POBIERZ_WIDOK_PANELU") {
+      tryb = "boczny";
+      zastosujTryb();
+      odpowiedz(pobierzWidok());
+    }
     if (wiadomosc?.type === "AKCJA_PANELU") {
       const widok = pobierzWidok();
       if (!widok.ok || wiadomosc.wersja !== widok.wersja) return odpowiedz({ok:false,error:"Widok zmienił się. Ponów działanie."});
@@ -60,16 +73,16 @@
   });
   chrome.storage.onChanged.addListener((zmiany,obszar) => {
     if (obszar === "local" && zmiany[KLUCZ_TRYBU]) {
-      tryb = zmiany[KLUCZ_TRYBU].newValue === "boczny" && obslugiwany ? "boczny" : "plywajacy";
+      if (zmiany[KLUCZ_TRYBU].newValue !== "plywajacy") return;
+      tryb = "plywajacy";
       zastosujTryb();
     }
   });
   const obserwator = new MutationObserver(zastosujTryb);
   obserwator.observe(document.body,{childList:true,subtree:true});
-  chrome.storage.local.get([KLUCZ_TRYBU]).then(async dane => {
-    const odpowiedz = await chrome.runtime.sendMessage({type:"CZY_PANEL_BOCZNY"});
+  chrome.runtime.sendMessage({type:"CZY_PANEL_BOCZNY"}).then(odpowiedz => {
     obslugiwany = !!odpowiedz?.obslugiwany;
-    tryb = dane[KLUCZ_TRYBU] === "boczny" && obslugiwany ? "boczny" : "plywajacy";
+    if (!obslugiwany) tryb = "plywajacy";
     zastosujTryb();
   }).catch(blad => console.warn("Tryb panelu",blad));
 })();

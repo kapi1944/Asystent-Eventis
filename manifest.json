@@ -44,8 +44,7 @@
         "shared/pola-rich-text.js",
         "shared/kategorie-eventis.js",
         "shared/kontroler-kategorii-eventis.js",
-        "content/eventis.js",
-        "shared/host-panelu.js"
+        "content/eventis.js"
       ],
       "css": [
         "content/eventis.css",
@@ -69,12 +68,17 @@
         "shared/kolejka-eventis.js",
         "shared/lista-eventis.js",
         "shared/mapowania-wydarzen-eventis.js",
-        "content/lista-eventis.js",
-        "shared/host-panelu.js"
+        "content/lista-eventis.js"
       ],
       "css": [
         "content/eventis.css"
       ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://eventis.pl/*", "https://*.eventis.pl/*"],
+      "js": ["shared/host-panelu.js"],
+      "css": ["content/eventis.css"],
       "run_at": "document_idle"
     }
   ],

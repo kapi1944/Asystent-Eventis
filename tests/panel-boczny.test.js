@@ -49,7 +49,9 @@ test("panel jest dostępny tylko na kartach Eventis, także po zmianie adresu i 
     ["https://crm-semper.pl/crm/",false],
     ["chrome://extensions/",false],
     ["https://eventis.pl.obcy.pl/company",false],
-    ["https://eventis.pl/",false],
+    ["https://eventis.pl/",true],
+    ["https://eventis.pl/szkolenia",true],
+    ["https://eventis.pl/company/settings",true],
     ["https://eventis.pl/event/edit/123",true],
     ["https://www.eventis.pl/event/add",true]
   ]) {
@@ -84,7 +86,7 @@ test("akcje panelu trafiają tylko do aktywnej karty Eventis; zmiana karty odrzu
   asercje.equal(worker.przekazane.length,1);
 });
 
-test("host ukrywa cały floating, odtwarza preferencję i przekazuje kliknięcie bez drugiej kolejki",async () => {
+test("host jest domyślnie widoczny mimo zapamiętanego trybu bocznego i ukrywa się po odebraniu widoku przez panel boczny",async () => {
   const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
   try {
     const strona = await przegladarka.newPage();
@@ -99,8 +101,10 @@ test("host ukrywa cały floating, odtwarza preferencję i przekazuje kliknięcie
       window.chrome={runtime:{id:"test",onMessage:{addListener:funkcja=>window.obsluga=funkcja},sendMessage:async()=>({obslugiwany:true})},storage:{local:{get:async()=>({eventisTrybPanelu:"boczny"})},onChanged:{addListener:funkcja=>window.zmienTryb=funkcja}}};
     });
     await strona.addScriptTag({path:"shared/host-panelu.js"});
-    await strona.waitForFunction(()=>document.querySelector("#esync-root").hidden);
-    asercje.equal(await strona.locator("#esync-root").isVisible(),false);
+    await strona.waitForFunction(()=>document.querySelector("#esync-tryb-panelu"));
+    asercje.equal(await strona.locator("#esync-root").isVisible(),true);
+    await strona.evaluate(()=>window.zmienTryb({eventisTrybPanelu:{newValue:"boczny"}},"local"));
+    asercje.equal(await strona.locator("#esync-root").isVisible(),true);
     const wynik = await strona.evaluate(() => {
       let widok;
       window.obsluga({type:"POBIERZ_WIDOK_PANELU"},{id:"test"},wynik=>widok=wynik);
@@ -115,6 +119,7 @@ test("host ukrywa cały floating, odtwarza preferencję i przekazuje kliknięcie
     asercje.equal(wynik.odrzucony.ok,false);
     asercje.equal(wynik.klikniecia,1);
     asercje.equal(wynik.tekst,"rekord kolejki");
+    asercje.equal(await strona.locator("#esync-root").isVisible(),false);
     await strona.evaluate(()=>window.zmienTryb({eventisTrybPanelu:{newValue:"plywajacy"}},"local"));
     asercje.equal(await strona.locator("#esync-root").isVisible(),true);
     await strona.evaluate(()=>{
@@ -124,6 +129,16 @@ test("host ukrywa cały floating, odtwarza preferencję i przekazuje kliknięcie
     await strona.addScriptTag({path:"shared/host-panelu.js"});
     await strona.waitForTimeout(20);
     asercje.equal(await strona.locator("#esync-root").isVisible(),true);
+    await strona.evaluate(()=>document.querySelector("#esync-root").remove());
+    await strona.addScriptTag({path:"shared/host-panelu.js"});
+    asercje.equal(await strona.locator("#esync-root").isVisible(),true);
+    asercje.match(await strona.locator("#esync-root").innerText(),/Przejdź do listy ogłoszeń/);
+    await strona.locator("#esync-collapse").click();
+    asercje.equal(await strona.locator("#esync-root .esync-body").isVisible(),false);
+    await strona.evaluate(()=>document.body.appendChild(document.createElement("p")));
+    asercje.equal(await strona.locator("#esync-root .esync-body").isVisible(),false);
+    await strona.locator("#esync-collapse").click();
+    asercje.equal(await strona.locator("#esync-root .esync-body").isVisible(),true);
     await strona.addStyleTag({path:"sidepanel.css"});
     await strona.evaluate(()=>{
       document.querySelector("#esync-root").innerHTML='<div class="esync-head"><div class="esync-head-text">Kolejka potwierdzonych terminów</div></div><div class="esync-body"><div class="esync-grid2"><input value="termin"><select><option>'+ 'długi tytuł '.repeat(30)+'</option></select></div><div class="esync-title">'+ 'Charakterystycznytytuł'.repeat(30)+'</div><button class="esync-btn">Otwórz i uzupełnij</button></div>';

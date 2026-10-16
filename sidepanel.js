@@ -8,24 +8,69 @@
   let identyfikatorKarty = null;
   let trwaAkcja = false;
   let ostatnieWartosci = [];
+  let trwaZanikanie = false;
+
+  function kluczPozycji(element) {
+    return element.dataset.kluczKarty || element.querySelector('[data-queue-remove]')?.dataset.queueRemove;
+  }
+
+  async function zwinPozycje(element) {
+    element.style.pointerEvents = "none";
+    element.setAttribute("aria-hidden","true");
+    await element.animate([{opacity:1},{opacity:0}],{duration:180,fill:"forwards"}).finished;
+    const wyglad = getComputedStyle(element);
+    await element.animate([
+      {height:`${element.getBoundingClientRect().height}px`,marginTop:wyglad.marginTop,marginBottom:wyglad.marginBottom,paddingTop:wyglad.paddingTop,paddingBottom:wyglad.paddingBottom,borderTopWidth:wyglad.borderTopWidth,borderBottomWidth:wyglad.borderBottomWidth},
+      {height:"0px",marginTop:"0px",marginBottom:"0px",paddingTop:"0px",paddingBottom:"0px",borderTopWidth:"0px",borderBottomWidth:"0px"}
+    ],{duration:240,easing:"ease-in-out",fill:"forwards"}).finished;
+    element.remove();
+  }
 
   async function odswiez() {
-    if (trwaAkcja || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
+    if (trwaAkcja || trwaZanikanie || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
     try {
       const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
       if (!widok?.ok) throw new Error(widok?.error || "Otwórz kartę Eventis.");
       komunikat.textContent = widok.komunikat || "";
       if (widok.html !== ostatniHtml || identyfikatorKarty !== widok.identyfikatorKarty) {
         const przewiniecie = window.scrollY;
+        const przewiniecieListy = korzen.querySelector(".esync-body")?.scrollTop || 0;
+        const selektorPozycji = "[data-klucz-karty],.esync-termin-kolejki,.esync-import-row";
+        const poprzedniePozycje = Array.from(korzen.querySelectorAll(selektorPozycji));
         korzen.innerHTML = widok.html;
+        const nowePozycje = Array.from(korzen.querySelectorAll(selektorPozycji));
+        const znajdzPozycje = element => nowePozycje.find(nowy => nowy.matches(element.dataset.kluczKarty ? "[data-klucz-karty]" : element.matches(".esync-import-row") ? ".esync-import-row" : ".esync-termin-kolejki") && kluczPozycji(nowy) === kluczPozycji(element));
+        const znikajace = [];
+        if (identyfikatorKarty === widok.identyfikatorKarty) {
+          for (const element of poprzedniePozycje) {
+            if (!kluczPozycji(element) || znajdzPozycje(element)) continue;
+            const karta = element.parentElement.closest("[data-klucz-karty]");
+            if (karta && !znajdzPozycje(karta)) continue;
+            const nastepny = Array.from(element.parentElement.children).slice(Array.from(element.parentElement.children).indexOf(element)+1).map(znajdzPozycje).find(Boolean);
+            const rodzic = nastepny?.parentElement || (karta ? znajdzPozycje(karta) : nowePozycje.find(nowy => nowy.matches(element.dataset.kluczKarty ? "[data-klucz-karty]" : ".esync-import-row"))?.parentElement);
+            if (!rodzic) continue;
+            const kopia = element.cloneNode(true);
+            kopia.setAttribute("aria-hidden","true");
+            kopia.style.overflow = "hidden";
+            kopia.querySelectorAll(selektor).forEach(pole => { pole.disabled = true; });
+            rodzic.insertBefore(kopia,nastepny || null);
+            znikajace.push(kopia);
+          }
+        }
         ostatniHtml = widok.html;
+        const lista = korzen.querySelector(".esync-body");
+        if (lista) lista.scrollTop = przewiniecieListy;
         window.scrollTo(0,przewiniecie);
+        if (znikajace.length) {
+          trwaZanikanie = true;
+          Promise.all(znikajace.map(zwinPozycje)).finally(() => { trwaZanikanie = false; });
+        }
       }
       wersja = widok.wersja;
       identyfikatorKarty = widok.identyfikatorKarty;
       korzen.className = widok.klasy || "";
       ostatnieWartosci = widok.wartosci;
-      korzen.querySelectorAll(selektor).forEach((element,indeks) => {
+      Array.from(korzen.querySelectorAll(selektor)).filter(element => !element.closest('[aria-hidden="true"]')).forEach((element,indeks) => {
         const zapis = widok.wartosci[indeks];
         if (zapis?.wartosc !== undefined) element.value = zapis.wartosc;
         if (zapis?.zaznaczony !== undefined) element.checked = zapis.zaznaczony;
@@ -42,6 +87,7 @@
   async function przekazAkcje(zdarzenie) {
     const element = zdarzenie.target.closest(selektor);
     if (!element || !korzen.contains(element)) return;
+    if (trwaZanikanie) return;
     if (zdarzenie.type === "click" && !element.matches("button")) return;
     if (zdarzenie.type === "toggle" && !element.matches("details")) return;
     const elementy = Array.from(korzen.querySelectorAll(selektor));

@@ -226,14 +226,21 @@
         clearTimeout(czasMaksymalny);
         rozwiaz();
       };
-      const obserwator = new MutationObserver(() => {
+      const obserwator = new MutationObserver(zmiany => {
+        const zmienionoWyniki = zmiany.some(zmiana => {
+          const element = zmiana.target.nodeType === 1 ? zmiana.target : zmiana.target.parentElement;
+          if (element?.closest("#esync-root")) return false;
+          return element?.closest("table") || [...zmiana.addedNodes,...zmiana.removedNodes].some(wezel =>
+            wezel.nodeType === 1 && (wezel.matches("table,tbody,tr") || wezel.querySelector("table,tbody,tr")));
+        });
+        if (!zmienionoWyniki) return;
         clearTimeout(czasUspokojenia);
         czasUspokojenia = setTimeout(zakoncz,180);
       });
       obserwator.observe(obserwowany,{subtree:true,childList:true,characterData:true,attributes:true});
-      const czasMaksymalny = setTimeout(zakoncz,1800);
+      const czasMaksymalny = setTimeout(zakoncz,5000);
       ustawWartoscPolaWyszukiwania(pole,wartosc);
-      czasUspokojenia = setTimeout(zakoncz,700);
+      czasUspokojenia = setTimeout(zakoncz,1800);
     });
   }
 
@@ -772,7 +779,7 @@
       ? '<div class="esync-info esync-small">Wyszukiwanie ogłoszeń na wszystkich stronach listy Eventis…</div>'
       : `<div class="esync-small esync-muted" style="margin-top:6px">Przeszukane strony: ${stan.skanowanie.liczbaStron} · zapytania w polu wyszukiwania: ${stan.skanowanie.liczbaZapytan} · znalezione ogłoszenia: ${stan.ogloszenia.length}</div>${stan.skanowanie.blad?`<div class="esync-warning esync-small">Część stron nie została odczytana: ${esc(stan.skanowanie.blad)}</div>`:""}`;
     const zawartosc = wiersze || (stan.rekordy.length ? '<div class="esync-small esync-muted">Pozycje są pokazane niżej w jednej, scalonej liście.</div>' : '<div class="esync-small esync-muted">Brak aktywnych pozycji w kolejce.</div>');
-    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${zawartosc}<button id="esync-clear-queue" class="esync-btn danger" style="width:100%;margin-top:7px" ${stan.kolejka.length ? "" : "disabled"}>Wyczyść całą kolejkę (${stan.kolejka.length})</button></div>`;
+    return `<div class="esync-card"><div class="esync-section-title"><span>Seryjna kolejka Eventis</span><span class="esync-small">trwała</span></div><div class="esync-import-summary"><span>Oczekujące: <b>${podsumowanie.pending}</b></span><span>Czekają na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zakończone: <b>${podsumowanie.done}</b></span><span>Pominięte: <b>${podsumowanie.skipped}</b></span><span>Wymagają uwagi: <b>${podsumowanie.errors}</b></span></div>${stanSkanowania}${zawartosc}</div>`;
   }
 
   function zapamietajWidok(korzen) {
@@ -808,7 +815,7 @@
     }
     const widok = zapamietajWidok(korzen);
     const liczbaAktywnych = stan.kolejka.filter(element => element.status !== "DONE").length;
-    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body"><details id="esync-lista-kolejka" ${stan.pokazKolejke?"open":""}><summary>Seryjna kolejka Eventis (${liczbaAktywnych})</summary>${renderujSeryjnaKolejke()}</details><div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
+    korzen.innerHTML = `<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Kolejka potwierdzonych terminów <span class="esync-badge ${stan.organizacja==='SEMPER'?'semper':'iist'}">${esc(stan.organizacja)}</span></div><div class="esync-head-sub">Lista wydarzeń Eventis · zapis ręczny</div></div><div class="esync-head-actions"><button class="esync-icon-btn esync-collapse" id="esync-lista-collapse" title="Zwiń">−</button></div></div><div class="esync-body"><details id="esync-lista-kolejka" ${stan.pokazKolejke?"open":""}><summary>Seryjna kolejka Eventis (${liczbaAktywnych})</summary>${renderujSeryjnaKolejke()}</details><button id="esync-clear-queue" class="esync-btn danger" style="width:100%;margin-top:7px" ${stan.kolejka.length ? "" : "disabled"}>Wyczyść całą kolejkę (${stan.kolejka.length})</button><div class="esync-card"><div class="esync-section-title"><span>Ręczny import do kolejki Eventis</span><span class="esync-small">format tabeli lub wierszy</span></div><textarea id="esync-lista-paste" class="esync-textarea" placeholder='| POTWIERDZONE SZKOLENIE | "Tytuł", 2026-09-21 do 2026-09-22, ONLINE, 2 osoby'>${esc(stan.surowyTekst)}</textarea><button id="esync-lista-analizuj" class="esync-btn primary" style="width:100%;margin-top:7px" ${stan.skanowanie.trwa?"disabled":""}>${stan.skanowanie.trwa?"Wyszukuję ogłoszenia…":"Analizuj kolejkę i dopasuj karty"}</button></div>${renderujWyniki()}${stan.komunikat?`<div class="esync-success">${esc(stan.komunikat)}</div>`:""}<div class="esync-footer">TYLKO POTWIERDZONE · BEZ AUTOMATYCZNEGO ZAPISU</div></div>`;
     const komunikat = $(".esync-body > .esync-success",korzen);
     if (komunikat) {
       if (stan.bladAnalizy) komunikat.classList.replace("esync-success","esync-danger");

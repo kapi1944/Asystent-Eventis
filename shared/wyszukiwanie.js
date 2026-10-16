@@ -155,10 +155,13 @@
     const {oryginalnyTytul,rdzenTytulu} = rozlozTytul(tytul);
     const segment = rdzenTytulu.split(/\.\s+/)[0].replace(/[.]+$/,"");
     const poczatek = tytulPrzedPierwszymSeparatorem(segment);
-    const warianty = [oryginalnyTytul,rdzenTytulu,poczatek,istotneSlowa(rdzenTytulu).slice(0,9).join(" ")];
+    const bezDopisku = oryginalnyTytul.replace(/\s*certyfikowane\s+szkolenie\s+online\s*$/i,"").trim();
+    const doslownyPoczatek = tytulPrzedPierwszymSeparatorem(bezDopisku.split(/\.\s+/)[0]);
+    const krotkiPoczatek = doslownyPoczatek.split(/\s+/).slice(0,8).join(" ");
+    const warianty = [bezDopisku,doslownyPoczatek,krotkiPoczatek,oryginalnyTytul,rdzenTytulu,poczatek,istotneSlowa(rdzenTytulu).slice(0,9).join(" ")];
     const widziane = new Set();
     return warianty.filter(wariant => {
-      const klucz = normalizujTytul(wariant);
+      const klucz = oczyscLinie(wariant).toLowerCase();
       if (klucz.length < 12 || istotneSlowa(wariant).length < 2 || widziane.has(klucz)) return false;
       widziane.add(klucz);
       return true;
