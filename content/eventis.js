@@ -1046,23 +1046,24 @@
     return {...wynikWypelnienia,pominiete:rozdzielenie.pominiete};
   }
 
-  async function fillEventDetailsIfAdd(source, terms) {
-    if (MODE !== "add") return;
-    const liczbaDni = Math.max(1,...terms.map(termin=>durationDays(termin.start,termin.end)));
+  async function uzupelnijDaneWydarzenia(zrodlo, terminy) {
+    const liczbaDni = Math.max(1,...terminy.map(termin=>durationDays(termin.start,termin.end)));
     const poleCzasuTrwania = $('[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)");
     const czasTrwania = liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`;
-    setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),source.title);
-    if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await ustawPoleRichText(poleCzasuTrwania?.name,`<p>${czasTrwania}</p>`,{elementId:"eventHours"});
-    else setValue(poleCzasuTrwania,czasTrwania);
-    await wybierzWygladPodstawowy();
-    await uzupelnijWymaganeFormyZajec();
-    await uzupelnijIZweryfikujZyciorys();
-    await NARZEDZIA_POL_RICH_TEXT.uzupelnijPolaOpisoweJesliDodawanie(
-      MODE,
-      source.opisy,
+    if (MODE === "add") setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),zrodlo.title);
+    if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await ustawPoleRichText(poleCzasuTrwania?.name,`<p>${czasTrwania}</p>`,{elementId:"eventHours",tylkoPuste:MODE === "edit"});
+    else if (MODE === "add" || !poleCzasuTrwania?.value?.trim()) setValue(poleCzasuTrwania,czasTrwania);
+    if (MODE === "add") {
+      await wybierzWygladPodstawowy();
+      await uzupelnijWymaganeFormyZajec();
+      await uzupelnijIZweryfikujZyciorys();
+    }
+    await NARZEDZIA_POL_RICH_TEXT.uzupelnijPolaOpisowe(
+      zrodlo.opisy,
       NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH,
       ustawPoleRichText
     );
+    if (MODE !== "add") return;
     const participantType=$('input[name="event[participantsType]"][value="1"]'); if(participantType){participantType.checked=true;participantType.dispatchEvent(new Event("change",{bubbles:true}));}
     const adult=$('input[name="ageGroup[]"][value="4"]'); if(adult&&!adult.checked){adult.checked=true;adult.dispatchEvent(new Event("change",{bubbles:true}));}
     const category=$("#tematSelect") || $('select[name="event[category_id]"]');
@@ -1593,6 +1594,7 @@
           }
           const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doWprowadzenia,wynikWprowadzenia.dodane);
           if (!powiazanie.terms.length) return {wynikWprowadzenia,powiazanie,operacja};
+          await uzupelnijDaneWydarzenia(state.source,powiazanie.terms);
           const potwierdzonaOperacja=await potwierdzOperacjeOczekujaca(operacja,powiazanie.terms,powiazanie.queueItemIds);
           return {wynikWprowadzenia,powiazanie,operacja:potwierdzonaOperacja};
           } finally { state.trwaWypelnianieOperacji=false; }
@@ -1875,7 +1877,7 @@
           try {
           const wynikWprowadzenia=await addSelectedTerms(chosen);
           if (!wynikWprowadzenia.dodane.length) return wynikWprowadzenia;
-          await fillEventDetailsIfAdd(state.source,wynikWprowadzenia.dodane);
+          await uzupelnijDaneWydarzenia(state.source,wynikWprowadzenia.dodane);
           await potwierdzOperacjeOczekujaca(operacja,wynikWprowadzenia.dodane);
           return wynikWprowadzenia;
           } finally { state.trwaWypelnianieOperacji=false; }

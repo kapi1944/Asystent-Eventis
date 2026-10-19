@@ -38,7 +38,7 @@ function utworzDokument(pola = [], elementyPoId = {}) {
   };
 }
 
-function utworzWorker(dokument, ckeditor, dodatkowyWidok = {}) {
+function utworzWorker(dokument, ckeditor, dodatkowyWidok = {}, wykonajSkrypt = null) {
   let obslugaWiadomosci = null;
   const chrome = {
     runtime: {
@@ -51,7 +51,7 @@ function utworzWorker(dokument, ckeditor, dodatkowyWidok = {}) {
         if (konfiguracja.args.some(argument => argument === undefined || typeof argument === "function")) {
           throw new Error("Argument executeScript nie jest serializowalny.");
         }
-        return [{ result:await konfiguracja.func(...konfiguracja.args) }];
+        return [{ result:wykonajSkrypt ? await wykonajSkrypt(konfiguracja) : await konfiguracja.func(...konfiguracja.args) }];
       }
     }
   };
@@ -294,15 +294,90 @@ test("CKEditor 5 wpisuje spację i usuwa ją w modelu bez ponownego ustawiania o
   assert.deepEqual(pole.wartosciPrzyZdarzeniach,[...Array(5).fill("<p>2 dni </p>"),...Array(5).fill("<p>2 dni</p>")]);
 });
 
-test("CKEditor nie zwraca sukcesu przy pustym backing field mimo treści w modelu", async () => {
+test("CKEditor synchronizuje ukryte pole, gdy updateSourceElement aktualizuje osobny div", async () => {
   const pole = utworzElement({name:"event[plan]"});
   let tresc = "";
   pole.ckeditorInstance = {setData(html) { tresc = html; },getData() { return tresc; },updateSourceElement() {}};
   const wyslij = utworzWorker(utworzDokument([pole]));
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(wynik.ok,true);
+  assert.equal(tresc,"<p>Program</p>");
+  assert.equal(pole.value,"<p>Program</p>");
+});
+
+test("CKEditor nie potwierdza aktualizacji, jeżeli model odrzucił całą treść", async () => {
+  const pole = utworzElement({name:"event[plan]",ckeditorInstance:{
+    setData() {},getData() { return ""; },updateSourceElement() {}
+  }});
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
   assert.equal(wynik.ok,false);
   assert.equal(wynik.code,"EDITOR_UPDATE_FAILED");
-  assert.equal(tresc,"<p>Program</p>");
+  assert.equal(pole.value,"");
+});
+
+test("rzeczywisty DOM: osobny div CKEditora i pola _post trafiają do danych formularza", async podtest => {
+  const {chromium:przegladarkaChromium} = require("playwright");
+  const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
+  podtest.after(() => przegladarka.close());
+  const strona = await przegladarka.newPage();
+  await strona.route("**/*",trasa => trasa.abort());
+  const pola = [["hours","eventHours"],["information","information"],["reason","reason"],
+    ["forWho","forWho"],["plan","plan"],["participants","participants"]];
+  await strona.setContent(`<form>${pola.map(([nazwa,identyfikator]) =>
+    `<section><input type="hidden" name="event[${nazwa}]" id="${identyfikator}_post">
+      <div id="${identyfikator}"></div><div class="ck-editor__editable" contenteditable="true"></div></section>`).join("")}</form>`);
+  await strona.evaluate(pola => {
+    for (const [,identyfikator] of pola) {
+      const zrodlo = document.getElementById(identyfikator);
+      const edytowalny = zrodlo.nextElementSibling;
+      // API aktualizuje źródłowy div, a osobne pole formularza pozostaje poza instancją.
+      zrodlo.ckeditorInstance = {
+        setData(html) { edytowalny.innerHTML = html; },
+        getData() { return edytowalny.innerHTML; },
+        updateSourceElement() { zrodlo.innerHTML = edytowalny.innerHTML; },
+        ui:{getEditableElement() { return edytowalny; }}
+      };
+    }
+  },pola);
+  const wyslij = utworzWorker(null,null,{},konfiguracja => strona.evaluate(
+    ({funkcja,argumenty}) => (0,eval)(`(${funkcja})`)(...argumenty),
+    {funkcja:konfiguracja.func.toString(),argumenty:konfiguracja.args}
+  ));
+  for (const [nazwa] of pola) {
+    const wynik = await wyslij({type:"SET_RICH_FIELD",name:`event[${nazwa}]`,html:`<p>Treść ${nazwa}</p>`});
+    assert.equal(wynik.ok,true,JSON.stringify(wynik));
+    assert.equal(wynik.method,"ckeditor-instance");
+  }
+  assert.deepEqual(await strona.evaluate(() => Array.from(new FormData(document.querySelector("form")))),
+    pola.map(([nazwa]) => [`event[${nazwa}]`,`<p>Treść ${nazwa}</p>`]));
+
+  // Edycja zachowuje tekst nawet wtedy, gdy jest wyłącznie w modelu lub ukrytym polu.
+  for (const miejsce of ["model","pole"]) {
+    await strona.evaluate(miejsce => {
+      const zrodlo = document.getElementById("plan");
+      zrodlo.innerHTML = "";
+      zrodlo.ckeditorInstance.setData(miejsce === "model" ? "<p>Własny program</p>" : "");
+      document.getElementById("plan_post").value = miejsce === "pole" ? "<p>Własny program</p>" : "";
+    },miejsce);
+    const przed = await strona.locator("form").innerHTML();
+    const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[plan]",html:"<p>Program SEMPER</p>",tylkoPuste:true});
+    assert.equal(wynik.pominieto,true);
+    assert.equal(await strona.locator("form").innerHTML(),przed);
+  }
+  await strona.evaluate(() => {
+    document.getElementById("plan").ckeditorInstance.setData("<p>&nbsp;<br></p>");
+    document.getElementById("plan_post").value = "<p>&nbsp;<br></p>";
+  });
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[plan]",html:"<p>Program SEMPER</p>",tylkoPuste:true});
+  assert.equal(wynik.ok,true);
+  assert.equal(wynik.pominieto,undefined);
+  assert.equal(await strona.locator("#plan_post").inputValue(),"<p>Program SEMPER</p>");
+  await narzedziaPol.uzupelnijPolaOpisowe({programHtml:"<p>Aktualny program SEMPER</p>"},
+    [{klucz:"programHtml",pole:"event[plan]"}],
+    (pole,html,opcje) => wyslij({type:"SET_RICH_FIELD",name:pole,html,...opcje}));
+  assert.equal(await strona.locator("#plan_post").inputValue(),"<p>Aktualny program SEMPER</p>");
+  assert.equal(await strona.locator("#plan + .ck-editor__editable").innerHTML(),"<p>Aktualny program SEMPER</p>");
 });
 
 test("pusty HTML edytora nie otrzymuje spacji", async () => {
@@ -416,7 +491,7 @@ test("błąd pola event[plan] przerywa import opisów i nie zwraca pełnego sukc
   const ustawionePola = [];
 
   await assert.rejects(
-    narzedziaPol.uzupelnijPolaOpisoweJesliDodawanie("add",{
+    narzedziaPol.uzupelnijPolaOpisowe({
       grupaHtml:"<p>Grupa</p>",
       celHtml:"<p>Cel</p>",
       korzysciHtml:"<p>Korzyści</p>",
@@ -429,18 +504,75 @@ test("błąd pola event[plan] przerywa import opisów i nie zwraca pełnego sukc
   assert.deepEqual(ustawionePola,["event[information]","event[reason]","event[forWho]","event[plan]"]);
 });
 
-test("na /event/edit import opisów nie jest wykonywany", async () => {
-  const wywolania = [];
-  const wynik = await narzedziaPol.uzupelnijPolaOpisoweJesliDodawanie(
-    "edit",
-    {programHtml:"<p>Program</p>"},
-    [{klucz:"programHtml",pole:"event[plan]"}],
-    async pole => { wywolania.push(pole); }
-  );
+test("import zastępuje wszystkie dotychczasowe opisy, zachowując pola bez treści źródłowej", async () => {
+  const mapowanie = require("../shared/opisy-semper").MAPOWANIE_POL_OPISOWYCH;
+  const pola = mapowanie.map(({pole}) => utworzElement({name:pole,value:"Dotychczasowa treść"}));
+  const wyslij = utworzWorker(utworzDokument(pola));
+  const ustaw = (pole,html,opcje) => wyslij({type:"SET_RICH_FIELD",name:pole,html,...opcje});
+  const wynik = await narzedziaPol.uzupelnijPolaOpisowe(
+    {programHtml:"<p>Program</p>",celHtml:"<p>Cel</p>",grupaHtml:"<p>Grupa</p>",korzysciHtml:"<p>Korzyści</p>"},
+    mapowanie,ustaw);
+  assert.deepEqual(pola.map(pole => pole.value),["<p>Cel</p>","<p>Korzyści</p>","<p>Grupa</p>","<p>Program</p>"]);
+  assert.deepEqual(wynik,{ok:true,pominieto:false,ustawionePola:mapowanie.map(({pole}) => pole)});
+  await narzedziaPol.uzupelnijPolaOpisowe({celHtml:"",programHtml:"<p>Nowszy program</p>"},mapowanie,ustaw);
+  assert.deepEqual(pola.map(pole => pole.value),["<p>Cel</p>","<p>Korzyści</p>","<p>Grupa</p>","<p>Nowszy program</p>"]);
+});
 
-  assert.deepEqual(wywolania,[]);
-  assert.deepEqual(wynik,{ok:true,pominieto:true,ustawionePola:[]});
-  assert.match(fs.readFileSync(path.join(__dirname,"..","content","eventis.js"),"utf8"),/uzupelnijPolaOpisoweJesliDodawanie\(\s*MODE,/);
+test("dodawanie i edycja przekazują czas trwania i cztery opisy do właściwych pól", async () => {
+  const kod = fs.readFileSync(require.resolve("../content/eventis.js"),"utf8");
+  const fragment = kod.slice(kod.indexOf("  async function uzupelnijDaneWydarzenia"),kod.indexOf("  function przygotujTerminDoKolejki"));
+  for (const tryb of ["add","edit"]) {
+    const wywolania = [];
+    const tytul = {name:"event[title]"};
+    const uzupelnij = vm.runInNewContext(`${fragment};uzupelnijDaneWydarzenia`,{
+      MODE:tryb,$:selektor => selektor === '[name="event[hours]"]' ? {name:"event[hours]"} : selektor.includes("#title") ? tytul : null,
+      NARZEDZIA_POL_RICH_TEXT:narzedziaPol,NARZEDZIA_OPISOW_SEMPER:require("../shared/opisy-semper"),
+      durationDays:() => 2,setValue:(pole,tresc) => { pole.value = tresc; },
+      ustawPoleRichText:async (pole,html,opcje) => { wywolania.push([pole,html,opcje.tylkoPuste]); },
+      wybierzWygladPodstawowy:async () => {},uzupelnijWymaganeFormyZajec:async () => {},uzupelnijIZweryfikujZyciorys:async () => {}
+    });
+    await uzupelnij({title:"Szkolenie",opisy:{celHtml:"Cel",korzysciHtml:"Korzyści",grupaHtml:"Grupa",programHtml:"Program"}},[{}]);
+    assert.deepEqual(wywolania,[
+      ["event[hours]","<p>2 dni</p>",tryb === "edit"],
+      ["event[information]","Cel",false],
+      ["event[reason]","Korzyści",false],
+      ["event[forWho]","Grupa",false],
+      ["event[plan]","Program",false]
+    ]);
+    assert.equal(tytul.value,tryb === "add" ? "Szkolenie" : undefined);
+  }
+});
+
+test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i obsługują błąd edytora", async () => {
+  const kod = fs.readFileSync(require.resolve("../content/eventis.js"),"utf8");
+  const termin = {start:"2026-11-02",end:"2026-11-03",city:"Online",price:1200};
+  for (const [poczatek,koniec] of [["wprowadzTerminyZKolejki","unikalneTerminy"],["onAddMissing","switchOrganization"]]) {
+    const fragment = kod.slice(kod.indexOf(`  async function ${poczatek}`),kod.indexOf(`  ${koniec === "unikalneTerminy" ? "function" : "async function"} ${koniec}`));
+    for (const awaria of [false,true]) {
+      const czynnosci = [];
+      const stan = {mappingVerifiedThisSession:true,source:{opisy:{}},sourceTerms:[termin],missingTerms:[termin]};
+      const uruchom = vm.runInNewContext(`${fragment};${poczatek}`,{
+        state:stan,NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),NARZEDZIA_OPERACJI:require("../shared/operacje-eventis"),
+        sprawdzBrakOczekujacejOperacji:async () => true,odswiezKolejke:async () => {},compareTerms() {},
+        dopasowaniaKolejkiDoBiezacegoTytulu:() => [{element:{id:"1",recordStatus:"CONFIRMED"},terminy:[termin]}],
+        getExistingTerms:() => [],existingKey:wartosc => wartosc.start,unikalneTerminy:terminy => terminy,
+        utworzPlanOperacji:() => ({}),uzyskajClaimOperacji:async operacja => ({ok:true,operacja}),
+        addSelectedTerms:async () => { czynnosci.push("terminy"); return {dodane:[termin],bledy:[]}; },
+        uzupelnijDaneWydarzenia:async (zrodlo,terminy) => {
+          assert.equal(zrodlo,stan.source);
+          assert.deepEqual(Array.from(terminy),[termin]);
+          czynnosci.push("opisy");
+          if (awaria) throw new Error("Błąd edytora");
+        },
+        potwierdzOperacjeOczekujaca:async () => { czynnosci.push("potwierdzenie"); },
+        zwolnijNiepotwierdzonyClaim:async () => {},audit:async () => {},render() {},toast() {}
+      });
+      await uruchom();
+      assert.deepEqual(czynnosci,awaria ? ["terminy","opisy"] : ["terminy","opisy","potwierdzenie"]);
+      assert.equal(stan.status,awaria ? "ERROR" : "FORM_FILLED");
+      if (awaria) assert.equal(stan.lastError,"Błąd edytora");
+    }
+  }
 });
 
 test("brak terminów uruchamia zapis i zamyka kartę dopiero po komunikacie sukcesu", () => {

@@ -223,16 +223,17 @@ async function fetchText({ url, method = "GET", body = null, headers = {}, timeo
   }
 }
 
-async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu) {
+async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu, tylkoPuste = false) {
   const nazwaPola = typeof name === "string" ? name : "";
   const wartoscHtml = typeof html === "string" ? html : "";
   const identyfikatorEdytora = typeof identyfikatorElementu === "string" ? identyfikatorElementu : null;
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: async (fieldName, value, identyfikatorEdytora, czyDotknac) => {
+    func: async (fieldName, value, identyfikatorEdytora, czyDotknac, tylkoPuste) => {
       const field = Array.from(document.querySelectorAll("input,textarea,select")).find(el => el.name === fieldName);
-      const bezposredniEdytor = identyfikatorEdytora ? document.getElementById(identyfikatorEdytora) : null;
+      const identyfikator = identyfikatorEdytora || field?.id?.replace(/_post$/, "");
+      const bezposredniEdytor = identyfikator ? document.getElementById(identyfikator) : null;
       const nazwaPola = fieldName || identyfikatorEdytora || "nieznane";
       const blad = (code, message) => ({ ok: false, code, field: nazwaPola, message });
       if (!field && !bezposredniEdytor) {
@@ -322,13 +323,24 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
         ? [area]
         : Array.from(area.querySelectorAll('.ck-editor__editable[contenteditable="true"], [contenteditable="true"]')))
         .find(elementy => elementy.length) || [];
-      if (edytowalneElementy.length > 1 && !field?.ckeditorInstance) {
+      if (edytowalneElementy.length > 1 && !field?.ckeditorInstance && !bezposredniEdytor?.ckeditorInstance
+        && !(field && (window.CKEDITOR?.instances?.[field.id] || window.CKEDITOR?.instances?.[field.name]))) {
         return blad("EDITOR_MODEL_UNAVAILABLE", `Nie można jednoznacznie wskazać edytora pola „${nazwaPola}”.`);
       }
 
       try {
         const instancjaCkeditora4 = field && window.CKEDITOR?.instances
           && (window.CKEDITOR.instances[field.id] || window.CKEDITOR.instances[field.name]);
+        const czyMaTresc = tresc => /\S/.test(String(tresc || "").replace(/<[^>]*>/g,"")
+          .replace(/&nbsp;|&#160;|&#xA0;|[\u200B-\u200D\uFEFF]/gi," "))
+          || /<(?:img|table|iframe|video|audio|hr)\b/i.test(String(tresc || ""));
+        if (tylkoPuste && [field?.value, bezposredniEdytor?.innerHTML,
+          instancjaCkeditora4?.getData?.(), field?.ckeditorInstance?.getData?.(),
+          bezposredniEdytor?.ckeditorInstance?.getData?.(),
+          ...edytowalneElementy.flatMap(element => [element.innerHTML, element.ckeditorInstance?.getData?.()])]
+          .some(czyMaTresc)) {
+          return {ok:true,pominieto:true,field:nazwaPola};
+        }
         if (instancjaCkeditora4) {
           if (typeof instancjaCkeditora4.setData !== "function"
             || !(typeof instancjaCkeditora4.updateSourceElement === "function" || typeof instancjaCkeditora4.updateElement === "function")) {
@@ -352,8 +364,12 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
           const synchronizuj = () => {
             if (typeof instancjaCkeditora4.updateSourceElement === "function") instancjaCkeditora4.updateSourceElement();
             else instancjaCkeditora4.updateElement();
+            ustawWartoscNatywnie(field,instancjaCkeditora4.getData?.() ?? field.value);
           };
           await ustaw(value);
+          if (czyMaTresc(value) && !czyMaTresc(instancjaCkeditora4.getData?.() ?? field.value)) {
+            throw new Error("Model edytora pozostał pusty po ustawieniu treści.");
+          }
           synchronizuj();
           await dotknijEdytor(() => instancjaCkeditora4.getData?.() ?? field.value,
             ustaw,synchronizuj,instancjaCkeditora4.editable?.()?.$ || field,instancjaCkeditora4);
@@ -373,10 +389,14 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
           const synchronizuj = () => {
             if (typeof instancja.updateSourceElement === "function") instancja.updateSourceElement();
             else if (typeof instancja.updateElement === "function") instancja.updateElement();
-            else if (field) ustawWartoscNatywnie(field,odczytaj());
-            else throw new Error("Brak źródła danych edytora.");
+            // Źródłem CKEditora bywa div, a formularz wysyła osobne pole z końcówką _post.
+            if (field) ustawWartoscNatywnie(field,odczytaj());
+            else if (!instancja.updateSourceElement && !instancja.updateElement) throw new Error("Brak źródła danych edytora.");
           };
           await ustaw(value);
+          if (czyMaTresc(value) && !czyMaTresc(odczytaj())) {
+            throw new Error("Model edytora pozostał pusty po ustawieniu treści.");
+          }
           synchronizuj();
           const edytowalny = instancja.ui?.getEditableElement?.()
             || edytowalneElementy.find(element => element.ckeditorInstance === instancja)
@@ -419,7 +439,7 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu)
     },
     args: [nazwaPola, wartoscHtml, identyfikatorEdytora,
       nazwaPola === "event[hours]" || identyfikatorEdytora === "eventHours"
-        || globalThis.NarzedziaOpisowSemper.MAPOWANIE_POL_OPISOWYCH.some(({pole}) => pole === nazwaPola)]
+        || globalThis.NarzedziaOpisowSemper.MAPOWANIE_POL_OPISOWYCH.some(({pole}) => pole === nazwaPola), tylkoPuste === true]
   });
   return result || {
     ok: false,
@@ -462,7 +482,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "SET_RICH_FIELD": {
         if (!sender.tab?.id) throw new Error("Brak identyfikatora karty.");
         try {
-          const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId);
+          const result = await setRichFieldInMainWorld(sender.tab.id, message.name, message.html, message.elementId, message.tylkoPuste);
           sendResponse(result);
         } catch (blad) {
           sendResponse({
