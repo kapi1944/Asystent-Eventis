@@ -257,11 +257,11 @@
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
-    const organizer = wykryjOrganizatora();
-    state.organization = organizer.organization;
-    state.organizatorWydarzenia = organizer.organization;
-    state.statusOrganizatora = organizer.status;
-    state.wartoscFirmy = organizer.value;
+    const wykrytyOrganizator = wykryjOrganizatora();
+    state.organization = wykrytyOrganizator.organizator;
+    state.organizatorWydarzenia = wykrytyOrganizator.organizator;
+    state.statusOrganizatora = wykrytyOrganizator.stan;
+    state.wartoscFirmy = wykrytyOrganizator.wartosc;
     state.sposobWyboruZrodla = "AUTO";
     state.kontekstWydarzenia = kluczKontekstuWydarzenia();
     const key = state.organization ? mappingKey(state.organization,state.eventisId) : "";
@@ -310,16 +310,16 @@
     const identyfikatorUrl = `${location.pathname} ${location.search}`.match(/\/event\/edit\/(\d+)|[?&](?:id|event_id|eventId)=(\d+)/i);
     const identyfikatorFormularza = $('input[name="event[id]"], input[name="id"]')?.value;
     if (identyfikatorUrl && identyfikatorFormularza && String(identyfikatorFormularza) !== (identyfikatorUrl[1] || identyfikatorUrl[2])) {
-      return {organization:null,status:"LOADING",value:""};
+      return {organizator:null,stan:"LOADING",wartosc:""};
     }
     const pole = znajdzPoleFirmy();
     if (!pole) {
-      return {organization:null,status:"LOADING",value:""};
+      return {organizator:null,stan:"LOADING",wartosc:""};
     }
-    const value = odczytajWartoscPola(pole);
-    const rozpoznany = NARZEDZIA_ORGANIZATORA.rozpoznajOrganizatora(value);
-    const organization = rozpoznany === "UNKNOWN" ? null : rozpoznany;
-    return {organization,status:organization || "UNKNOWN",value};
+    const wartosc = odczytajWartoscPola(pole);
+    const rozpoznany = NARZEDZIA_ORGANIZATORA.rozpoznajOrganizatora(wartosc);
+    const organizator = rozpoznany === "UNKNOWN" ? null : rozpoznany;
+    return {organizator,stan:organizator || "UNKNOWN",wartosc};
   }
 
   async function zastosujOrganizatora(org, wartosc, {automatycznieSzukaj=true,wymusReset=false}={}) {
@@ -390,8 +390,21 @@
           setTimeout(odczytajPonownie,state.terminUstaleniaKontekstu-Date.now());
           return;
         }
+        const aktualnyTytul = getEventisTitle();
+        if (normalize(aktualnyTytul) !== normalize(state.eventisTitle)) {
+          state.eventisTitle = aktualnyTytul;
+          state.searchRequestId++;
+          state.mappingVerifiedThisSession = false;
+          state.searchChoices = [];
+          state.manualMatches = matchManualRecordsToCurrent(state.manualRecords);
+          if (state.source || state.searchAttempted) {
+            state.status = "TITLE_CHANGED";
+            state.searchMessage = "Tytuł Eventis zmienił się. Dotychczasowy wynik może być nieaktualny — uruchom wyszukiwanie ponownie.";
+          }
+          render();
+        }
         const wykryty = wykryjOrganizatora();
-        if (wykryty.status === "LOADING") {
+        if (wykryty.stan === "LOADING") {
           const wymagaResetu = state.organization || state.source || state.searchAttempted
             || state.sposobWyboruZrodla !== "AUTO" || state.statusOrganizatora !== "LOADING" || state.wartoscFirmy;
           if (!wymagaResetu) return;
@@ -407,15 +420,15 @@
           render();
           return;
         }
-        if (wykryty.value === state.wartoscFirmy) return;
-        if (wykryty.status === "UNKNOWN") {
-          if (state.wartoscFirmy !== wykryty.value || state.organization) {
+        if (wykryty.wartosc === state.wartoscFirmy) return;
+        if (wykryty.stan === "UNKNOWN") {
+          if (state.wartoscFirmy !== wykryty.wartosc || state.organization) {
             state.searchRequestId++;
             state.sposobWyboruZrodla = "AUTO";
             state.organization = null;
             state.organizatorWydarzenia = null;
             state.statusOrganizatora = "UNKNOWN";
-            state.wartoscFirmy = wykryty.value;
+            state.wartoscFirmy = wykryty.wartosc;
             state.source = null; state.sourceLoadedFromMapping = false; state.sourceTerms = []; state.mapping = null; state.pendingOperation = null;
             state.searchChoices = []; state.searchAttempted = false; state.mappingVerifiedThisSession = false;
             state.status = "INIT";
@@ -423,23 +436,20 @@
           render();
           return;
         }
-        zastosujOrganizatora(wykryty.organization,wykryty.value);
+        zastosujOrganizatora(wykryty.organizator,wykryty.wartosc);
       },150);
     };
-    document.addEventListener("input",event => { if (event.target === znajdzPoleFirmy()) odczytajPonownie(); },true);
-    document.addEventListener("change",event => { if (event.target === znajdzPoleFirmy()) odczytajPonownie(); },true);
+    const czyZdarzeniePolaFirmy = zdarzenie => {
+      const pole = znajdzPoleFirmy();
+      return zdarzenie.target === pole || Boolean(pole?.contains?.(zdarzenie.target));
+    };
+    document.addEventListener("input",zdarzenie => { if (czyZdarzeniePolaFirmy(zdarzenie)) odczytajPonownie(); },true);
+    document.addEventListener("change",zdarzenie => { if (czyZdarzeniePolaFirmy(zdarzenie)) odczytajPonownie(); },true);
     const obserwator = new MutationObserver(odczytajPonownie);
     obserwator.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:["value","selected"]});
     window.addEventListener("popstate",odczytajPonownie);
     window.addEventListener("hashchange",odczytajPonownie);
-    for (const nazwaMetody of ["pushState","replaceState"]) {
-      const oryginalnaMetoda = history[nazwaMetody];
-      history[nazwaMetody] = function (...argumenty) {
-        const wynik = oryginalnaMetoda.apply(this,argumenty);
-        odczytajPonownie();
-        return wynik;
-      };
-    }
+    window.navigation?.addEventListener("navigatesuccess",odczytajPonownie);
     odczytajPonownie();
   }
 
@@ -2179,7 +2189,10 @@
       render();
     }
     else if(state.mapping) await loadRememberedMapping();
-    else if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
+    else if(MODE==="edit"&&state.eventisTitle)setTimeout(()=>{
+      if (identyfikatorWyszukiwania === state.searchRequestId && kontekst === state.kontekstWydarzenia
+        && state.organization === org && state.sposobWyboruZrodla === "MANUAL") onSearch();
+    },350);
   }
 
   function renderTerm(t, status) {
@@ -2545,7 +2558,15 @@
         state.searchChoices=aliases.slice(0,3).map(m=>({url:m.sourceUrl,title:`[z pamięci] ${m.sourceTitle}`,similarity:m.aliasScore}));
         state.status="SEARCH_CHOICES";render();
       }
-      if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
+      if(MODE==="edit"&&state.eventisTitle){
+        const identyfikatorWyszukiwania = state.searchRequestId;
+        const kontekst = state.kontekstWydarzenia;
+        const organizacja = state.organization;
+        setTimeout(()=>{
+          if (identyfikatorWyszukiwania === state.searchRequestId && kontekst === state.kontekstWydarzenia
+            && state.organization === organizacja && state.sposobWyboruZrodla === "AUTO") onSearch();
+        },350);
+      }
     }
     if (state.organization) await uruchomAutomatycznaKolejkeJesliGotowa();
   }

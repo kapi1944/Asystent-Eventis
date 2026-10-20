@@ -4,7 +4,7 @@ const asercje = require("node:assert/strict");
 const {chromium:przegladarkaChromium} = require("playwright");
 
 test("panel zachowuje przewinięcie i najpierw wygasza, a potem zwija usuniętą kartę",async () => {
-  const przegladarka = await przegladarkaChromium.launch({channel:"msedge",headless:true});
+  const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
   try {
     const strona = await przegladarka.newPage({viewport:{width:400,height:650}});
     await strona.setContent('<nav><button id="plywajacy">Panel</button><span id="komunikat"></span></nav><aside id="esync-root"></aside>');
