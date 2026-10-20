@@ -42,3 +42,4 @@
 #esync-root .esync-przelacznik-organizatora .iist{background:#16628f}
 #esync-root .esync-przelacznik-organizatora:focus-visible{outline:2px solid #16628f;outline-offset:2px}
 #esync-root.esync-collapsed #esync-org.esync-przelacznik-organizatora{display:none}
+.esync-btn[data-zatwierdz-url]{background:#f68541;border-color:#f68541;color:#172033}.esync-btn[data-zatwierdz-url]:hover{background:#ed752e;border-color:#ed752e}

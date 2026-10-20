@@ -387,11 +387,11 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu,
           const ustaw = async tresc => { await instancja.setData(tresc); biezacaTresc = tresc; };
           const odczytaj = () => instancja.getData?.() ?? biezacaTresc;
           const synchronizuj = () => {
-            if (typeof instancja.updateSourceElement === "function") instancja.updateSourceElement();
-            else if (typeof instancja.updateElement === "function") instancja.updateElement();
-            // Źródłem CKEditora bywa div, a formularz wysyła osobne pole z końcówką _post.
+            // Źródłowy div może być widokiem edytora. Jego DOM pozostaje pod kontrolą CKEditora.
             if (field) ustawWartoscNatywnie(field,odczytaj());
-            else if (!instancja.updateSourceElement && !instancja.updateElement) throw new Error("Brak źródła danych edytora.");
+            else if (typeof instancja.updateSourceElement === "function") instancja.updateSourceElement();
+            else if (typeof instancja.updateElement === "function") instancja.updateElement();
+            else throw new Error("Brak źródła danych edytora.");
           };
           await ustaw(value);
           if (czyMaTresc(value) && !czyMaTresc(odczytaj())) {
@@ -402,6 +402,10 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu,
             || edytowalneElementy.find(element => element.ckeditorInstance === instancja)
             || bezposredniEdytor || field;
           await dotknijEdytor(odczytaj,ustaw,synchronizuj,edytowalny,instancja);
+          if (typeof edytowalny?.textContent === "string"
+            && czyMaTresc(odczytaj().replace(/<[^>]*>/g,"")) && !czyMaTresc(edytowalny.textContent)) {
+            throw new Error("Widok edytora pozostał pusty mimo treści w modelu. Ponów uzupełnienie opisów.");
+          }
           return { ok: true, method: "ckeditor-instance", field: nazwaPola, modelUpdated: true, sourceUpdated: true };
         }
 

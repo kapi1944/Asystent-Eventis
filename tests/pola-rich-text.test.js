@@ -113,8 +113,8 @@ test("bezpośrednia instancja CKEditor aktualizuje model i element źródłowy",
 
   const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[information]",html:"<p>Cel</p>"});
 
-  assert.deepEqual(wywolania,[["setData","<p>Cel</p>"],["updateSourceElement"],
-    ["setData","<p>Cel </p>"],["updateSourceElement"],["setData","<p>Cel</p>"],["updateSourceElement"]]);
+  assert.deepEqual(wywolania,[["setData","<p>Cel</p>"],
+    ["setData","<p>Cel </p>"],["setData","<p>Cel</p>"]]);
   assert.equal(pole.value,"<p>Cel</p>");
   assert.equal(wynik.ok,true);
   assert.equal(wynik.method,"ckeditor-instance");
@@ -303,6 +303,51 @@ test("CKEditor synchronizuje ukryte pole, gdy updateSourceElement aktualizuje os
   assert.equal(wynik.ok,true);
   assert.equal(tresc,"<p>Program</p>");
   assert.equal(pole.value,"<p>Program</p>");
+});
+
+test("CKEditor nie potwierdza pustego widoku mimo treści w modelu i polu formularza", async () => {
+  let tresc = "";
+  const edytowalny = utworzElement({textContent:""});
+  const pole = utworzElement({name:"event[plan]",ckeditorInstance:{
+    setData(html) { tresc = html; },getData() { return tresc; },
+    ui:{getEditableElement() { return edytowalny; }}
+  }});
+  const wyslij = utworzWorker(utworzDokument([pole]));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:pole.name,html:"<p>Program</p>"});
+  assert.equal(pole.value,"<p>Program</p>");
+  assert.equal(wynik.ok,false);
+  assert.match(wynik.message,/Widok edytora pozostał pusty/);
+});
+
+test("rzeczywisty DOM: synchronizacja formularza zachowuje węzły widoku CKEditora", async podtest => {
+  const {chromium:przegladarkaChromium} = require("playwright");
+  const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
+  podtest.after(() => przegladarka.close());
+  const strona = await przegladarka.newPage();
+  await strona.route("**/*",trasa => trasa.abort());
+  await strona.setContent('<form><input type="hidden" id="plan_post" name="event[plan]"><div id="plan" class="ck-editor__editable" contenteditable="true"><p></p></div></form>');
+  await strona.evaluate(() => {
+    const edytowalny = document.getElementById("plan");
+    const akapit = edytowalny.firstElementChild;
+    let tresc = "";
+    edytowalny.ckeditorInstance = {
+      setData(html) { tresc = html; akapit.textContent = html.replace(/<[^>]*>/g,""); },
+      getData() { return tresc; },
+      updateSourceElement() { edytowalny.innerHTML = tresc; },
+      ui:{getEditableElement() { return edytowalny; }}
+    };
+    window.akapitEdytora = akapit;
+  });
+  const wyslij = utworzWorker(null,null,{},konfiguracja => strona.evaluate(
+    ({funkcja,argumenty}) => (0,eval)(`(${funkcja})`)(...argumenty),
+    {funkcja:konfiguracja.func.toString(),argumenty:konfiguracja.args}
+  ));
+  const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[plan]",html:"<p>Program</p>"});
+  assert.equal(wynik.ok,true,JSON.stringify(wynik));
+  assert.equal(await strona.locator("#plan").innerText(),"Program");
+  assert.equal(await strona.evaluate(() => document.getElementById("plan").firstElementChild === window.akapitEdytora),true);
+  assert.deepEqual(await strona.evaluate(() => Array.from(new FormData(document.querySelector("form")))),
+    [["event[plan]","<p>Program</p>"]]);
 });
 
 test("CKEditor nie potwierdza aktualizacji, jeżeli model odrzucił całą treść", async () => {

@@ -32,6 +32,7 @@
       ],
       "js": [
         "shared/config.js",
+        "shared/organizator-eventis.js",
         "shared/wyszukiwanie.js",
         "shared/terminy.js",
         "shared/opisy-semper.js",

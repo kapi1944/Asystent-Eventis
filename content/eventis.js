@@ -22,6 +22,7 @@
   const NARZEDZIA_POL_RICH_TEXT = globalThis.NarzedziaPolRichTextEventis;
   const NARZEDZIA_OTWIERANIA = globalThis.OtwieranieWydarzenEventis;
   const MAPOWANIA_WYDARZEN = globalThis.MapowaniaWydarzenEventis;
+  const NARZEDZIA_ORGANIZATORA = globalThis.NarzedziaOrganizatoraEventis;
   if (!KONFIGURACJA) throw new Error("Nie załadowano wspólnej konfiguracji.");
   if (!NARZEDZIA_WYSZUKIWANIA) throw new Error("Nie załadowano modułu wyszukiwania.");
   if (!NARZEDZIA_TERMINOW) throw new Error("Nie załadowano modułu terminów.");
@@ -32,6 +33,7 @@
   if (!NARZEDZIA_LISTY) throw new Error("Nie załadowano obsługi listy Eventis.");
   if (!NARZEDZIA_POL_RICH_TEXT) throw new Error("Nie załadowano obsługi pól rich-text.");
   if (!NARZEDZIA_OTWIERANIA || !MAPOWANIA_WYDARZEN) throw new Error("Nie załadowano obsługi sesji otwierania Eventis.");
+  if (!NARZEDZIA_ORGANIZATORA) throw new Error("Nie załadowano rozpoznawania organizatora Eventis.");
   const DEFAULT_SETTINGS = KONFIGURACJA.DEFAULT_SETTINGS;
   const PROGI_WYSZUKIWANIA = Object.freeze({
     AUTO_AKCEPTACJA: 0.84,
@@ -51,8 +53,13 @@
 
   const state = {
     settings: { ...DEFAULT_SETTINGS },
-    organization: "SEMPER",
-    organizationDetectedBy: "default",
+    organization: null,
+    organizatorWydarzenia: null,
+    sposobWyboruZrodla: "AUTO",
+    statusOrganizatora: "LOADING",
+    wartoscFirmy: "",
+    kontekstWydarzenia: "",
+    terminUstaleniaKontekstu: 0,
     eventisId: "",
     eventisTitle: "",
     mapping: null,
@@ -237,22 +244,35 @@
     return cleanLine(field ? (field.value || field.textContent || "") : ($('h1')?.textContent || ""));
   }
 
+  function kluczKontekstuWydarzenia() {
+    const identyfikator = MODE === "edit"
+      ? detectEventisId()
+      : $('input[name="event[id]"], input[name="id"]')?.value || "nowe";
+    return `${location.pathname}${location.search}|${identyfikator}`;
+  }
+
   async function loadSettingsAndState() {
     state.tabId = (await chrome.runtime.sendMessage({type:"GET_TAB_CONTEXT"}))?.tabId || null;
     const data = await storageGet(["settings","mappings","pendingOperations","manualSheetSnapshot","eventisImportQueue","eventisQueueSchemaVersion",MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]);
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
-    state.organization = detectOrganization(state.settings);
-    const key = mappingKey(state.organization,state.eventisId);
-    state.mapping = (data.mappings || {})[key] || null;
+    const organizer = wykryjOrganizatora();
+    state.organization = organizer.organization;
+    state.organizatorWydarzenia = organizer.organization;
+    state.statusOrganizatora = organizer.status;
+    state.wartoscFirmy = organizer.value;
+    state.sposobWyboruZrodla = "AUTO";
+    state.kontekstWydarzenia = kluczKontekstuWydarzenia();
+    const key = state.organization ? mappingKey(state.organization,state.eventisId) : "";
+    state.mapping = key ? (data.mappings || {})[key] || null : null;
     const pendingOperations = data.pendingOperations || {};
-    state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId);
+    state.pendingOperation = state.organization ? NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId) : null;
     state.eventisImportQueue = NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : []);
-    state.przypisaneRecznieBiezacejKarty = kandydaciBiezacegoOgloszenia().filter(grupa => {
+    state.przypisaneRecznieBiezacejKarty = state.organization ? kandydaciBiezacegoOgloszenia().filter(grupa => {
       const mapowanie = MAPOWANIA_WYDARZEN.pobierzBezpieczneMapowanie(data[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN],state.organization,grupa.klucz,grupa.tytul);
       return String(mapowanie?.eventId || "") === String(state.eventisId);
-    }).flatMap(grupa => grupa.elementy.map(element => element.id));
+    }).flatMap(grupa => grupa.elementy.map(element => element.id)) : [];
     if (data.eventisQueueSchemaVersion !== 2) await storageSet({eventisImportQueue:state.eventisImportQueue,eventisQueueSchemaVersion:2});
     if (data.manualSheetSnapshot?.records) {
       state.manualRecords = data.manualSheetSnapshot.records;
@@ -261,16 +281,166 @@
     }
   }
 
-  function detectOrganization(settings) {
-    const body = normalize(document.body.innerText || "");
-    const semperMarker = normalize(settings.semperAccountMarker || "");
-    const iistMarker = normalize(settings.iistAccountMarker || "");
-    if (iistMarker && body.includes(iistMarker)) { state.organizationDetectedBy = "marker"; return "IIST"; }
-    if (semperMarker && body.includes(semperMarker)) { state.organizationDetectedBy = "marker"; return "SEMPER"; }
-    if (/\biist\b/.test(body) && !/\bsemper\b/.test(body)) { state.organizationDetectedBy = "page"; return "IIST"; }
-    if (/\bsemper\b/.test(body) && !/\biist\b/.test(body)) { state.organizationDetectedBy = "page"; return "SEMPER"; }
-    state.organizationDetectedBy = "default";
-    return settings.defaultOrganization || "SEMPER";
+  function odczytajWartoscPola(pole) {
+    if (!pole) return "";
+    if (pole.tagName === "SELECT") {
+      const opcja = pole.selectedOptions?.[0];
+      return cleanLine([opcja?.label,opcja?.textContent,opcja?.value].filter(Boolean).join(" "));
+    }
+    if ("value" in pole) return cleanLine([pole.value,pole.getAttribute("aria-label"),pole.dataset?.companyName,pole.dataset?.firma].filter(Boolean).join(" "));
+    return cleanLine(pole.getAttribute("aria-label") || pole.textContent || "");
+  }
+
+  function znajdzPoleFirmy() {
+    const formularz = $("form#eventForm") || $("form");
+    if (!formularz) return null;
+    for (const etykieta of $$('label',formularz)) {
+      if (!/^firma\s*[:*]?$/i.test(cleanLine(etykieta.textContent))) continue;
+      const powiazane = etykieta.control || (etykieta.htmlFor ? document.getElementById(etykieta.htmlFor) : null);
+      const pole = powiazane || etykieta.querySelector("input,select,[contenteditable='true'],[role='combobox']")
+        || etykieta.nextElementSibling?.matches?.("input,select,[contenteditable='true'],[role='combobox']") && etykieta.nextElementSibling
+        || etykieta.parentElement?.querySelector("input,select,[contenteditable='true'],[role='combobox']");
+      if (pole && formularz.contains(pole)) return pole;
+    }
+    const kandydaci = $$('input,select,textarea,[contenteditable="true"],[role="combobox"]',formularz);
+    return kandydaci.find(pole => /(?:^|[\[_.-])(?:company|firm|firma)(?:$|[\]_.-])/i.test(`${pole.name || ""} ${pole.id || ""}`)) || null;
+  }
+
+  function wykryjOrganizatora() {
+    const identyfikatorUrl = `${location.pathname} ${location.search}`.match(/\/event\/edit\/(\d+)|[?&](?:id|event_id|eventId)=(\d+)/i);
+    const identyfikatorFormularza = $('input[name="event[id]"], input[name="id"]')?.value;
+    if (identyfikatorUrl && identyfikatorFormularza && String(identyfikatorFormularza) !== (identyfikatorUrl[1] || identyfikatorUrl[2])) {
+      return {organization:null,status:"LOADING",value:""};
+    }
+    const pole = znajdzPoleFirmy();
+    if (!pole) {
+      return {organization:null,status:"LOADING",value:""};
+    }
+    const value = odczytajWartoscPola(pole);
+    const rozpoznany = NARZEDZIA_ORGANIZATORA.rozpoznajOrganizatora(value);
+    const organization = rozpoznany === "UNKNOWN" ? null : rozpoznany;
+    return {organization,status:organization || "UNKNOWN",value};
+  }
+
+  async function zastosujOrganizatora(org, wartosc, {automatycznieSzukaj=true,wymusReset=false}={}) {
+    if (!org || !["SEMPER","IIST"].includes(org)) return;
+    const zmienilSieZrodlo = org !== state.organization || state.sposobWyboruZrodla !== "AUTO" || wymusReset;
+    state.organizatorWydarzenia = org;
+    state.statusOrganizatora = org;
+    state.wartoscFirmy = wartosc;
+    state.sposobWyboruZrodla = "AUTO";
+    if (!zmienilSieZrodlo) { render(); return; }
+    state.searchRequestId++;
+    state.organization = org;
+    state.source = null; state.sourceLoadedFromMapping = false; state.sourceTerms = [];
+    state.mappingVerifiedThisSession = false; state.searchChoices = []; state.searchAttempted = false;
+    state.searchMessage = ""; state.searchFinalReason = "";
+    state.analizaTerminowWykonana = false; state.analizaWykazalaBraki = false;
+    state.mapping = null; state.pendingOperation = null; state.pendingLooksSaved = false;
+    state.weryfikacjaOtwartejKarty = null; state.przypisaneElementyKolejki = [];
+    state.status = "INIT";
+    const identyfikatorKontekstu = state.searchRequestId;
+    const {mappings={},pendingOperations={}} = await storageGet(["mappings","pendingOperations"]);
+    if (identyfikatorKontekstu !== state.searchRequestId || state.organization !== org) return;
+    await zweryfikujKarteSesjiOtwarcia();
+    if (identyfikatorKontekstu !== state.searchRequestId || state.organization !== org) return;
+    state.mapping = mappings[mappingKey(org,state.eventisId)] || null;
+    state.pendingOperation = NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle,state.tabId);
+    state.pendingLooksSaved = false;
+    render();
+    await inspectPendingAfterReload();
+    przywrocOczekujacyZapis();
+    if (state.pendingLooksSaved) render();
+    if (state.mapping) await loadRememberedMapping();
+    else if (automatycznieSzukaj && MODE === "edit" && state.eventisTitle) setTimeout(() => {
+      if (state.organization === org && state.wartoscFirmy === wartosc && state.sposobWyboruZrodla === "AUTO") onSearch();
+    },350);
+    await uruchomAutomatycznaKolejkeJesliGotowa();
+  }
+
+  function obserwujOrganizatora() {
+    let czasomierz = null;
+    const odczytajPonownie = () => {
+      clearTimeout(czasomierz);
+      czasomierz = setTimeout(() => {
+        const kontekst = kluczKontekstuWydarzenia();
+        if (kontekst !== state.kontekstWydarzenia) {
+          state.kontekstWydarzenia = kontekst;
+          state.terminUstaleniaKontekstu = Date.now() + 300;
+          state.searchRequestId++;
+          state.eventisId = detectEventisId();
+          state.eventisTitle = getEventisTitle();
+          state.sposobWyboruZrodla = "AUTO";
+          state.organization = null;
+          state.organizatorWydarzenia = null;
+          state.statusOrganizatora = "LOADING";
+          state.wartoscFirmy = "";
+          state.source = null; state.sourceLoadedFromMapping = false; state.sourceTerms = [];
+          state.mapping = null; state.pendingOperation = null; state.pendingLooksSaved = false;
+          state.searchChoices = []; state.searchAttempted = false; state.mappingVerifiedThisSession = false;
+          state.weryfikacjaOtwartejKarty = null; state.przypisaneElementyKolejki = [];
+          state.analizaTerminowWykonana = false; state.analizaWykazalaBraki = false;
+          state.searchMessage = ""; state.searchFinalReason = ""; state.status = "INIT";
+          state.reczniePotwierdzoneTerminy.clear();
+          render();
+          setTimeout(odczytajPonownie,300);
+          return;
+        }
+        if (Date.now() < state.terminUstaleniaKontekstu) {
+          setTimeout(odczytajPonownie,state.terminUstaleniaKontekstu-Date.now());
+          return;
+        }
+        const wykryty = wykryjOrganizatora();
+        if (wykryty.status === "LOADING") {
+          const wymagaResetu = state.organization || state.source || state.searchAttempted
+            || state.sposobWyboruZrodla !== "AUTO" || state.statusOrganizatora !== "LOADING" || state.wartoscFirmy;
+          if (!wymagaResetu) return;
+          state.searchRequestId++;
+          state.sposobWyboruZrodla = "AUTO";
+          state.statusOrganizatora = "LOADING";
+          state.organization = null;
+          state.organizatorWydarzenia = null;
+          state.wartoscFirmy = "";
+          state.source = null; state.sourceTerms = []; state.mapping = null; state.pendingOperation = null;
+          state.searchChoices = []; state.searchAttempted = false; state.mappingVerifiedThisSession = false;
+          state.searchMessage = ""; state.searchFinalReason = ""; state.status = "INIT";
+          render();
+          return;
+        }
+        if (wykryty.value === state.wartoscFirmy) return;
+        if (wykryty.status === "UNKNOWN") {
+          if (state.wartoscFirmy !== wykryty.value || state.organization) {
+            state.searchRequestId++;
+            state.sposobWyboruZrodla = "AUTO";
+            state.organization = null;
+            state.organizatorWydarzenia = null;
+            state.statusOrganizatora = "UNKNOWN";
+            state.wartoscFirmy = wykryty.value;
+            state.source = null; state.sourceLoadedFromMapping = false; state.sourceTerms = []; state.mapping = null; state.pendingOperation = null;
+            state.searchChoices = []; state.searchAttempted = false; state.mappingVerifiedThisSession = false;
+            state.status = "INIT";
+          }
+          render();
+          return;
+        }
+        zastosujOrganizatora(wykryty.organization,wykryty.value);
+      },150);
+    };
+    document.addEventListener("input",event => { if (event.target === znajdzPoleFirmy()) odczytajPonownie(); },true);
+    document.addEventListener("change",event => { if (event.target === znajdzPoleFirmy()) odczytajPonownie(); },true);
+    const obserwator = new MutationObserver(odczytajPonownie);
+    obserwator.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:["value","selected"]});
+    window.addEventListener("popstate",odczytajPonownie);
+    window.addEventListener("hashchange",odczytajPonownie);
+    for (const nazwaMetody of ["pushState","replaceState"]) {
+      const oryginalnaMetoda = history[nazwaMetody];
+      history[nazwaMetody] = function (...argumenty) {
+        const wynik = oryginalnaMetoda.apply(this,argumenty);
+        odczytajPonownie();
+        return wynik;
+      };
+    }
+    odczytajPonownie();
   }
 
   function mappingKey(org,id) { return `${org}|${id}`; }
@@ -282,29 +452,39 @@
   }
 
   async function saveMapping(source, origin="MANUAL_URL") {
+    const identyfikatorWyszukiwania = state.searchRequestId;
+    const kontekst = state.kontekstWydarzenia;
+    const organizacja = state.organization;
+    const identyfikatorWydarzenia = state.eventisId;
+    const tytulWydarzenia = state.eventisTitle;
     const { mappings = {} } = await storageGet(["mappings"]);
-    const key = mappingKey(state.organization,state.eventisId);
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia
+      || organizacja !== state.organization || identyfikatorWydarzenia !== state.eventisId) return false;
+    const key = mappingKey(organizacja,identyfikatorWydarzenia);
     const mapping = {
       mappingId: crypto.randomUUID(),
-      organization: state.organization,
-      eventisEventId: state.eventisId,
-      eventisTitle: state.eventisTitle,
-      normalizedEventisTitle: normalize(state.eventisTitle),
+      organization: organizacja,
+      eventisEventId: identyfikatorWydarzenia,
+      eventisTitle: tytulWydarzenia,
+      normalizedEventisTitle: normalize(tytulWydarzenia),
       sourceTrainingId: source.id || source.url,
       sourceTitle: source.title,
       sourceUrl: source.url,
       mappingOrigin: origin,
-      confidence: titleSimilarity(state.eventisTitle, source.title),
+      confidence: titleSimilarity(tytulWydarzenia, source.title),
       learnedBy: state.settings.operatorInitial || "K",
       learnedAt: new Date().toISOString(),
       lastVerifiedAt: null,
       status: "ACTIVE"
     };
     mappings[key] = mapping;
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return false;
     await storageSet({ mappings });
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return false;
     state.mapping = mapping;
     state.mappingVerifiedThisSession = false;
     await audit("MAPPING_LEARNED", { sourceUrl:source.url, sourceTitle:source.title, origin });
+    return true;
   }
 
   async function forgetMapping() {
@@ -1655,6 +1835,12 @@
   }
 
   async function useSource(source, {learn=false,origin="MANUAL_URL",fromMapping=false}={}) {
+    const identyfikatorWyszukiwania = state.searchRequestId;
+    const kontekst = state.kontekstWydarzenia;
+    const organizacja = state.organization;
+    const identyfikatorWydarzenia = state.eventisId;
+    const czyAktualny = () => identyfikatorWyszukiwania === state.searchRequestId && kontekst === state.kontekstWydarzenia
+      && organizacja === state.organization && identyfikatorWydarzenia === state.eventisId;
     state.source=source;
     state.sourceLoadedFromMapping=fromMapping;
     state.sourceTerms=source.terms || [];
@@ -1665,14 +1851,18 @@
     state.analizaTerminowWykonana=true;
     state.analizaWykazalaBraki=state.missingTerms.length>0;
     state.mappingVerifiedThisSession=false;
-    if (learn) await saveMapping(source,origin);
+    if (learn) {
+      if (!await saveMapping(source,origin) || !czyAktualny()) return false;
+    }
     if (MODE === "add" && state.weryfikacjaOtwartejKarty?.status === "VERIFIED" && state.weryfikacjaOtwartejKarty.task?.queueContext) {
       state.mappingVerifiedThisSession = state.weryfikacjaOtwartejKarty.task.queueContext.sourceUrl === source.url && titleSimilarity(state.eventisTitle,source.title) >= state.settings.mappingWarningThreshold;
     } else if (titleSimilarity(state.eventisTitle,source.title) > PROGI_WYSZUKIWANIA.AUTOMATYCZNE_POTWIERDZENIE_MAPOWANIA) {
       await verifyMapping();
+      if (!czyAktualny()) return false;
     }
     state.status="SOURCE_READY";
     render();
+    return true;
   }
 
   async function loadRememberedMapping() {
@@ -1683,7 +1873,7 @@
       state.status="LOADING_MAPPING"; render();
       const source=await fetchTraining(state.mapping.sourceUrl,organizacja);
       if(identyfikator!==state.searchRequestId||organizacja!==state.organization)return;
-      await useSource(source,{learn:false,fromMapping:true});
+      if (!await useSource(source,{learn:false,fromMapping:true})) return;
       await reconcileBiezacejKolejki();
       const ms=mappingState();
       if(ms.kind==="danger"){
@@ -1700,14 +1890,21 @@
 
   async function verifyMapping() {
     if (!state.source) return;
+    const identyfikatorWyszukiwania = state.searchRequestId;
+    const kontekst = state.kontekstWydarzenia;
+    const organizacja = state.organization;
+    const identyfikatorWydarzenia = state.eventisId;
+    const czyAktualny = () => identyfikatorWyszukiwania === state.searchRequestId && kontekst === state.kontekstWydarzenia
+      && organizacja === state.organization && identyfikatorWydarzenia === state.eventisId;
     const ms=mappingState();
     if (ms.kind === "danger") return toast("Powiązanie jest zbyt niezgodne. Zmień link zamiast je potwierdzać.");
     const mapowanieDotyczyZrodla = czyMapowanieDotyczyZrodla(state.mapping,state.source);
     if (!mapowanieDotyczyZrodla) {
-      await saveMapping(state.source,"AUTO_RECOMMENDED_CONFIRMED");
+      if (!await saveMapping(state.source,"AUTO_RECOMMENDED_CONFIRMED") || !czyAktualny()) return;
     }
     state.mappingVerifiedThisSession=true;
     await reconcileBiezacejKolejki();
+    if (!czyAktualny()) return;
     if (state.mapping) {
       const { mappings = {} } = await storageGet(["mappings"]);
       const key=mappingKey(state.organization,state.eventisId);
@@ -1750,20 +1947,35 @@
   function sourceConfirmedCount(){return state.sourceTerms.filter(czyTerminPotwierdzony).length;}
 
   async function onLoadUrl() {
+    if (!state.organization) return toast("Nie rozpoznano organizatora. Wybierz źródło szkolenia.");
     const input=$("#esync-source-url");
     if(!input) return;
     const url=input.value.trim();
     if(!url) return toast("Wklej link szkolenia.");
+    let identyfikatorWyszukiwania = null;
+    let kontekst = "";
     try {
       state.searchRequestId++;
+      identyfikatorWyszukiwania = state.searchRequestId;
+      kontekst = state.kontekstWydarzenia;
+      const organizacja = state.organization;
       state.status="LOADING_SOURCE"; render();
-      const source=await fetchTraining(url);
-      await useSource(source,{learn:true,origin:"MANUAL_URL"});
+      const source=await fetchTraining(url,organizacja);
+      if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia || organizacja !== state.organization) return;
+      if (!await useSource(source,{learn:true,origin:"MANUAL_URL"})) return;
       toast("Link działa i został zapamiętany. Teraz porównaj tytuły i potwierdź zgodność.");
-    } catch(e){ state.status="ERROR";state.lastError=e.message;render(); }
+    } catch(e){
+      if (identyfikatorWyszukiwania !== null && (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia)) return;
+      state.status="ERROR";state.lastError=e.message;render();
+    }
   }
 
   async function onSearch() {
+    if (!state.organization) {
+      state.searchMessage = state.statusOrganizatora === "LOADING" ? "Oczekuję na pole Firma w formularzu Eventis." : "Nie rozpoznano organizatora. Wybierz źródło szkolenia.";
+      render();
+      return;
+    }
     if (state.status === "SEARCHING") return;
     const identyfikator = ++state.searchRequestId;
     try {
@@ -1800,11 +2012,33 @@
           zapiszDiagnostykeWyszukiwania({provider:"IIST",fallbackProvider:"SEMPER",finalReason:"semper-fallback-error",error:bladAwaryjnegoWyszukiwania.message});
         }
       }
+      if(state.organization==="SEMPER"&&!pokazane.length&&!wynik.networkVerificationErrors){
+        state.searchMessage="Brak podobnego tytułu w SEMPER. Sprawdzam pomocniczo bazę IIST…";
+        render();
+        try {
+          const wynikIist=await searchIist(wynik.variants,identyfikator);
+          sprawdzAktualnoscWyszukiwania(identyfikator);
+          const podobneIist=wynikIist.results
+            .filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.POKAZ_KANDYDATA)
+            .slice(0,PROGI_WYSZUKIWANIA.MAKS_WYNIKOW_W_UI);
+          if(podobneIist.length){
+            state.searchChoices=podobneIist;
+            state.status="SEARCH_WEAK";
+            state.searchFinalReason="semper-empty-iist-fallback";
+            state.searchMessage="Nie znaleziono podobnego tytułu w SEMPER, ale wykryto go w IIST. Sprawdź wynik i potwierdź zmianę profilu.";
+            zapiszDiagnostykeWyszukiwania({provider:"SEMPER",fallbackProvider:"IIST",finalReason:state.searchFinalReason,topCandidate:podobneIist[0].title,verificationScore:podobneIist[0].verificationScore});
+            render();
+            return;
+          }
+        } catch(bladAwaryjnegoWyszukiwania) {
+          zapiszDiagnostykeWyszukiwania({provider:"SEMPER",fallbackProvider:"IIST",finalReason:"iist-fallback-error",error:bladAwaryjnegoWyszukiwania.message});
+        }
+      }
       const najlepszy=pokazane[0];
       const drugi=pokazane[1];
       const maPrzewage=!drugi||najlepszy.verificationScore-drugi.verificationScore>=PROGI_WYSZUKIWANIA.MINIMALNA_PRZEWAGA;
       if(najlepszy&&najlepszy.verificationScore>=PROGI_WYSZUKIWANIA.AUTO_AKCEPTACJA&&maPrzewage){
-        await useSource(najlepszy.source,{learn:false});
+        if (!await useSource(najlepszy.source,{learn:false}) || identyfikator !== state.searchRequestId) return;
         state.status="SEARCH_HIGH";
         state.searchFinalReason="high-confidence-single";
         state.searchMessage="Znaleziono prawdopodobne szkolenie — sprawdź zgodność.";
@@ -1844,22 +2078,37 @@
   }
 
   async function chooseSearchResult(url) {
+    const kontekst = state.kontekstWydarzenia;
+    let identyfikatorWyszukiwania = state.searchRequestId;
     try {
       const kandydat=state.searchChoices.find(wynik=>wynik.url===url);
+      if (!kandydat) return;
       const organizacjaKandydata=kandydat?.provider||state.organization;
       if(organizacjaKandydata!==state.organization){
         const potwierdzono=confirm(`Wynik pochodzi z profilu ${organizacjaKandydata}, a panel działa obecnie jako ${state.organization}. Czy przełączyć profil na ${organizacjaKandydata} i przejść do weryfikacji zgodności?`);
         if(!potwierdzono)return;
+        if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return;
+        state.searchRequestId++;
+        identyfikatorWyszukiwania = state.searchRequestId;
         state.organization=organizacjaKandydata;
-        state.organizationDetectedBy="confirmed-search-fallback";
+        state.sposobWyboruZrodla="MANUAL";
+        state.source=null;state.sourceTerms=[];state.sourceLoadedFromMapping=false;state.mappingVerifiedThisSession=false;
         const {mappings={}}=await storageGet(["mappings"]);
+        if (kontekst !== state.kontekstWydarzenia || state.organization !== organizacjaKandydata) return;
         state.mapping=mappings[mappingKey(state.organization,state.eventisId)]||null;
       }
       state.searchRequestId++;
+      identyfikatorWyszukiwania = state.searchRequestId;
+      const nowyIdWyszukiwania = state.searchRequestId;
+      const organizacja = state.organization;
       state.status="LOADING_SOURCE";render();
-      const source=kandydat?.source||await fetchTraining(url,state.organization);
-      await useSource(source,{learn:true,origin:"USER_SELECTED"});
-    }catch(e){state.status="ERROR";state.lastError=e.message;render();}
+      const source=kandydat.source||await fetchTraining(url,organizacja);
+      if (nowyIdWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia || organizacja !== state.organization) return;
+      if (!await useSource(source,{learn:true,origin:"USER_SELECTED"})) return;
+    }catch(e){
+      if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return;
+      state.status="ERROR";state.lastError=e.message;render();
+    }
   }
 
   async function onAddMissing() {
@@ -1900,19 +2149,32 @@
 
   async function switchOrganization(org) {
     if (!['SEMPER','IIST'].includes(org)||org===state.organization) return;
-    if (!await zwolnijOczekujacaOperacje()) return;
     state.searchRequestId++;
-    state.organization=org;state.organizationDetectedBy="manual";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
+    const identyfikatorWyszukiwania = state.searchRequestId;
+    const kontekst = state.kontekstWydarzenia;
+    const wartoscFirmy = state.wartoscFirmy;
+    if (!await zwolnijOczekujacaOperacje()) {
+      if (identyfikatorWyszukiwania === state.searchRequestId && kontekst === state.kontekstWydarzenia) {
+        state.status = state.source ? "SOURCE_READY" : "INIT";
+        render();
+      }
+      return;
+    }
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia || wartoscFirmy !== state.wartoscFirmy) return;
+    state.organization=org;state.sposobWyboruZrodla="MANUAL";state.source=null;state.sourceLoadedFromMapping=false;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.searchChoices=[];state.searchAttempted=false;state.analizaTerminowWykonana=false;state.analizaWykazalaBraki=false;state.status="INIT";
     const { mappings={}, pendingOperations={} }=await storageGet(["mappings","pendingOperations"]);
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return;
     state.mapping=mappings[mappingKey(org,state.eventisId)]||null;
     state.pendingOperation=NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,org,state.eventisId,state.eventisTitle,state.tabId);
     state.pendingLooksSaved=false;
     render();
     await inspectPendingAfterReload();
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return;
     if(state.pendingLooksSaved) render();
     if (state.weryfikacjaOtwartejKarty?.status === "VERIFIED" && state.weryfikacjaOtwartejKarty.task?.queueContext?.sourceUrl) {
-      const zrodlo = await fetchTraining(state.weryfikacjaOtwartejKarty.task.queueContext.sourceUrl,state.organization);
-      await useSource(zrodlo,{learn:MODE !== "add"});
+      const zrodlo = await fetchTraining(state.weryfikacjaOtwartejKarty.task.queueContext.sourceUrl,org);
+      if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia || state.organization !== org) return;
+      if (!await useSource(zrodlo,{learn:MODE !== "add"})) return;
       compareTerms();
       render();
     }
@@ -1945,9 +2207,11 @@
   }
 
   function renderMappingCard() {
-    const orgClass=state.organization==="SEMPER"?"semper":"iist";
+    const orgClass=state.organization==="SEMPER"?"semper":state.organization==="IIST"?"iist":"";
     const mapping=state.mapping;
     const source=state.source;
+    const organizator=state.organizatorWydarzenia || (state.statusOrganizatora==="LOADING"?"ŁADOWANIE":"NIEZNANY");
+    const trybZrodla=state.sposobWyboruZrodla==="MANUAL"?"wybrano ręcznie":"wykryto automatycznie";
     const ms=mappingState();
     const remembered=!!(mapping&&source&&(state.sourceLoadedFromMapping||czyMapowanieDotyczyZrodla(mapping,source)));
     const statusClass=ms.kind==="danger"?"esync-danger":ms.kind==="warning"||remembered?"esync-warning":"esync-info";
@@ -1963,7 +2227,8 @@
     }
     const choices=state.searchChoices.length?`<div class="esync-card"><h3>Wyniki wyszukiwania</h3>${state.searchChoices.map(c=>`<div class="esync-choice"><b>${esc(c.title)}</b><small>${esc(c.provider||state.organization)} · zgodność tytułu ${Math.round((c.verificationScore??c.similarity??0)*100)}% · wynik wyszukiwarki ${Math.round((c.searchScore??c.similarity??0)*100)}%</small><div class="esync-choice-actions"><a class="esync-link" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">Otwórz stronę</a><button type="button" class="esync-btn primary" data-choice-url="${esc(c.url)}">Wybierz</button></div></div>`).join("")}</div>`:"";
     return `<div class="esync-card">
-      <div class="esync-row esync-between"><h3>Źródło szkolenia</h3><span class="esync-badge ${orgClass}">${esc(state.organization)}</span></div>
+      <div class="esync-row esync-between"><h3>Źródło szkolenia</h3>${state.organization?`<span class="esync-badge ${orgClass}">${esc(state.organization)}</span>`:""}</div>
+      <div class="esync-small">Organizator Eventis: ${esc(organizator)} · źródło ${state.organization?`${esc(state.organization)} · ${trybZrodla}`:"nieustalone"}</div>
       <div class="esync-zrodlo-eventis" style="padding:7px;border-radius:8px;background:#F68541;font-size:11px">
         <div class="esync-zrodlo-identyfikator" style="font-weight:700;margin-bottom:2px">Eventis: #${esc(state.eventisId)}</div>
         <div style="line-height:1.35">${wyroznioneTytuly?.pierwszy||esc(state.eventisTitle||"Nie odczytano tytułu")}</div>
@@ -1989,10 +2254,11 @@
     const mapping=state.mapping;
     const source=state.source;
     return `<div class="esync-card esync-source-actions">
+      ${!state.organization?`<div class="esync-warning esync-small">${state.statusOrganizatora === "LOADING" ? "Oczekuję na pole Firma w formularzu Eventis." : "Nie rozpoznano organizatora. Wybierz źródło szkolenia."}</div>`:""}
       <input id="esync-source-url" class="esync-input" type="url" value="${esc(source?.url||mapping?.sourceUrl||"")}" placeholder="Link szkolenia ${esc(state.organization)}">
       <div class="esync-grid2" style="margin-top:6px">
         <button id="esync-load-url" class="esync-btn primary">Użyj i zapamiętaj</button>
-        <button id="esync-search" class="esync-btn" ${state.status==="SEARCHING"?'disabled':''}>${state.searchAttempted?'Szukaj ponownie':'Szukaj automatycznie'}</button>
+        <button id="esync-search" class="esync-btn" ${!state.organization||state.status==="SEARCHING"?'disabled':''}>${state.searchAttempted?'Szukaj ponownie':'Szukaj automatycznie'}</button>
         ${source?`<button id="esync-open-source" class="esync-btn">Otwórz źródło</button>`:"<span></span>"}
         ${mapping?`<button id="esync-forget" class="esync-btn danger">Zapomnij link</button>`:""}
       </div>
@@ -2093,7 +2359,7 @@
     const dopasowaniaKolejki=dopasowaniaKolejkiDoBiezacegoTytulu();
     const gotoweTerminyKolejki=NARZEDZIA_KOLEJKI.rozdzielDopasowaniaKolejki(dopasowaniaKolejki.filter(dopasowanie=>dopasowanie.element.recordStatus === "CONFIRMED")).jednoznaczne;
     const liczbaNiepotwierdzonychNaZrodle=gotoweTerminyKolejki.filter(czyTerminKolejkiNiepotwierdzonyNaZrodle).length;
-    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis <span class="esync-badge ${state.organization==='SEMPER'?'semper':'iist'}">${esc(state.organization)}</span></div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-przelacznik-organizatora" id="esync-org" role="switch" aria-checked="${state.organization==='IIST'}" aria-label="Organizator: SEMPER lub IIST" title="Zmień organizatora na ${state.organization==='SEMPER'?'IIST':'SEMPER'}"><span class="${state.organization==='SEMPER'?'esync-organizator-aktywny semper':''}">SEMPER</span><span class="${state.organization==='IIST'?'esync-organizator-aktywny iist':''}">IIST</span></button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${MODE === "add" ? '<div id="esync-kategorie"></div>' : ""}${renderTermsCard()}${renderPendingCard()}${renderujBiezaceOgloszenie()}${renderKolejkaCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action">${liczbaNiepotwierdzonychNaZrodle?`<div class="esync-alarm-kolejki" style="margin-top:0">Brak (${liczbaNiepotwierdzonychNaZrodle}) ${liczbaNiepotwierdzonychNaZrodle===1?'terminu':'terminów'} z kolejki potwierdzonych na ${esc(state.organization)}</div>`:''}${gotoweTerminyKolejki.length?`<button id="esync-add-queue-terms" class="esync-btn good" ${state.mappingVerifiedThisSession?'':'disabled'}>Wprowadź terminy z kolejki (${gotoweTerminyKolejki.length})</button>`:''}<button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
+    root.innerHTML=`<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis</div><div class="esync-head-sub">v${VERSION} · operator ${esc(state.settings.operatorInitial||'K')} · outbox <span id="esync-outbox-count">0</span></div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-przelacznik-organizatora" id="esync-org" role="switch" aria-checked="${state.organization==='IIST'}" aria-label="Źródło szkolenia: SEMPER lub IIST" title="Zmień źródło na ${state.organization==='SEMPER'?'IIST':'SEMPER'}"><span class="${state.organization==='SEMPER'?'esync-organizator-aktywny semper':''}">SEMPER</span><span class="${state.organization==='IIST'?'esync-organizator-aktywny iist':''}">IIST</span></button><button class="esync-icon-btn" id="esync-settings" title="Ustawienia">⚙</button><button class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń">−</button></div></div><div class="esync-body">${renderujWeryfikacjeOtwartejKarty()}${renderujAkcjeZrodla()}${renderMappingCard()}${MODE === "add" ? '<div id="esync-kategorie"></div>' : ""}${renderTermsCard()}${renderPendingCard()}${renderujBiezaceOgloszenie()}${renderKolejkaCard()}<div class="esync-footer">TYLKO POTWIERDZONE</div></div><div class="esync-panel-action">${liczbaNiepotwierdzonychNaZrodle?`<div class="esync-alarm-kolejki" style="margin-top:0">Brak (${liczbaNiepotwierdzonychNaZrodle}) ${liczbaNiepotwierdzonychNaZrodle===1?'terminu':'terminów'} z kolejki potwierdzonych na ${esc(state.organization)}</div>`:''}${gotoweTerminyKolejki.length?`<button id="esync-add-queue-terms" class="esync-btn good" ${state.mappingVerifiedThisSession?'':'disabled'}>Wprowadź terminy z kolejki (${gotoweTerminyKolejki.length})</button>`:''}<button id="esync-add-missing" class="esync-btn good" ${!state.mappingVerifiedThisSession||!state.missingTerms.length?'disabled':''}>Uzupełnij brakujące potwierdzone (${state.missingTerms.length})</button><button id="esync-queue-existing" class="esync-btn" ${!state.mappingVerifiedThisSession||!liczbaPotwierdzonych?'disabled':''}>Zarejestruj potwierdzone, które już istnieją</button><button id="esync-panel-action" data-action="${zamknijKarte?'save-close':'save'}" class="esync-btn ${zamknijKarte?'primary':'good'}" ${(!zamknijKarte&&!state.formularzZmieniony)||state.pendingOperation?.status==='SAVE_SUBMITTED'?'disabled':''}>${zamknijKarte?'Zapisz i wróć do listy':'Zapisz kartę'}</button></div>`;
     $(".esync-head-title",root).textContent = "Eventis";
     $(".esync-head-sub",root).remove();
     const naglowek = $(".esync-head",root);
@@ -2257,20 +2523,21 @@
   async function init() {
     await uzupelnijTytulNowegoOgloszenia();
     await loadSettingsAndState();
-    await zweryfikujKarteSesjiOtwarcia();
-    przywrocOczekujacyZapis();
+    if (state.organization) await zweryfikujKarteSesjiOtwarcia();
+    if (state.organization) przywrocOczekujacyZapis();
     render();
     obserwujZmianyFormularza();
     obserwujRecznyZapisFormularza();
     observeTitleChanges();
+    obserwujOrganizatora();
     if (MODE === "edit") {
       await uzupelnijWymaganeFormyZajec();
       aktualizujStanPrzyciskuPanelu();
     }
-    await inspectPendingAfterReload();
+    if (state.organization) await inspectPendingAfterReload();
     if(state.pendingLooksSaved) render();
-    if(state.mapping) await loadRememberedMapping();
-    else {
+    if(state.organization && state.mapping) await loadRememberedMapping();
+    else if (state.organization) {
       // Uczymy się aliasów tylko jako sugestii: nie przypisujemy automatycznie nowego Eventis ID bez kontroli użytkownika.
       const {mappings={}}=await storageGet(["mappings"]);
       const aliases=Object.values(mappings).filter(m=>m.organization===state.organization&&m.eventisEventId!==state.eventisId).map(m=>({...m,aliasScore:titleSimilarity(state.eventisTitle,m.eventisTitle)})).filter(m=>m.aliasScore>=.93).sort((a,b)=>b.aliasScore-a.aliasScore);
@@ -2280,7 +2547,7 @@
       }
       if(MODE==="edit"&&state.eventisTitle)setTimeout(onSearch,350);
     }
-    await uruchomAutomatycznaKolejkeJesliGotowa();
+    if (state.organization) await uruchomAutomatycznaKolejkeJesliGotowa();
   }
 
   init().catch(e=>{console.error("Eventis Sync init",e);state.status="ERROR";state.lastError=e.message;render();});
