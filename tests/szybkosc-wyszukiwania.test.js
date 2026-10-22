@@ -7,7 +7,7 @@ const lista = require("../shared/lista-eventis");
 const wyszukiwanie = require("../shared/wyszukiwanie");
 const kod = pliki.readFileSync(require.resolve("../content/lista-eventis.js"),"utf8");
 const tytul = "Kierownik składowiska odpadów";
-const ogloszenie = {eventisId:"123",url:"https://eventis.pl/event/edit/123",tytuly:[tytul]};
+const ogloszenie = {eventisId:"123",url:"https://eventis.pl/event/edit/123",tytuly:[tytul],terminy:[{start:"2026-10-12",end:"2026-10-12",city:"Online"}]};
 
 test("znaleziony tytuł nie uruchamia ponownego filtrowania Eventis",async () => {
   const fragment = kod.slice(kod.indexOf("  async function pobierzOgloszeniaPrzezPoleWyszukiwania"),kod.indexOf("  async function pobierzWszystkieOgloszeniaZListy"));

@@ -158,7 +158,7 @@
     const bezDopisku = oryginalnyTytul.replace(/\s*certyfikowane\s+szkolenie\s+online\s*$/i,"").trim();
     const doslownyPoczatek = tytulPrzedPierwszymSeparatorem(bezDopisku.split(/\.\s+/)[0]);
     const krotkiPoczatek = doslownyPoczatek.split(/\s+/).slice(0,8).join(" ");
-    const warianty = [bezDopisku,doslownyPoczatek,krotkiPoczatek,oryginalnyTytul,rdzenTytulu,poczatek,istotneSlowa(rdzenTytulu).slice(0,9).join(" ")];
+    const warianty = [krotkiPoczatek,doslownyPoczatek,bezDopisku,oryginalnyTytul,rdzenTytulu,poczatek,istotneSlowa(rdzenTytulu).slice(0,9).join(" ")];
     const widziane = new Set();
     return warianty.filter(wariant => {
       const klucz = oczyscLinie(wariant).toLowerCase();

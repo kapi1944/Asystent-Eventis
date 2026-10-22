@@ -45,11 +45,12 @@ test("różne statusy dopasowania pozostają w kolejności wejścia",()=>{
 });
 
 test("równoległe odpowiedzi B D C A nie zmieniają kolejności żadnego renderu",async()=>{
-  const stan = {rozstrzygniecia:rozstrzygniecia(),preflight:{pokolenie:0,wyniki:{}}};
+  const stan = {rozstrzygniecia:rozstrzygniecia(),ogloszenia:[],skanowanie:{trwa:false,liczbaZapytan:0},preflight:{pokolenie:0,wyniki:{}}};
   const zakonczone = [];
   let liczbaRenderow = 0;
   const uruchom = odczytajFunkcje("async function uruchomPreflight","async function ustawDecyzjeKompletnych",{
     odswiezDopasowaniaZListy:()=>new Set(),
+    NARZEDZIA_LISTY:lista,pobierzOgloszeniaPrzezPoleWyszukiwania:async()=>({ogloszenia:[],liczbaZapytan:0}),
     stan,aktualneRozstrzygniecie:pozycja=>pozycja,kluczRozstrzygniecia:pozycja=>pozycja.normalizedSourceTitle,
     sprawdzTerminyWydarzenia:pozycja=>new Promise(rozwiaz=>setTimeout(()=>{
       zakonczone.push(pozycja.indeksWejsciowy);rozwiaz({status:"NEEDS_ATTENTION"});

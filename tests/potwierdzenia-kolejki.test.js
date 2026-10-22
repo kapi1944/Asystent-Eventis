@@ -97,7 +97,7 @@ test("potwierdzony zapis kończy również istniejące terminy tej samej karty",
 test("lista odświeża widoczne szkolenia po zapisie w innej karcie", async () => {
   let obslugaZmiany;
   let odtworzenia = 0;
-  const stan = {};
+  const stan = {rozstrzygniecia:[]};
   const inicjalizuj = odczytajFunkcje("../content/lista-eventis.js","async function inicjalizuj","  inicjalizuj().then",{
     stan,chrome:{storage:{onChanged:{addListener:obsluga=>{obslugaZmiany=obsluga;}},local:{get:async()=>({eventisImportQueue:[],eventisQueueSchemaVersion:2})}},runtime:{sendMessage:async()=>({})}},
     NARZEDZIA_KOLEJKI:kolejka,KONFIGURACJA:{DEFAULT_SETTINGS:{}},MAPOWANIA_WYDARZEN:{KLUCZ_STORAGE_MAPOWAN:"mapowania",normalizujMagazynMapowan:()=>({})},

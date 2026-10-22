@@ -214,7 +214,7 @@
   }
 
   async function zastosujFiltrWyszukiwania(pole, wartosc) {
-    const obserwowany = pole.closest('[class*="table"],[class*="list"],main,section') || document.body;
+    const obserwowany = document.body;
     await new Promise(rozwiaz => {
       let zakonczono = false;
       let czasUspokojenia = null;
@@ -235,17 +235,22 @@
         });
         if (!zmienionoWyniki) return;
         clearTimeout(czasUspokojenia);
-        czasUspokojenia = setTimeout(zakoncz,180);
+        czasUspokojenia = setTimeout(zakoncz,80);
       });
       obserwator.observe(obserwowany,{subtree:true,childList:true,characterData:true,attributes:true});
       const czasMaksymalny = setTimeout(zakoncz,5000);
+      czasUspokojenia = setTimeout(zakoncz,1400);
       ustawWartoscPolaWyszukiwania(pole,wartosc);
-      czasUspokojenia = setTimeout(zakoncz,1800);
     });
   }
 
-  async function pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly, znaneOgloszenia = []) {
-    tytuly = tytuly.filter(tytul => NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},znaneOgloszenia,stan.organizacja).status !== "AUTO_MATCH");
+  async function pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly, znaneOgloszenia = [], wymusOdswiezenie = false) {
+    const maTerminyTytulu = (tytul, ogloszenia) => {
+      const wynik = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},ogloszenia,stan.organizacja);
+      return wynik.status === "AUTO_MATCH" && ogloszenia.some(ogloszenie =>
+        String(ogloszenie.eventisId) === wynik.selectedCandidate.eventId && ogloszenie.terminy?.length);
+    };
+    tytuly = tytuly.filter(tytul => wymusOdswiezenie || !maTerminyTytulu(tytul,znaneOgloszenia));
     if (!tytuly.length) return {ogloszenia:znaneOgloszenia,liczbaZapytan:0};
     const pole = znajdzPoleWyszukiwaniaOgloszen();
     if (!pole || !tytuly.length) return {ogloszenia:[],liczbaZapytan:0};
@@ -255,14 +260,15 @@
     const wykonaneZapytania = new Set();
     try {
       for (const tytul of tytuly) {
-        if (NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},ogloszenia,stan.organizacja).status === "AUTO_MATCH") continue;
+        if (!wymusOdswiezenie && maTerminyTytulu(tytul,ogloszenia)) continue;
         const warianty = NARZEDZIA_WYSZUKIWANIA.generujZapytaniaEventis(tytul);
         for (const wariant of warianty) {
           if (wykonaneZapytania.has(wariant)) continue;
           await zastosujFiltrWyszukiwania(pole,wariant);
           wykonaneZapytania.add(wariant);
           liczbaZapytan++;
-          ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,pobierzOgloszeniaZDokumentu(document,location.href));
+          const widoczne = pobierzOgloszeniaZDokumentu(document,location.href);
+          ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(ogloszenia,widoczne);
           const rozstrzygniecie = NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},ogloszenia,stan.organizacja);
           console.debug("[Eventis][dopasowanie]",{
             ...NARZEDZIA_WYSZUKIWANIA.rozlozTytul(tytul),wariantZapytania:wariant,powod:rozstrzygniecie.reason,
@@ -272,7 +278,7 @@
               : kandydat.zgodnoscWariantu?.wymagany && kandydat.zgodnoscWariantu.status !== "ZGODNY" ? "NIEZGODNY_WARIANT_LOKALIZACJI"
               : kandydat.score < NARZEDZIA_LISTY.PROG_DOPASOWANIA ? "ZA_NISKA_ZGODNOSC_TYTULU" : "NIEJEDNOZNACZNE_DOPASOWANIE"}))
           });
-          if (rozstrzygniecie.status === "AUTO_MATCH") break;
+          if (NARZEDZIA_LISTY.rozwiazGrupeTytulu({tytul},widoczne,stan.organizacja).status === "AUTO_MATCH") break;
         }
       }
     } finally {
@@ -483,9 +489,10 @@
   }
 
   async function uruchomPreflight(wybraneKlucze = null) {
+    if (stan.preflight.trwa || stan.skanowanie.trwa) return;
     odswiezDopasowaniaZListy();
     const pokolenie = ++stan.preflight.pokolenie;
-    const rozstrzygniecia = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
+    let rozstrzygniecia = stan.rozstrzygniecia.map(aktualneRozstrzygniecie)
       .filter(rozstrzygniecie => rozstrzygniecie.manualStatus !== "SKIPPED"
         && (!wybraneKlucze || wybraneKlucze.has(kluczRozstrzygniecia(rozstrzygniecie))));
     for (const rozstrzygniecie of rozstrzygniecia) delete stan.preflight.wyniki[kluczRozstrzygniecia(rozstrzygniecie)];
@@ -493,6 +500,21 @@
     stan.preflight.sprawdzone = 0;
     stan.preflight.lacznie = rozstrzygniecia.length;
     renderuj();
+    try {
+      const tytuly = [...new Set(rozstrzygniecia.filter(pozycja => pozycja.manualStatus !== "CREATE_NEW")
+        .map(pozycja => pozycja.selectedCandidate?.title || pozycja.sourceTitle))];
+      const wynik = await pobierzOgloszeniaPrzezPoleWyszukiwania(tytuly,stan.ogloszenia,!!wybraneKlucze);
+      if (pokolenie !== stan.preflight.pokolenie) return;
+      stan.ogloszenia = NARZEDZIA_LISTY.scalOgloszeniaEventis(stan.ogloszenia,wynik.ogloszenia);
+      stan.skanowanie.liczbaZapytan += wynik.liczbaZapytan;
+      odswiezDopasowaniaZListy();
+      rozstrzygniecia = rozstrzygniecia.map(pozycja => aktualneRozstrzygniecie(stan.rozstrzygniecia
+        .find(aktualna => kluczRozstrzygniecia(aktualna) === kluczRozstrzygniecia(pozycja)) || pozycja));
+    } catch (blad) {
+      stan.preflight.trwa = false;
+      renderuj();
+      throw blad;
+    }
     let nastepny = 0;
     async function sprawdzKolejny() {
       while (nastepny < rozstrzygniecia.length && pokolenie === stan.preflight.pokolenie) {
@@ -615,7 +637,7 @@
   }
 
   async function analizujWklejonyTekst() {
-    if (stan.skanowanie.trwa) return;
+    if (stan.skanowanie.trwa || stan.preflight.trwa) return;
     stan.preflight = {trwa:false,sprawdzone:0,lacznie:0,wyniki:{},pokolenie:stan.preflight.pokolenie+1};
     const pole = $("#esync-lista-paste");
     const surowyTekst = pole?.value.trim() || "";
@@ -1014,6 +1036,7 @@
     odtworzAnalizeTrwalejKolejki();
     await odswiezPlanOtwarcia();
     renderuj();
+    if (stan.rozstrzygniecia.length) await uruchomPreflight();
   }
 
   inicjalizuj().then(obserwujListeOgloszen).catch(blad => console.error("Kolejka listy Eventis",blad));

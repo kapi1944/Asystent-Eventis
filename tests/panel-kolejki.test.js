@@ -45,9 +45,10 @@ test('zweryfikowany rekord zachowuje ścieżkę uzupełniania i kontekst kolejki
 });
 test('ponowna weryfikacja nie usuwa ręcznego przypisania',async()=>{
   const pozycja=odtworz();
-  const stan={rozstrzygniecia:[pozycja],decyzje:{klucz:pozycja},preflight:{pokolenie:0,wyniki:{}}};
+  const stan={rozstrzygniecia:[pozycja],decyzje:{klucz:pozycja},ogloszenia:[],skanowanie:{trwa:false,liczbaZapytan:0},preflight:{pokolenie:0,wyniki:{}}};
   await funkcja('async function uruchomPreflight','async function ustawDecyzjeKompletnych',{
     odswiezDopasowaniaZListy:()=>new Set(),
+    NARZEDZIA_LISTY:lista,pobierzOgloszeniaPrzezPoleWyszukiwania:async()=>({ogloszenia:[],liczbaZapytan:0}),
     stan,aktualneRozstrzygniecie:()=>stan.decyzje.klucz,kluczRozstrzygniecia:()=> 'klucz',
     sprawdzTerminyWydarzenia:async()=>({status:'NEEDS_ATTENTION'}),renderuj:()=>{},odswiezPlanOtwarcia:async()=>{}
   })(new Set(['klucz']));
