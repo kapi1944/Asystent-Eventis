@@ -168,15 +168,15 @@ test("rozliczenie pending operation zmienia tylko powiązane elementy właściwe
   assert.equal(wynik[2].status,"PENDING");
 });
 
-test("zapis karty kończy tylko aktywne elementy tego samego szkolenia", () => {
+test("zapis operacji kończy tylko jej pozycję, pozostałe terminy szkolenia pozostają bez zmian", () => {
   const elementy = [
-    {id:"a",organization:"SEMPER",normalizedTitle:"prawo pracy",status:"PENDING"},
+    {id:"a",organization:"SEMPER",normalizedTitle:"prawo pracy",status:"WAITING_FOR_SAVE",operationId:"operacja-a"},
     {id:"b",organization:"SEMPER",normalizedTitle:"prawo pracy",status:"COMPLETED_EXISTING"},
     {id:"c",organization:"SEMPER",normalizedTitle:"inne szkolenie",status:"PENDING"},
     {id:"d",organization:"IIST",normalizedTitle:"prawo pracy",status:"PENDING"}
   ];
-  const wynik = kolejka.oznaczElementySzkoleniaJakoZakonczone(elementy,"SEMPER","prawo pracy");
-  assert.deepEqual(wynik.map(element => element.status),["DONE","DONE","PENDING","PENDING"]);
+  const wynik = kolejka.rozliczElementyOperacji(elementy,{organization:"SEMPER",queueItemIds:["a"],operationId:"operacja-a"},"DONE");
+  assert.deepEqual(wynik.map(element => element.status),["DONE","COMPLETED_EXISTING","PENDING","PENDING"]);
   assert.equal(wynik[0].completion.source,"verified-save");
 });
 
@@ -313,4 +313,27 @@ test("ERROR można przywrócić do PENDING bez zmiany tożsamości rekordu", () 
   assert.equal(ponowiony.id,"blad-1");
   assert.equal(ponowiony.status,"PENDING");
   assert.equal(ponowiony.errorMessage,"");
+});
+
+test("termin bez źródła wymaga akceptacji spójnych dat, lokalizacji i ceny",() => {
+  const poprawny = {recordStatus:"CONFIRMED",start:"2026-11-05",end:"2026-11-06",city:"ONLINE",
+    recznieZweryfikowanyTermin:{start:"2026-11-05",end:"2026-11-06",city:"ONLINE",price:1200}};
+  assert.equal(kolejka.przygotujZweryfikowanyTermin(poprawny).city,"Online");
+  for (const zmiana of [
+    {recordStatus:"DECONFIRMED"},{recznieZweryfikowanyTermin:null},{start:"2026-02-30"},{end:"2026-11-04"},
+    {city:"Warszawa lub Kraków",recznieZweryfikowanyTermin:{...poprawny.recznieZweryfikowanyTermin,city:"Warszawa lub Kraków"}},
+    {recznieZweryfikowanyTermin:{...poprawny.recznieZweryfikowanyTermin,price:null}},
+    {recznieZweryfikowanyTermin:{...poprawny.recznieZweryfikowanyTermin,price:-1}}
+  ]) assert.equal(kolejka.przygotujZweryfikowanyTermin({...poprawny,...zmiana}),null);
+});
+
+test("ręczne dane zachowują regułę czterodniowego szkolenia i źródłową tożsamość",() => {
+  const element = {recordStatus:"CONFIRMED",start:"2026-11-05",end:"2026-11-08",city:"Warszawa",
+    recznieZweryfikowanyTermin:{start:"2026-11-05",end:"2026-11-08",city:"Warszawa",price:1200}};
+  const termin = kolejka.przygotujZweryfikowanyTermin(element);
+  assert.equal(termin.start,"2026-11-06");
+  assert.equal(termin.sourceStart,"2026-11-05");
+  assert.equal(termin.price,900);
+  assert.equal(termin.confirmedOnSemper,false);
+  assert.equal(kolejka.dopasujElementKolejkiDoTerminow(element,[termin]).length,1);
 });

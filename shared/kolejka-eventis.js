@@ -81,7 +81,7 @@
     return (kolejka || []).filter(element => element.organization === organizacja);
   }
 
-  function przypiszElementyDoZadania(kolejka = [], zadanie, organizacja) {
+  function przypiszElementyDoZadania(kolejka = [], zadanie, organizacja, wszystkieStatusy = false) {
     const identyfikatory = new Set(zadanie?.queueItemIds || zadanie?.identyfikatoryKolejki || []);
     const tytulGrupy = String(zadanie?.normalizedSourceTitle || "");
     if (!identyfikatory.size || !tytulGrupy || zadanie?.status !== "VERIFIED") return [];
@@ -89,7 +89,7 @@
       element.organization === organizacja
       && identyfikatory.has(element.id)
       && String(element.normalizedTitle || "") === tytulGrupy
-      && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status)
+      && (wszystkieStatusy || [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI].includes(element.status))
       && ["CONFIRMED","DECONFIRMED"].includes(element.recordStatus)
     );
   }
@@ -277,15 +277,57 @@
     );
   }
 
-  function oznaczElementySzkoleniaJakoZakonczone(kolejka = [], organizacja, znormalizowanyTytul) {
-    if (!znormalizowanyTytul) return kolejka;
-    return kolejka.map(element =>
-      element.organization === organizacja
-        && element.normalizedTitle === znormalizowanyTytul
-        && [STATUSY_KOLEJKI_EVENTIS.OCZEKUJE,STATUSY_KOLEJKI_EVENTIS.BLAD,STATUSY_KOLEJKI_EVENTIS.WYMAGA_UWAGI,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE_ISTNIEJACE].includes(element.status)
-        ? {...zmienStatusElementu(element,STATUSY_KOLEJKI_EVENTIS.ZAKONCZONE),completionReason:"SAVED",savedAt:new Date().toISOString(),completion:{status:"COMPLETED",completedAt:new Date().toISOString(),source:"verified-save"}}
-        : element
-    );
+  function opiszStatusPowiazania(status, serwis, organizacja = "SEMPER") {
+    const nazwa = serwis === "zrodlo" ? DOZWOLONE_ORGANIZACJE.has(organizacja) ? organizacja : "ŹRÓDŁO" : "EVENTIS";
+    const opisy = {
+      FOUND:["green", "znaleziono"],
+      NOT_FOUND:[serwis === "zrodlo" ? "blue" : "red", serwis === "zrodlo" ? "nie znaleziono szkolenia" : "NIE ZNALEZIONO OGŁOSZENIA EVENTIS"],
+      CREATE_NEW:["red", "wybrano utworzenie nowego ogłoszenia"],
+      AMBIGUOUS:["yellow", "kilka podobnych wyników — wybierz właściwy"],
+      SEARCHING:["gray", "wyszukiwanie trwa"],
+      ERROR:["gray", "Nie udało się zakończyć wyszukiwania. Spróbuj ponownie."],
+      UNKNOWN:["gray", "oczekuje na wyszukiwanie"]
+    };
+    const [klasa, opis] = opisy[status] || opisy.UNKNOWN;
+    return {status:opisy[status] ? status : "UNKNOWN", klasa, etykieta:`${nazwa}: ${opis}`};
+  }
+
+  function ustalStatusyPowiazania(rozstrzygniecie = {}, wynik = {}, organizacja = "SEMPER", wyszukiwanie = {}) {
+    const statusZrodla = wynik.statusZrodla || (wynik.queueContext?.sourceUrl ? "FOUND" : "UNKNOWN");
+    const statusOgloszenia = rozstrzygniecie.manualStatus === "CREATE_NEW" ? "CREATE_NEW"
+      : rozstrzygniecie.selectedCandidate ? "FOUND"
+      : wyszukiwanie.trwa ? "SEARCHING" : wyszukiwanie.blad ? "ERROR"
+      : rozstrzygniecie.status === "AMBIGUOUS" ? "AMBIGUOUS"
+      : rozstrzygniecie.status === "NOT_FOUND" ? "NOT_FOUND" : "UNKNOWN";
+    return {zrodlo:opiszStatusPowiazania(statusZrodla,"zrodlo",organizacja),
+      ogloszenie:opiszStatusPowiazania(statusOgloszenia,"eventis",organizacja)};
+  }
+
+  function opiszStatusElementu(element) {
+    const opisy = {
+      PENDING:["gray", "oczekuje"], WAITING_FOR_SAVE:["yellow", "czeka na zapis"],
+      DONE:["green", "zapis potwierdzony"], COMPLETED_EXISTING:["green", "już istnieje"],
+      ERROR:["yellow", "błąd operacji — ponów po sprawdzeniu"], NEEDS_ATTENTION:["yellow", "wymaga uwagi"],
+      SKIPPED:["gray", "pominięty"]
+    };
+    const [klasa, etykieta] = opisy[element.status] || ["gray", "stan nieznany"];
+    return {klasa, etykieta};
+  }
+
+  function przygotujZweryfikowanyTermin(element) {
+    const dane = element.recznieZweryfikowanyTermin;
+    if (!dane || element.recordStatus !== "CONFIRMED") return null;
+    const poprawnaData = wartosc => /^\d{4}-\d{2}-\d{2}$/.test(wartosc || "")
+      && Number.isFinite(Date.parse(wartosc)) && new Date(wartosc).toISOString().slice(0,10) === wartosc;
+    if (!poprawnaData(element.start) || !poprawnaData(element.end) || element.end < element.start
+      || !String(element.city || "").trim() || dane.start !== element.start || dane.end !== element.end
+      || dane.city !== element.city || typeof dane.price !== "number" || !Number.isFinite(dane.price) || dane.price < 0) return null;
+    const miasto = NARZEDZIA_TERMINOW.cityFromText(element.city);
+    if (!miasto || NARZEDZIA_TERMINOW.kluczZgodnegoTerminu(element) !== NARZEDZIA_TERMINOW.kluczZgodnegoTerminu({...element,city:miasto})) return null;
+    const termin = NARZEDZIA_TERMINOW.zastosujReguleCzterodniowegoTerminu(element.start,element.end,miasto,dane.price);
+    if (termin.price < 0) return null;
+    return {...termin,
+      confirmed:false, confirmedOnSemper:false, confirmedByQueue:true, effectiveConfirmed:true, confirmationSource:"queue", brakNaZrodle:true};
   }
 
   function znajdzOperacjeDlaStrony(operacje = {}, organizacja, eventisId, eventisTitle, tabId = null) {
@@ -298,6 +340,7 @@
     const kandydaci = dostepne.filter(operacja =>
       operacja?.organization === organizacja
       && (String(operacja.operationScopeKey || "").startsWith(`${organizacja}|add:`)
+        || (operacja.eventisIdAtStart === null && tabId != null && operacja.tabId === tabId)
         || String(operacja.eventisIdAtStart ?? operacja.eventisId ?? "").startsWith("new:"))
       && normalizujTytul(operacja.eventisTitleAtStart || operacja.eventisTitle) === tytul
     );
@@ -324,7 +367,10 @@
     zmienStatusElementu,
     oznaczElementyOczekujaceOperacji,
     rozliczElementyOperacji,
-    oznaczElementySzkoleniaJakoZakonczone,
+    opiszStatusPowiazania,
+    ustalStatusyPowiazania,
+    opiszStatusElementu,
+    przygotujZweryfikowanyTermin,
     znajdzOperacjeDlaStrony
   };
 

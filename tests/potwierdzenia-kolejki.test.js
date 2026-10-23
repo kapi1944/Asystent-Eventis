@@ -34,7 +34,7 @@ test("lista oznacza ogłoszenie na zielono także gdy zapisany termin jest tylko
     });
     stan.preflight.wyniki[klucz] = {...await sprawdz(pozycja),eventId:"89393"};
     const wyglad = odczytajFunkcje("../content/lista-eventis.js","function wygladPozycji","function renderujPozycjeSzkolenia",{
-      stan,kluczRozstrzygniecia:()=>klucz
+      stan,NARZEDZIA_KOLEJKI:kolejka,kluczRozstrzygniecia:()=>klucz
     })(pozycja);
     assert.equal(stan.preflight.wyniki[klucz].status,miasto === "Online" ? "COMPLETE" : "COUNT_MATCH_BUT_DIFFERENT");
     assert.equal(wyglad.klasa,miasto === "Online" ? "kompletne" : "wymaga-uzupelnienia");
@@ -68,7 +68,7 @@ test("natywny zapis bez zmian zachowuje przypisanie kolejki przed przeładowanie
   assert.equal(JSON.parse(magazyn.zapis).normalizedSourceTitle,wyszukiwanie.normalizujTytul(stan.eventisTitle));
 });
 
-test("potwierdzony zapis kończy również istniejące terminy tej samej karty", async () => {
+test("potwierdzony zapis kończy tylko pozycje operacji, bez zbiorczego kończenia szkolenia", async () => {
   for (const zOperacja of [false,true]) {
     let zapisane = [];
     const operacja = zOperacja ? {operationId:"operacja-1",organization:"SEMPER",queueItemIds:["nowy"],skipSheetOutbox:true,eventisIdAtStart:"123"} : null;
@@ -78,16 +78,16 @@ test("potwierdzony zapis kończy również istniejące terminy tej samej karty",
       {...element,id:"inne-szkolenie",normalizedTitle:"inne szkolenie"},
       {...element,id:"inna-organizacja",organization:"IIST"}
     ];
-    const stan = {organization:"SEMPER",eventisId:"123",eventisTitle:"Wariant tytułu Eventis po przekierowaniu",pendingOperation:operacja,zapis:{pendingSave:{normalizedSourceTitle:element.normalizedTitle}}};
+    const stan = {organization:"SEMPER",eventisId:"123",eventisTitle:"Wariant tytułu Eventis po przekierowaniu",pendingOperation:operacja,zapis:{saveState:"SUCCESS",pendingSave:{normalizedSourceTitle:element.normalizedTitle}}};
     const potwierdz = odczytajFunkcje("../content/eventis.js","async function confirmPendingSaved","async function oznaczNieudanyZapis",{
       state:stan,NARZEDZIA_KOLEJKI:kolejka,normalize:wyszukiwanie.normalizujTytul,
       storageGet:async()=>({eventisImportQueue:rekordy,pendingOperations:zOperacja ? {operacja} : {},sheetOutbox:[]}),
       storageSet:async()=>{},zapiszElementyKolejki:async zmiany=>{zapisane=zmiany;},audit:async()=>{},render:()=>{},toast:()=>{},
       kluczStorageOperacji:()=>"operacja",identyfikatorOperacji:wpis=>wpis?.operationId,
-      eventisIdPoczatkowyOperacji:wpis=>wpis.eventisIdAtStart,getEventisTitle:()=>stan.eventisTitle,terminyOperacji:()=>[]
+      eventisIdPoczatkowyOperacji:wpis=>wpis.eventisIdAtStart,getEventisTitle:()=>stan.eventisTitle,terminyOperacji:()=>[termin],getExistingTerms:()=>[termin],existingKey:terminy.existingKey,odswiezKolejke:async()=>{}
     });
     await potwierdz("AUTO_SUCCESS_MARKER");
-    assert.deepEqual(Array.from(zapisane,wpis=>[wpis.id,wpis.status]),[["nowy","DONE"],["istniejacy","DONE"]]);
+    assert.deepEqual(Array.from(zapisane,wpis=>[wpis.id,wpis.status]),zOperacja ? [["nowy","DONE"]] : []);
     assert.equal(stan.status,"SAVED");
     assert.equal(rekordy[2].status,"PENDING");
     assert.equal(rekordy[3].status,"PENDING");
@@ -137,7 +137,7 @@ test("preflight weryfikuje pełny tytuł SEMPER mimo skróconych podpowiedzi i o
     });
     const rozstrzygniecie = {sourceTitle:tytul,normalizedSourceTitle:wyszukiwanie.normalizujTytul(tytul)};
     if (niejednoznaczny) {
-      await assert.rejects(sprawdz(rozstrzygniecie),/nie znaleziono jednoznacznej/);
+      assert.equal((await sprawdz(rozstrzygniecie)).statusZrodla,"AMBIGUOUS");
     } else {
       const wynik = await sprawdz(rozstrzygniecie);
       assert.equal(wynik.queueContext.sourceUrl,adresy[0]);
@@ -169,7 +169,7 @@ test("preflight rozpoznaje online w tabeli wariantu stacjonarnego po tytule i do
     });
     const rozstrzygniecie = {sourceTitle:`${tytul} online.`,normalizedSourceTitle:wyszukiwanie.normalizujTytul(`${tytul} online.`)};
     if (przypadek === "zgodny") assert.equal((await sprawdz(rozstrzygniecie)).queueContext.sourceUrl,adresy[0]);
-    else await assert.rejects(sprawdz(rozstrzygniecie),/nie znaleziono jednoznacznej/);
+    else assert.ok(["NOT_FOUND","AMBIGUOUS"].includes((await sprawdz(rozstrzygniecie)).statusZrodla));
   }
 });
 
@@ -365,6 +365,35 @@ test("przycisk ręcznego potwierdzenia nadal przełącza rzeczywisty stan panelu
   assert.equal(stan.sourceTerms[0].confirmedManually,true);
   przelacz(terminy.termKey(termin));
   assert.equal(stan.sourceTerms[0].effectiveConfirmed,false);
+});
+
+test("sesja event/add przechodzi do event/edit bez parametrów URL i zachowuje także zakończone terminy",async () => {
+  const mapowania = require("../shared/mapowania-wydarzen-eventis");
+  const tytul = element.title;
+  const rekordy = [element,{...element,id:"zapisany",status:"DONE"},{...element,id:"inne",organization:"IIST"}];
+  const zadanie = {taskId:"nowe",typ:"CREATE_NEW",organization:"SEMPER",sourceTitle:tytul,normalizedSourceTitle:element.normalizedTitle,queueItemIds:[element.id,"zapisany"],eventUrl:"https://eventis.pl/event/add"};
+  const magazyn = {eventisOpeningSessions:{sesja:otwieranie.utworzSesjeOtwarcia("sesja","SEMPER",[zadanie])}};
+  const pamiec = new Map();
+  const adres = {search:"?esyncSession=sesja&esyncTask=nowe",pathname:"/event/add",href:"https://eventis.pl/event/add?esyncSession=sesja&esyncTask=nowe"};
+  const stan = {organization:"SEMPER",tabId:17,eventisId:"new:szkolenie",eventisTitle:tytul,eventisImportQueue:rekordy};
+  const zweryfikuj = odczytajFunkcje("../content/eventis.js","async function zweryfikujKarteSesjiOtwarcia","function renderujWeryfikacjeOtwartejKarty",{
+    state:stan,location:adres,URLSearchParams,normalize:wyszukiwanie.normalizujTytul,
+    KLUCZ_OCZEKUJACEGO_ZAPISU:"zapis",sessionStorage:{getItem:klucz=>pamiec.get(klucz),setItem:(klucz,wartosc)=>pamiec.set(klucz,wartosc)},
+    storageGet:async()=>magazyn,storageSet:async dane=>Object.assign(magazyn,dane),
+    MAPOWANIA_WYDARZEN:mapowania,NARZEDZIA_OTWIERANIA:otwieranie,NARZEDZIA_KOLEJKI:kolejka,getEventisTitle:()=>tytul,audit:async()=>{}
+  });
+  assert.equal((await zweryfikuj()).status,"VERIFIED");
+  pamiec.set("zapis",JSON.stringify({url:"/event/add",timestamp:Date.now(),expectedOperation:"op"}));
+  stan.pendingOperation={operationId:"op",tabId:17};stan.eventisId="987";
+  Object.assign(adres,{search:"",pathname:"/event/edit/987",href:"https://eventis.pl/event/edit/987"});
+  const wynik = await zweryfikuj();
+  assert.equal(wynik.status,"VERIFIED");
+  assert.equal(wynik.task.eventId,"987");
+  assert.equal(mapowania.pobierzMapowanie(magazyn[mapowania.KLUCZ_STORAGE_MAPOWAN],"SEMPER",element.normalizedTitle).eventId,"987");
+  assert.deepEqual(kolejka.przypiszElementyDoZadania(rekordy,{...wynik.task,status:"VERIFIED"},"SEMPER",true).map(wpis=>wpis.id),[element.id,"zapisany"]);
+  assert.equal((await zweryfikuj()).status,"VERIFIED");
+  stan.tabId=99;
+  assert.equal(await zweryfikuj(),null);
 });
 
 test("/company wyróżnia konkretny dopasowany termin na fioletowo", () => {

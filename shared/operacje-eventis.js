@@ -16,10 +16,11 @@
   async function uzyskajClaimOperacji(magazyn, operacja) {
     const operacjePrzedClaimem = { ...(await magazyn.pobierz()) };
     const identyfikatory = new Set(operacja.queueItemIds || []);
+    const identyfikatorEventis = String(operacja.eventisIdResolved || operacja.eventisIdAtStart || operacja.eventisId || "");
     const istniejacaOperacja = operacjePrzedClaimem[operacja.operationScopeKey]
-      || Object.values(operacjePrzedClaimem).find(wpis => identyfikatory.size
-        && wpis?.organization === operacja.organization
-        && (wpis.queueItemIds || []).some(id => identyfikatory.has(id)));
+      || Object.values(operacjePrzedClaimem).find(wpis => wpis?.organization === operacja.organization
+        && ((identyfikatory.size && (wpis.queueItemIds || []).some(id => identyfikatory.has(id)))
+          || (/^\d+$/.test(identyfikatorEventis) && identyfikatorEventis === String(wpis.eventisIdResolved || wpis.eventisIdAtStart || wpis.eventisId || ""))));
     if (istniejacaOperacja) return { ok:false, code:"OPERATION_ALREADY_CLAIMED", operacja:istniejacaOperacja };
     const operacjePoClaimie = { ...operacjePrzedClaimem, [operacja.operationScopeKey]:operacja };
     await magazyn.zapisz(operacjePoClaimie);

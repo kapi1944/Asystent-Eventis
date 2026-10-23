@@ -101,6 +101,15 @@ test("ten sam queueItem w dwóch kartach dostaje tylko jednego właściciela", a
   assert.equal((await operacje.uzyskajClaimOperacji(magazyn,druga)).ok,false);
 });
 
+test("różne terminy tego samego Eventis nie mogą nadpisywać się w dwóch kartach",async () => {
+  const magazyn = magazynPamięci();
+  const pierwsza = {...plan("A","SEMPER|queue:A"),queueItemIds:["A"],eventisIdAtStart:"123",tabId:1};
+  const druga = {...plan("B","SEMPER|event:123"),queueItemIds:["B"],eventisIdAtStart:"123",tabId:2};
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,pierwsza)).ok,true);
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,druga)).ok,false);
+  assert.equal((await operacje.uzyskajClaimOperacji(magazyn,{...druga,eventisIdAtStart:"456",operationScopeKey:"SEMPER|event:456"})).ok,true);
+});
+
 test("nowe formularze są rozróżniane tokenem dokumentu, a nie tytułem", () => {
   const pierwszy = operacje.kluczClaimuOperacji("SEMPER","add","new:tytuł","dokument-A");
   const drugi = operacje.kluczClaimuOperacji("SEMPER","add","new:tytuł","dokument-B");

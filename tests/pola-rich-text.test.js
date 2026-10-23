@@ -595,10 +595,10 @@ test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i
     const fragment = kod.slice(kod.indexOf(`  async function ${poczatek}`),kod.indexOf(`  ${koniec === "unikalneTerminy" ? "function" : "async function"} ${koniec}`));
     for (const awaria of [false,true]) {
       const czynnosci = [];
-      const stan = {mappingVerifiedThisSession:true,source:{opisy:{}},sourceTerms:[termin],missingTerms:[termin]};
+      const stan = {organization:"SEMPER",eventisTitle:"Szkolenie",zapisaneTerminyEventis:[],mappingVerifiedThisSession:true,source:{opisy:{}},sourceTerms:[termin],missingTerms:[termin]};
       const uruchom = vm.runInNewContext(`${fragment};${poczatek}`,{
         state:stan,NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),NARZEDZIA_OPERACJI:require("../shared/operacje-eventis"),
-        sprawdzBrakOczekujacejOperacji:async () => true,odswiezKolejke:async () => {},compareTerms() {},
+        normalize:tekst=>tekst,getEventisTitle:()=>"Szkolenie",wykryjOrganizatora:()=>({organizator:"SEMPER"}),sprawdzBrakOczekujacejOperacji:async () => true,odswiezKolejke:async () => {},compareTerms() {},
         dopasowaniaKolejkiDoBiezacegoTytulu:() => [{element:{id:"1",recordStatus:"CONFIRMED"},terminy:[termin]}],
         getExistingTerms:() => [],existingKey:wartosc => wartosc.start,unikalneTerminy:terminy => terminy,
         utworzPlanOperacji:() => ({}),uzyskajClaimOperacji:async operacja => ({ok:true,operacja}),
@@ -613,7 +613,7 @@ test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i
         zwolnijNiepotwierdzonyClaim:async () => {},audit:async () => {},render() {},toast() {}
       });
       await uruchom();
-      assert.deepEqual(czynnosci,awaria ? ["terminy","opisy"] : ["terminy","opisy","potwierdzenie"]);
+      assert.deepEqual(czynnosci,awaria && poczatek !== "wprowadzTerminyZKolejki" ? ["terminy","opisy"] : ["terminy","opisy","potwierdzenie"]);
       assert.equal(stan.status,awaria ? "ERROR" : "FORM_FILLED");
       if (awaria) assert.equal(stan.lastError,"Błąd edytora");
     }

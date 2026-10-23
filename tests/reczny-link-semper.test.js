@@ -29,7 +29,7 @@ test("ręczny link SEMPER omija wyszukiwarkę, ale weryfikuje tytuł strony",asy
     });
     const pozycja = {sourceTitle:tytul,normalizedSourceTitle:klucz};
     if (zgodny) asercje.equal((await sprawdz(pozycja)).queueContext.sourceUrl,adres);
-    else await asercje.rejects(sprawdz(pozycja),/tytuł strony SEMPER wymaga weryfikacji/);
+    else { const wynik = await sprawdz(pozycja); asercje.equal(wynik.statusZrodla,"AMBIGUOUS"); asercje.match(wynik.bladZrodla,/tytuł strony SEMPER wymaga weryfikacji/i); }
     asercje.deepEqual(pobrane,[adres]);
   }
 });
@@ -66,14 +66,15 @@ test("wariant online nie przyjmuje strony innej miejscowości bez zgodnego termi
     chrome:{runtime:{sendMessage:async()=>({ok:true,finalUrl:adres,text:tytul + " w Gdańsku."})}},
     DOMParser:class {parseFromString(tekst) {return {querySelector:()=>({textContent:tekst})};}}
   });
-  await asercje.rejects(sprawdz({sourceTitle:tytul + " online",normalizedSourceTitle:klucz}),/tytuł strony SEMPER wymaga weryfikacji/);
+  asercje.equal((await sprawdz({sourceTitle:tytul + " online",normalizedSourceTitle:klucz})).statusZrodla,"AMBIGUOUS");
 });
 
 test("ostrzeżenie o weryfikacji źródła nie jest oznaczane jako błąd krytyczny",()=>{
   const fragment = kod.slice(kod.indexOf("  function wygladPozycji"),kod.indexOf("  function renderujPozycjeSzkolenia"));
   const wyglad = maszyna.runInNewContext(`${fragment};wygladPozycji`,{
-    stan:{organizacja:"SEMPER",kolejka:[],preflight:{wyniki:{szkolenie:{status:"NEEDS_ATTENTION",error:"NEEDS_ATTENTION: tytuł wymaga weryfikacji"}}}},
+    NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),
+    stan:{organizacja:"SEMPER",skanowanie:{},kolejka:[],preflight:{wyniki:{szkolenie:{status:"NEEDS_ATTENTION",statusZrodla:"AMBIGUOUS"}}}},
     kluczRozstrzygniecia:()=>"szkolenie"
   });
-  asercje.equal(wyglad({}).etykieta,"Wymaga weryfikacji");
+  asercje.equal(wyglad({}).klasa,"wymaga-uzupelnienia");
 });
