@@ -93,7 +93,9 @@ $("zwolnijBlokadeBtn").addEventListener("click",async()=>{
 });
 
 async function save(czyPokazacStatus=true) {
+  const {settings:poprzednieUstawienia = {}} = await chrome.storage.local.get("settings");
   const settings = {
+    ...poprzednieUstawienia,
     operatorInitial: $("operatorInitial").value.trim() || "K",
     defaultOrganization: $("defaultOrganization").value,
     semperAccountMarker: $("semperAccountMarker").value.trim(),

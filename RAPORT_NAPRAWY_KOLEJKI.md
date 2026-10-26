@@ -1,169 +1,99 @@
-# Raport naprawy kolejki Asystenta Eventis
+# Raport naprawy natywnego dodawania terminów i panelu kolejki
 
-Data: 23.10.2026. Status: **PASS — walidacja lokalna**.
+Data: 26.10.2026. Walidacja lokalna zakończona; test produkcyjny Eventis **NIEWYKONANY**.
 
-Nie wykonywano commita, push ani połączeń z produkcyjnymi serwisami. Ręczna weryfikacja zalogowanej sesji Eventis pozostaje do wykonania.
+## 1. Audyt i przyczyna problemu
 
-## 1. Audyt i przyczyny
+Przed zmianami katalog roboczy był czysty, gałąź: `main`, HEAD: `d6a7562`. Przeanalizowano `content/eventis.js`, `content/eventis.css`, `shared/terminy.js`, `shared/kolejka-eventis.js`, `shared/operacje-eventis.js`, testy DOM i potwierdzeń, poprzedni raport oraz transport panelu bocznego.
 
-Przed zmianami wykonano `git status --short --branch`, `git branch --show-current`, `git log -5 --oneline` oraz `git diff --check`. Gałąź: `main`, bez lokalnych zmian. Ostatnie commity: `cea14ba`, `c9a29cb`, `734bfca`, `160491a`, `70afbcb`.
+Potwierdzone przyczyny w kodzie:
 
-Przycisk miał bezpośredni handler `addEventListener("click", wprowadzTerminyZKolejki)`. Przeglądarka przekazywała `MouseEvent` jako `identyfikatoryDozwolone`; `new Set(identyfikatoryDozwolone)` powodowało `TypeError`, ponieważ zdarzenie nie jest iterowalne. Osobny handler wywołuje teraz funkcję bez argumentów; wywołania automatyczne nadal przekazują tablicę ID. Funkcja sprawdza typ argumentu i ustawia blokadę przed pierwszym `await`.
+- `findAddTermButton()` wybierał element według `nth-child`; przy braku wyniku przeszukiwał wszystkie odnośniki i przyciski ze słowem „termin”. Nie sprawdzał, czy element rzeczywiście dodaje formularz terminu. Mógł wskazać inną akcję.
+- `addSelectedTerms()` wykonywał kliknięcia z przerwami 120 ms, następnie odczekiwał 850 ms. Nie obserwował utworzenia ani gotowości pól. Przy niewłaściwej akcji lub wolnym renderowaniu lista docelowych formularzy pozostawała pusta. Wówczas `wypelnijTerminyOsobno()` zwracał komunikat „Eventis nie utworzył formularza dla tego terminu”.
+- `fillTerm()` miał globalne wyszukiwanie niektórych pól i zbyt szerokie wyszukiwanie ceny. Kontrola kompletności nie obejmowała całego pakietu i przyjęcia wartości przez kontrolki.
+- Test DOM zastępował `findAddTermButton()` atrapą. Weryfikował wypełnianie własnego modelu, pomijając wadliwe wyszukiwanie.
 
-Druga usterka: `confirmPendingSaved()` po rozliczeniu operacji wywoływało `oznaczElementySzkoleniaJakoZakonczone()`. Funkcja oznaczała również inne pozycje tego tytułu jako `DONE`. Usunięto tę zbiorczą ścieżkę i nieużywaną funkcję. Zapis bez operacji nie rozlicza kolejki.
+Nie ustalono, który konkretnie element został kliknięty w zgłoszonej sesji produkcyjnej ani czy niebieski „+” dodaje termin. Repozytorium nie zawiera produkcyjnego fixture Eventis. Wskazanie konkretnego selektora lub zdarzenia produkcyjnego bez DOM byłoby zgadywaniem. Poprzednie 330/330 nie stanowi dowodu działania na produkcji.
 
-Brak ogłoszenia Eventis był niebieski, ponieważ `.esync-kolejka-brak-dopasowania` miała niebieskie tło i diodę. Logika kafelków dodatkowo używała tej klasy dla problemów źródła i niejednoznaczności. Rozdzielono te przypadki.
+## 2. Kopia rozszerzenia w Chrome
 
-Wykryto również nadpisywanie wcześniejszych terminów przy kolejnym imporcie w `event/add`: wybierano pierwsze wiersze zamiast pustych i nowo dodanych. Wcześniejsze wypełnione wiersze są teraz zachowywane.
+Odczytano wyłącznie informacje o rozszerzeniu z lokalnych ustawień Chrome. Profil `Default`, ID rozszerzenia `diifcgbmmakofgehiaffcidfpchmbnhc`, wskazuje katalog tego repozytorium. Nie stwierdzono innej kopii plików dla tego wpisu.
 
-## 2. Zmienione pliki
+To potwierdza źródło plików na dysku. Nie potwierdza wersji skryptu już działającego w otwartej karcie. Rozszerzenia ani karty produkcyjnej nie przeładowywano automatycznie. Po ręcznym przeładowaniu nową implementację identyfikuje element `#esync-kolejka-ogloszenia` z `data-wersja-terminow="2026-10-26"`.
 
-| Plik | Zmiana |
+## 3. Naprawa natywnego dodawania
+
+Wobec braku produkcyjnego DOM zastosowano bezpieczne rozpoznanie w bieżącym dokumencie:
+
+1. W rozwiniętej kolejce użytkownik wybiera „Rozpoznaj natywne dodawanie”.
+2. Następnie ręcznie klika właściwy przycisk dodania terminu na stronie Eventis.
+3. Obserwator zakładany przed natywną obsługą kliknięcia sprawdza nowe ID formularzy i kompletność kontrolek.
+4. Asystent zapamiętuje referencję do przycisku dopiero po utworzeniu jednego kompletnego formularza. Sam nie klika nieznanych elementów. Nie przechwytuje przycisków wysyłania formularza.
+5. Rozpoznany pusty wiersz może zostać wykorzystany do pierwszego terminu, jeśli jego pola pozostały niezmienione. Kolejne wiersze tworzy wyłącznie natywna akcja Eventis.
+
+Nie dodano produkcyjnego kodu tworzącego `li_eventdate_*`, alternatywnych formularzy Eventis ani selektorów odgadniętych z etykiet. Drobny wpis w konsoli po rozpoznaniu zawiera tag, ID i klasy przycisku oraz ID nowego wiersza, bez danych szkolenia; może posłużyć do późniejszego potwierdzenia stabilnego selektora.
+
+Obie akcje importu korzystają ze wspólnego `addSelectedTerms()`. Dodawanie jest sekwencyjne. `MutationObserver` czeka do 6 sekund na wiersz, wymagane pola, aktywność kontrolek i odpowiednie opcje. Obserwacja kończy się po sukcesie, błędzie, anulowaniu, zmianie kontekstu albo opuszczeniu dokumentu; timer i nasłuchy są usuwane. Rozpoznanie ręczne ma osobny limit 30 sekund.
+
+Daty, lokalizacja i cena są sprawdzane przed akcją dodania. Pola są wyszukiwane wyłącznie w konkretnym natywnym wierszu. Zachowano mapowania ONLINE, miast i województw, potwierdzenia, VAT 23% oraz elementów pakietu. Nie są nadpisywane wiersze zawierające już daty. Po wpisaniu sprawdzane są przyjęte wartości; błąd przywraca poprzednie wartości kontrolek tego wiersza.
+
+## 4. Niezależność potwierdzeń i statusy
+
+- Potwierdzenie kolejki nie ustawia potwierdzenia SEMPER/IIST. Potwierdzony rekord kolejki bez potwierdzenia źródła może zostać wprowadzony po poprawnym przypisaniu i uzyskaniu kompletnych danych. Przy brakach pozostaje jawne uzupełnienie ceny i akceptacja danych w panelu. Akceptacja działa także przy nieprawidłowej cenie źródłowej lub niezweryfikowanym źródle.
+- Akcja uzupełniania potwierdzonych korzysta z potwierdzenia źródłowego lub dotychczasowej świadomej deklaracji ręcznej. Samo potwierdzenie kolejką nie uruchamia tej ścieżki.
+- Zachowano blokadę konfliktu `DECONFIRMED`, ścisłe przypisania tytułów, organizatorów, wariantów lokalizacji i normalizację zakresów dat.
+- Metadane operacji przechowują `pochodzenie` (`queue`/`source`) oraz osobne potwierdzenia terminu. Lokalne blokady ustawiane przed pierwszym `await` uzupełniają istniejące claimy ogłoszenia i zabezpieczają obie akcje przed równoległym importem.
+- Wypełniony formularz otrzymuje `WAITING_FOR_SAVE`. Błąd tworzenia lub wypełniania nie oznacza sukcesu. Niekompletny termin znaleziony tylko w niezapisanym formularzu otrzymuje `NEEDS_ATTENTION`.
+- Przycisk kolejki umożliwia także rozliczenie jedynego już istniejącego terminu albo powiązanie kompletnego niezapisanego wiersza. Te przypadki nie wymagają ponownego tworzenia formularza ani rozpoznania przycisku dodawania.
+- Termin z zapisanej migawki Eventis może otrzymać `COMPLETED_EXISTING`. `DONE` wymaga istniejącego mechanizmu potwierdzenia zapisu i obecności właściwego terminu; świadome potwierdzenie ręczne pozostało dostępne. Rozliczane są tylko konkretne rekordy operacji. Przy błędzie importu opisów zachowywana jest informacja o faktycznie wypełnionych terminach.
+
+## 5. Interfejs
+
+Jedno kompaktowe zestawienie „📥 Kolejka dla tego ogłoszenia (N)” jest pierwszą kartą w `.esync-body`, pod nagłówkiem i przełącznikiem organizatora, przed źródłem. Zawiera liczniki oczekujących, czekających na zapis, zapisanych i wymagających uwagi.
+
+Po rozwinięciu dostępne są daty, lokalizacja, uczestnicy, niezależne statusy kolejki/źródła/Eventis, historia zakończonych pozycji, ponawianie oraz uzupełnianie danych. Zachowywane są rozwinięcie, szkice pól, zgoda użytkownika i przewinięcie podczas odświeżenia panelu.
+
+Usunięto wstrzykiwanie sekcji do `#eventForm`. Sprzątanie usuwa tylko dawny `#esync-terminy-formularza.esync-card`. Nie usuwa natywnych wierszy ani nagłówka Eventis. Ten sam DOM i istniejący transport obsługują panel pływający i boczny.
+
+## 6. Zmienione pliki
+
+| Plik | Zakres |
 | --- | --- |
-| `content/eventis.js` | Obsługa kliknięcia, walidacja kontekstu, blokady, indywidualne rozliczanie, zestawienie w formularzu, uzupełnianie danych, odtworzenie sesji, prezentacja niezapisanego formularza. |
-| `content/eventis.css` | Kolory statusów, lokalne stany przycisku kolejki i sekcja formularza. |
-| `content/lista-eventis.js` | Niezależne znaczniki źródła i ogłoszenia, kontynuowanie sprawdzania Eventis po problemie źródła, weryfikacja ręcznego URL, otwieranie bez wymogu źródła. |
-| `shared/kolejka-eventis.js` | Wspólne opisy statusów, przypisania obejmujące wszystkie stany, walidacja zaakceptowanych danych, usunięcie zbiorczego kończenia szkolenia. |
-| `shared/operacje-eventis.js` | Blokowanie równoległych operacji na tym samym ogłoszeniu, również ze starym kluczem operacji kolejki. |
-| `tests/kolejka-formularz-dom.test.js` | Nowe testy rzeczywistego DOM, kliknięć, formularzy, kolorów i niezależności wyszukiwania. |
-| `tests/kolejka-eventis.test.js` | Indywidualne rozliczanie oraz walidacja danych bez źródła i zakresów czterodniowych. |
-| `tests/operacje-eventis.test.js` | Konflikt dwóch kart tego samego ogłoszenia przy różnych terminach. |
-| `tests/potwierdzenia-kolejki.test.js` | Rozliczanie tylko pozycji operacji, odtwarzanie sesji dodawania po przejściu do edycji. |
-| `tests/pola-rich-text.test.js` | Regresja uzupełniania opisów i zachowania informacji o wypełnionych terminach po błędzie edytora. |
-| `tests/reczny-link-semper.test.js` | Weryfikacja źródła i jego odrębnego statusu bez przerywania całego procesu. |
-| `RAPORT_NAPRAWY_KOLEJKI.md` | Ten raport. |
+| `content/eventis.js` | Rozpoznawanie natywnej akcji, oczekiwanie, walidacja i wypełnianie, blokady, metadane, niezależność potwierdzeń oraz przeniesienie kolejki. |
+| `content/eventis.css` | Kompaktowe style kolejki w panelu; usunięte style dawnej sekcji w formularzu. |
+| `tests/kolejka-formularz-dom.test.js` | Produkcyjne rozpoznawanie i renderowanie zamiast atrapy wyszukiwania; nowe scenariusze DOM i obu paneli. |
+| `tests/fixtures/eventis-natywne-dodawanie.html` | Jawnie oznaczony syntetyczny model formularza z niezależnymi, mylącymi kontrolkami. Nie jest kopią produkcji. |
+| `tests/pola-rich-text.test.js` | Regresja importu opisów i zachowania operacji po błędzie edytora w obu ścieżkach. |
+| `RAPORT_NAPRAWY_KOLEJKI.md` | Bieżący raport zastępujący poprzednią ocenę. |
 
-Przeanalizowano również `shared/terminy.js`, `shared/lista-eventis.js`, mechanizm otwierania i mapowań, potwierdzanie zapisu oraz host panelu bocznego. Nie zmieniano schematu trwałych statusów ani zależności projektu.
+Pozostałe moduły, Manifest V3, mapowania i transport zapisu nie zostały przebudowane. Nie dodano zależności, integracji ani automatyzacji. Nie wykonano commita ani push.
 
-## 3. Przebieg kolejki
+## 7. Walidacja automatyczna
 
-```mermaid
-flowchart TD
-    A[Kliknięcie lub tablica ID] --> B{Organizator i przypisanie poprawne?}
-    B -- Nie --> C[Komunikat bez zmiany formularza]
-    B -- Tak --> D[Odśwież kolejkę i sprawdź kontekst]
-    D --> E{Dane terminu kompletne i zweryfikowane?}
-    E -- Nie --> F[Uzupełnienie i świadoma akceptacja danych]
-    F --> D
-    E -- Tak --> G{Termin już zapisany?}
-    G -- Tak --> H[COMPLETED_EXISTING dla tej pozycji]
-    G -- Nie --> I[Uzyskaj blokadę ogłoszenia i pozycji]
-    I --> J[Dodaj brakujące wiersze lub powiąż niezapisane]
-    J --> K[WAITING_FOR_SAVE]
-    K --> L[Użytkownik zapisuje Eventis]
-    L --> M{Potwierdzono zapis i obecność terminu?}
-    M -- Tak --> N[DONE tylko dla ID tej operacji i terminu]
-    M -- Nie --> O[Oczekiwanie, weryfikacja lub ponowienie]
-```
+- `npm run check`: **PASS**, kod wyjścia 0.
+- `npm test`: **PASS, 349/349**, błędy 0, pominięte 0, anulowane 0; lokalny Edge, około 42 sekund.
+- `git diff --check`: **PASS**, kod wyjścia 0.
 
-Kliknięcie importu nie wysyła formularza Eventis. Automatyczne oznaczanie zapisu wymaga wyniku obserwacji aktualnej próby zapisu; sama obecność pól lub stary komunikat sukcesu nie wystarczają. Ręczne potwierdzenie zapisu pozostaje świadomą czynnością użytkownika.
+Edge nie uruchamiał się w piaskownicy, dlatego testy przeglądarkowe uruchomiono poza nią. Testy DOM korzystają z lokalnych fixture i blokują żądania stron. Nie łączono się z produkcyjnym Eventis.
 
-## 4. Stare i nowe znaczenie statusów
+Pokrycie obejmuje wszystkie 20 wymaganych scenariuszy: jeden i kilka terminów; niezależne potwierdzenie kolejki i źródła; zapisane i niezapisane terminy; brak przycisku; brak utworzonego formularza; opóźnione wiersze, pola i opcje; podwójne importy; ponawianie; błędne ceny; zachowanie wcześniejszych pól; ogłoszenia z istniejącymi terminami; SEMPER/IIST; zakresy wielodniowe i ONLINE; zapis tylko jednego terminu operacji; usunięcie dawnej sekcji; DOM obu paneli; brak fałszywego DONE.
 
-| Warstwa / dotychczasowy stan | Nowa interpretacja |
-| --- | --- |
-| Dopasowanie Eventis: `AUTO_MATCH`, `KNOWN_MAPPING`, zaakceptowany `MANUAL_MATCH` | Prezentacyjne `FOUND`. |
-| Plan otwierania: `READY` | Gotowość otwarcia karty, bez potwierdzenia zapisu terminów. |
-| Eventis: `NOT_FOUND` | Czerwony brak wyniku ogłoszenia; ponów, wskaż istniejące lub świadomie wybierz nowe. |
-| Eventis: `CREATE_NEW` | Czerwona informacja o decyzji użytkownika, bez automatycznego tworzenia. |
-| Źródło: zakończone `SEARCH_EMPTY` | `NOT_FOUND` wyłącznie dla SEMPER/IIST. |
-| Wyszukiwanie niejednoznaczne | `AMBIGUOUS`, pomarańczowy wybór właściwego wyniku. |
-| Wyszukiwanie: HTTP, timeout, błąd odczytu | `ERROR`, szary problem techniczny; nie `NOT_FOUND`. |
-| Wyszukiwanie nierozpoczęte / trwające | `UNKNOWN` / `SEARCHING`, szary. |
-| Kolejka: `PENDING` | Oczekuje; gotowość i pochodzenie potwierdzenia są pokazywane osobno. |
-| Kolejka: `WAITING_FOR_SAVE` | Formularz zawiera dane, zapis niepotwierdzony; pomarańczowy. |
-| Kolejka: `DONE` | Potwierdzony zapis konkretnej pozycji operacji; zielony. |
-| Kolejka: `COMPLETED_EXISTING` | Termin już istnieje w zapisanych danych; zielony, bez zamiany na `DONE` po zapisie innego terminu. |
-| Kolejka: `ERROR`, `NEEDS_ATTENTION` | Problem operacji lub wymagane sprawdzenie; pomarańczowy, z możliwością ponowienia. |
-| Kolejka: `SKIPPED` | Pominięty, szary, nadal widoczny w zestawieniu formularza. |
-| Rekord kolejki: `CONFIRMED` | Potwierdzenie z kolejki; nie nadpisuje potwierdzenia źródłowego. |
-| Rekord kolejki: `DECONFIRMED` | Nie promuje terminu do importu; konflikt z potwierdzeniem blokuje tę pozycję. |
+Dotychczasowa regresja obejmuje również opisy SEMPER, mapowania i pamięć ogłoszeń, odtwarzanie sesji po odświeżeniu, przejście add → edit, claimy różnych kart oraz potwierdzanie zapisu.
 
-## 5. Mapa kolorów
+## 8. Checklista produkcyjna — niewykonana
 
-| Kolor | Główny / tło | Znaczenie |
-| --- | --- | --- |
-| Zielony | `#16a34a` / `#ecfdf3` | Poprawne rozpoznanie, istniejący termin lub potwierdzony zapis. |
-| Fioletowy | `#9333ea`, hover `#7e22ce` / `#faf5ff` | `POTW. Z KOLEJKI`, bez utożsamiania z potwierdzeniem SEMPER/IIST. |
-| Niebieski | `#2563eb`, tekst `#1e40af` / `#eff6ff` | Nie znaleziono szkolenia źródłowego albo konkretnego terminu na znalezionej stronie; tekst wskazuje różnicę. |
-| Czerwony | `#dc2626`, tekst `#991b1b` / `#fef2f2` | Brak wyniku ogłoszenia Eventis lub świadoma decyzja utworzenia nowego. |
-| Pomarańczowy | `#d97706` / `#fff7ed` | Niejednoznaczność, brakujące dane, konflikt lub oczekiwanie na zapis. |
-| Szary | Odcienie neutralne | Nieustalony wynik, wyszukiwanie i problemy techniczne. |
+- [ ] W `chrome://extensions` sprawdź ID i katalog rozszerzenia. Przeładuj je, a potem stronę Eventis. Sprawdź `data-wersja-terminow="2026-10-26"` nowej sekcji w DOM.
+- [ ] Na zalogowanym `event/edit` oraz `event/add` rozwiń kolejkę i wybierz „Rozpoznaj natywne dodawanie”. Ręcznie użyj rzeczywistego przycisku nowego terminu; sprawdź wpis diagnostyczny i nowe pola. Ustal, co faktycznie robi niebieski „+”.
+- [ ] Dla rekordu potwierdzonego wyłącznie kolejką uzupełnij i zaakceptuj brakujące dane. Wprowadź termin; sprawdź wszystkie natywne wartości oraz `WAITING_FOR_SAVE`, bez `DONE`.
+- [ ] Wprowadź kilka terminów, również do ogłoszenia już zawierającego inne daty. Sprawdź brak zmian wcześniejszych pól oraz brak duplikatów po ponowieniu i odświeżeniu.
+- [ ] Sprawdź oba panele, historię, uzupełnianie ceny i ponawianie błędów. Kolejka ma być przed źródłem; dawna sekcja w formularzu ma nie istnieć.
+- [ ] Sprawdź osobno SEMPER, IIST, konflikt ODPOTWIERDZONE, ONLINE, lokalizację stacjonarną i zakres wielodniowy.
+- [ ] Jeżeli użytkownik zdecyduje się wykonać rzeczywisty zapis, niech zrobi to ręcznie po kontroli pól. Sprawdź DONE tylko dla zapisanych rekordów, reakcję na błąd walidacji, odtworzenie sesji oraz brak ponownego dodania po przeładowaniu. Samo lokalne testowanie nie jest zgodą na produkcyjny zapis.
 
-Przycisk kolejki jest fioletowy, jeśli choć jeden gotowy termin ma wyłącznie potwierdzenie kolejki. Jest zielony przy potwierdzeniu wszystkich gotowych terminów przez źródło. Bez gotowych terminów jest nieaktywny; ma lokalne style hover, focus-visible, disabled i loading. Pozostałych zielonych przycisków nie zmieniano globalnie.
+## 9. Pozostałe ograniczenia i ryzyka
 
-## 6. Niezależność SEMPER/IIST i Eventis
+Rozpoznawanie przycisku wymaga ręcznej czynności w każdym nowym dokumencie. Nie utrwala odgadniętego selektora; wymiana przycisku lub całego formularza przez Eventis może wymagać ponownego rozpoznania. Syntetyczny DOM nie dowodzi obsługi zdarzeń, opcji i widgetów rzeczywistego Eventis. Zachowany kontrakt nazw pól, mapowania i limit 6 sekund wymagają sprawdzenia na produkcji.
 
-Stan źródła jest przechowywany lokalnie w stanie widoku jako `statusZrodla`, a wynik ogłoszenia jest obliczany niezależnie z resolvera i decyzji użytkownika. Wspólne funkcje prezentacyjne zwracają osobne znaczniki `zrodlo` i `ogloszenie`. Nie dodano trwałego schematu statusów.
+Kontrola przyjęcia wartości jest lokalna i synchroniczna. Nie potwierdza walidacji serwera ani późniejszych zmian dokonywanych przez widgety Eventis. Przywrócenie kontrolek po błędzie nie jest gwarancją odtworzenia wewnętrznego stanu zewnętrznych widgetów — należy sprawdzić natywny wiersz przed ponowieniem. Ręczne potwierdzenie zapisu pozostaje deklaracją użytkownika.
 
-Brak źródła SEMPER nie przerywa odczytu Eventis. Oba problemy mogą być widoczne jednocześnie. Niejednoznaczność źródła i techniczny błąd pobierania nie są przedstawiane jako brak ogłoszenia. Brak pojedynczego terminu nie zmienia statusu znalezionego ogłoszenia na `NOT_FOUND`.
-
-Panel boczny otrzymuje istniejącym mechanizmem ten sam DOM i wspólne CSS co panel pływający. Szczegóły i podsumowania korzystają z tych samych opisów statusów.
-
-## 7. Ręczne wskazanie ogłoszenia
-
-Zachowano akcję, nazwaną „Wskaż istniejące ogłoszenie”. Przed zapamiętaniem adres jest pobierany z bieżącymi uprawnieniami użytkownika. Sprawdzane są: bezpieczny URL, zgodność ID po przekierowaniu, obecność formularza, organizator z pola Firma, rzeczywisty tytuł i wariant lokalizacyjny. Dopiero poprawny wynik jest zapisywany jako ręczne mapowanie. Nie zmieniano zabezpieczeń podobnych tytułów i długości szkolenia.
-
-„Wyszukaj ponownie” oraz „Utwórz nowe ogłoszenie” pozostają odrębnymi działaniami. Brak wyników sam nie ustawia `CREATE_NEW`.
-
-## 8. Zestawienie w formularzu
-
-Na dodawaniu i edycji znajduje się sekcja „📥 TERMINY Z KOLEJKI (N)” nad nagłówkiem terminów Eventis. Pokazuje daty początku i końca, lokalizację, liczbę uczestników, źródło potwierdzenia, obecność terminu i stan zapisu. Rozróżnia zapisane terminy od wierszy obecnych wyłącznie w formularzu.
-
-Widoczne są wszystkie siedem stanów kolejki, również zakończone i pominięte. Przypisanie wykorzystuje zweryfikowaną sesję, pamięć mapowania lub ścisłe dopasowanie organizatora i tytułu. Nieposiadająca źródła kolejka pozostaje widoczna.
-
-Dla brakujących danych dostępne jest uzupełnienie dat/lokalizacji oraz ceny netto i jawna akceptacja użycia danych kolejki. Istniejące daty i lokalizacja są chronione przed przypadkową zmianą tożsamości terminu. Akceptacja nie ustawia potwierdzenia SEMPER/IIST. Pomocnicze pola nie są wymaganymi polami Eventis i nie są wysyłane jako jego dane.
-
-Sesja `event/add` nie wymaga liczbowego ID. Po przejściu do `event/edit` jest odtwarzana w tej samej karcie z kontekstu rzeczywistej próby zapisu, a przypisanie otrzymuje docelowe ID. Kolejne odświeżenie zachowuje to powiązanie. Różne karty nie przejmują nawzajem swoich operacji; dwie operacje tego samego ogłoszenia są blokowane.
-
-## 9. Wyniki testów
-
-| Kontrola | Wynik |
-| --- | --- |
-| `npm run check` | PASS. |
-| `npm test` | PASS: **330/330**, błędy 0, pominięte 0, anulowane 0. |
-| Testy przeglądarkowe projektu | PASS, w ramach `npm test`, Playwright i lokalny Edge. |
-| `git diff --check` | PASS. |
-| `git status --short` | Tylko pliki tego zadania; bez commita i push. |
-
-Edge nie uruchamiał się w piaskownicy. Testy przeglądarkowe wykonano skutecznie poza nią. Nowe testy DOM blokują połączenia sieciowe i używają lokalnych danych oraz atrap transportu.
-
-Testy obejmują rzeczywiste kliknięcie i podwójne kliknięcie, tablice ID, brak duplikatów, kolejne importy `event/add`, zapis tylko A przy oczekujących B/C, stary komunikat sukcesu, ponowienie, wszystkie stany listy, kolory i stany przycisku, kombinacje źródła i ogłoszenia dla SEMPER/IIST, HTTP, ręczny URL, akceptację ceny bez źródła, DECONFIRMED, inne tytuły i organizatorów, przejście add → edit oraz wielodniowe zakresy. Istniejąca regresja obejmuje także opisy, mapowania, otwieranie kart i panel boczny.
-
-## 10. Checklista ręczna w przeglądarce
-
-Poniższe punkty są **do wykonania na zalogowanym Eventis**; nie są deklaracją wykonania testów produkcyjnych.
-
-- [ ] Przeładuj rozszerzenie i stronę Eventis; sprawdź panel pływający oraz boczny.
-- [ ] Kliknij import kolejki raz i dwukrotnie; sprawdź brak duplikatów i brak błędów konsoli.
-- [ ] Sprawdź zielony przycisk dla źródłowo potwierdzonych terminów i fioletowy przy potwierdzeniu wyłącznie kolejką.
-- [ ] Sprawdź brak SEMPER przy znalezionym Eventis oraz analogiczny przypadek IIST; otwórz ogłoszenie i uzupełnij termin po weryfikacji danych.
-- [ ] Sprawdź brak Eventis przy znalezionym źródle oraz brak obu; oba znaczniki muszą pozostać widoczne.
-- [ ] Ponów wyszukiwanie Eventis; wskaż prawidłowy URL ręcznie, a następnie sprawdź odrzucenie innego organizatora i niezgodnego tytułu.
-- [ ] Sprawdź świadomy wybór nowego ogłoszenia; samo wyszukiwanie nie może go utworzyć.
-- [ ] Wskaż źródło ręcznie, sprawdź niejednoznaczne wyniki i uzupełnienie brakującej ceny bez zgadywania wartości.
-- [ ] Sprawdź sekcję kolejki w `event/add` i `event/edit`, wszystkie statusy, daty, lokalizacje i uczestników.
-- [ ] Wprowadź tylko A z terminów A/B/C. Przed zapisem A ma oczekiwać; po potwierdzonym zapisie tylko A ma otrzymać `DONE`.
-- [ ] Wywołaj błąd walidacji Eventis oraz brak komunikatu zapisu; żaden z tych przypadków nie może automatycznie kończyć kolejki.
-- [ ] Ponów operację po błędzie; istniejące niezapisane wiersze nie mogą być dublowane ani uznane za zapisane.
-- [ ] Wykonaj dwa kolejne importy podczas dodawania; pierwszy termin nie może zostać nadpisany.
-- [ ] Zapisz nowe ogłoszenie, przejdź do edycji i odśwież; sprawdź przypisanie i historię zakończonych terminów.
-- [ ] Otwórz różne ogłoszenia w dwóch kartach, a następnie to samo ogłoszenie w dwóch kartach; sprawdź niezależność i blokadę kolizji.
-- [ ] Przełącz SEMPER/IIST oraz zmień tytuł; nie mogą pojawić się terminy innego organizatora lub podobnego szkolenia.
-- [ ] Sprawdź DECONFIRMED, szkolenie czterodniowe, wariant miejscowości i ONLINE.
-- [ ] Sprawdź import opisów, zapamiętane mapowania i automatyczne otwieranie kart.
-- [ ] Odłącz sieć lub zasymuluj HTTP/timeout; komunikat techniczny ma być neutralny, bez stwierdzania nieistnienia szkolenia lub ogłoszenia.
-
-## 11. Ograniczenia
-
-- Nie sprawdzano aktualnego produkcyjnego HTML ani zapisu na zalogowanym koncie; polecenie zabraniało internetu. Testy nie zastępują końcowej kontroli rzeczywistego formularza i odpowiedzi serwera.
-- Zachowano istniejący zakres wyszukiwania: preflight listy pobiera źródło SEMPER; wyszukiwanie i ręczne wskazywanie IIST pozostają w formularzu ogłoszenia. Nieprzeprowadzone wyszukiwanie źródła IIST jest oznaczone jako `UNKNOWN`, a nie fikcyjnie jako znalezione lub nieznalezione.
-- Obsługiwane miasta i reguła czterodniowego szkolenia pozostają zgodne z dotychczasowym mechanizmem. Nieznanej lub niejednoznacznej lokalizacji nie wybiera się automatycznie.
-- Bez rozpoznanego organizatora albo przy konflikcie tytułu, lokalizacji lub DECONFIRMED import jest blokowany dla niebezpiecznej pozycji.
-- Jeśli formularz ładuje się bez rozpoznawalnego nagłówka sekcji terminów, zestawienie trafia na początek formularza i pozostaje widoczne nad jego polami.
-- Powiązanie add → edit korzysta z istniejącego, dwuminutowego okna kontekstu próby zapisu; przy niejednoznaczności nie przypisuje automatycznie innego ogłoszenia.
-- Ręczne potwierdzenie zapisu nadal opiera się na świadomej deklaracji użytkownika. Automatyczne potwierdzanie wymaga obserwacji próby zapisu i sprawdzenia odpowiednich terminów.
-
-## 12. Ocena
-
-**PASS dla lokalnej implementacji i regresji: 330/330 testów.** Checklista produkcyjna pozostaje niewykonana i jest wyraźnie oddzielona od wyników automatycznych.
+Nie potwierdzono aktualnie działającej wersji content scriptu ani rzeczywistej funkcji kontrolki produkcyjnej. Pełny PASS dla produkcji wymaga wykonania powyższej checklisty.

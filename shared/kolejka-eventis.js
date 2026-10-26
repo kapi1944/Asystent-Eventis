@@ -305,9 +305,9 @@
 
   function opiszStatusElementu(element) {
     const opisy = {
-      PENDING:["gray", "oczekuje"], WAITING_FOR_SAVE:["yellow", "czeka na zapis"],
-      DONE:["green", "zapis potwierdzony"], COMPLETED_EXISTING:["green", "już istnieje"],
-      ERROR:["yellow", "błąd operacji — ponów po sprawdzeniu"], NEEDS_ATTENTION:["yellow", "wymaga uwagi"],
+      PENDING:["gray", "oczekuje"], WAITING_FOR_SAVE:["blue", "🔵 Oczekuje na zapis"],
+      DONE:["green", "✅ Zapisany w Eventis"], COMPLETED_EXISTING:["gray", "⚪ Już istnieje w Eventis"],
+      ERROR:["red", "🔴 Błąd importu"], NEEDS_ATTENTION:["yellow", "🟠 Wymaga sprawdzenia"],
       SKIPPED:["gray", "pominięty"]
     };
     const [klasa, etykieta] = opisy[element.status] || ["gray", "stan nieznany"];

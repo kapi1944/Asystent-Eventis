@@ -5,3 +5,5 @@ body{height:100vh;display:flex;flex-direction:column;overflow:hidden}
 nav{flex-shrink:0}
 #esync-root{flex:1;min-height:0}
 #esync-root .esync-body{overflow-y:auto}
+#esync-root{width:100%!important;max-width:none;max-height:none}
+#esync-root .esync-panel-action{max-height:35vh}

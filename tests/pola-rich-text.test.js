@@ -590,7 +590,7 @@ test("dodawanie i edycja przekazują czas trwania i cztery opisy do właściwych
 
 test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i obsługują błąd edytora", async () => {
   const kod = fs.readFileSync(require.resolve("../content/eventis.js"),"utf8");
-  const termin = {start:"2026-11-02",end:"2026-11-03",city:"Online",price:1200};
+  const termin = {start:"2026-11-02",end:"2026-11-03",city:"Online",price:1200,confirmedOnSemper:true};
   for (const [poczatek,koniec] of [["wprowadzTerminyZKolejki","unikalneTerminy"],["onAddMissing","switchOrganization"]]) {
     const fragment = kod.slice(kod.indexOf(`  async function ${poczatek}`),kod.indexOf(`  ${koniec === "unikalneTerminy" ? "function" : "async function"} ${koniec}`));
     for (const awaria of [false,true]) {
@@ -599,7 +599,8 @@ test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i
       const uruchom = vm.runInNewContext(`${fragment};${poczatek}`,{
         state:stan,NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),NARZEDZIA_OPERACJI:require("../shared/operacje-eventis"),
         normalize:tekst=>tekst,getEventisTitle:()=>"Szkolenie",wykryjOrganizatora:()=>({organizator:"SEMPER"}),sprawdzBrakOczekujacejOperacji:async () => true,odswiezKolejke:async () => {},compareTerms() {},
-        dopasowaniaKolejkiDoBiezacegoTytulu:() => [{element:{id:"1",recordStatus:"CONFIRMED"},terminy:[termin]}],
+        dopasowaniaKolejkiDoBiezacegoTytulu:() => [{element:{id:"1",recordStatus:"CONFIRMED",status:"PENDING"},terminy:[termin]}],
+        powodBlokadyKolejki:() => "",
         getExistingTerms:() => [],existingKey:wartosc => wartosc.start,unikalneTerminy:terminy => terminy,
         utworzPlanOperacji:() => ({}),uzyskajClaimOperacji:async operacja => ({ok:true,operacja}),
         addSelectedTerms:async () => { czynnosci.push("terminy"); return {dodane:[termin],bledy:[]}; },
@@ -613,7 +614,7 @@ test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i
         zwolnijNiepotwierdzonyClaim:async () => {},audit:async () => {},render() {},toast() {}
       });
       await uruchom();
-      assert.deepEqual(czynnosci,awaria && poczatek !== "wprowadzTerminyZKolejki" ? ["terminy","opisy"] : ["terminy","opisy","potwierdzenie"]);
+      assert.deepEqual(czynnosci,["terminy","opisy","potwierdzenie"]);
       assert.equal(stan.status,awaria ? "ERROR" : "FORM_FILLED");
       if (awaria) assert.equal(stan.lastError,"Błąd edytora");
     }

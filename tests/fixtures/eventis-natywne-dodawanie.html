@@ -1,0 +1,16 @@
+<!-- Syntetyczny model formularza do regresji, nie kopia produkcyjnego DOM Eventis. -->
+<form id="eventForm">
+  <input name="event[title]" value="Prawo pracy w praktyce">
+  <label for="firma">Firma</label><input id="firma" value="SEMPER">
+  <section class="kt-portlet">
+    <header class="kt-portlet__head"><h3>Termin i miejsce wydarzenia</h3></header>
+    <div class="kt-portlet__body">
+      <a href="#" id="obcy-termin">Informacje o terminach</a>
+      <button type="button" id="niebieski-plus">+</button>
+      <ul id="terminy"></ul>
+      <button type="button" id="dodaj" aria-label="Nowa data">Nowa data</button>
+    </div>
+  </section>
+  <button type="submit" id="zapis-eventis">Zapisz</button>
+</form>
+<aside id="esync-root"></aside>

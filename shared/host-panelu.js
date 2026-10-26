@@ -6,6 +6,58 @@
   let obslugiwany = false;
   let wersja = 0;
   let ostatniHtml = "";
+  let skale = {plywajacy:100,boczny:100};
+  let trwaZapisSkali = false;
+
+  function poprawnaSkala(wartosc) {
+    return typeof wartosc === "number" && Number.isFinite(wartosc)
+      ? Math.max(60,Math.min(140,Math.round(wartosc / 5) * 5)) : 100;
+  }
+
+  function zastosujSkale(korzen) {
+    korzen.style.setProperty("--esync-skala",String(skale[tryb] / 100));
+    if (!korzen.querySelector("#esync-skala") && korzen.querySelector(".esync-head")) {
+      const grupa = document.createElement("div");
+      grupa.id = "esync-skala";
+      grupa.setAttribute("role","group");
+      grupa.setAttribute("aria-label","Skala interfejsu asystenta");
+      grupa.innerHTML = '<button type="button" data-skala="-5" aria-label="Zmniejsz skalę o 5%">−</button><button type="button" data-skala="100" title="Przywróć 100%"></button><button type="button" data-skala="5" aria-label="Zwiększ skalę o 5%">+</button>';
+      grupa.addEventListener("click",async zdarzenie => {
+        const przycisk = zdarzenie.target.closest("[data-skala]");
+        if (!przycisk || przycisk.disabled || trwaZapisSkali) return;
+        const widok = tryb;
+        const poprzednia = skale[widok];
+        skale[widok] = poprawnaSkala(przycisk.dataset.skala === "100" ? 100 : poprzednia + Number(przycisk.dataset.skala));
+        trwaZapisSkali = true;
+        zastosujSkale(korzen);
+        try {
+          const {settings = {}} = await chrome.storage.local.get("settings");
+          await chrome.storage.local.set({settings:{...settings,skalePanelu:{...settings.skalePanelu,[widok]:skale[widok]}}});
+        } catch (blad) {
+          skale[widok] = poprzednia;
+          console.warn("Nie zapisano skali panelu",blad);
+        } finally { trwaZapisSkali = false; zastosujSkale(korzen); }
+      });
+      korzen.querySelector(".esync-head")?.appendChild(grupa);
+    }
+    const grupa = korzen.querySelector("#esync-skala");
+    if (!grupa) return;
+    const srodek = grupa.querySelector('[data-skala="100"]');
+    const etykieta = `🔍 ${skale[tryb]}%`;
+    if (srodek.textContent !== etykieta) srodek.textContent = etykieta;
+    srodek.setAttribute("aria-label",`Skala ${skale[tryb]}%. Przywróć 100%`);
+    grupa.querySelectorAll("button").forEach(przycisk => {
+      przycisk.disabled = trwaZapisSkali || (przycisk.dataset.skala === "-5" && skale[tryb] === 60)
+        || (przycisk.dataset.skala === "5" && skale[tryb] === 140);
+    });
+  }
+
+  function odczytajSkale(ustawienia = {}) {
+    skale = {plywajacy:poprawnaSkala(ustawienia.skalePanelu?.plywajacy),boczny:poprawnaSkala(ustawienia.skalePanelu?.boczny)};
+    zastosujTryb();
+  }
+
+  Promise.resolve(chrome.storage.local?.get?.("settings")).then(dane => odczytajSkale(dane?.settings)).catch(blad => console.warn("Skala panelu",blad));
 
   if (!/^\/company\/?$|^\/company\/listevents(?:\/|$)|^\/event\/(?:edit|add)(?:\/|$)/i.test(location.pathname)
       && !document.querySelector("#esync-root")) {
@@ -21,12 +73,13 @@
     if (!korzen) return {ok:false,error:"Panel Eventis jeszcze się ładuje."};
     const html = korzen.innerHTML;
     if (html !== ostatniHtml) { ostatniHtml = html; wersja++; }
-    return {ok:true,html,wersja,tryb,klasy:korzen.className,komunikat:document.querySelector(".esync-toast")?.textContent || "",wartosci:Array.from(korzen.querySelectorAll(SELEKTOR_AKCJI),element => ({wartosc:element.value,zaznaczony:element.checked,otwarty:element.open}))};
+    return {ok:true,html,wersja,tryb,skala:skale[tryb],klasy:korzen.className,komunikat:document.querySelector(".esync-toast")?.textContent || "",wartosci:Array.from(korzen.querySelectorAll(SELEKTOR_AKCJI),element => ({wartosc:element.value,zaznaczony:element.checked,otwarty:element.open}))};
   }
 
   function zastosujTryb() {
     const korzen = document.querySelector("#esync-root");
     if (!korzen) return;
+    zastosujSkale(korzen);
     korzen.hidden = tryb === "boczny";
     if (!korzen.querySelector("#esync-tryb-panelu")) {
       const przycisk = document.createElement("button");
@@ -41,7 +94,7 @@
           if (!odpowiedz?.ok) alert(odpowiedz?.error || "Panel boczny jest niedostępny. Użyj panelu pływającego.");
         }).catch(blad => console.warn("Panel boczny",blad));
       });
-      korzen.querySelector(".esync-head-actions")?.prepend(przycisk);
+      korzen.querySelector(".esync-head")?.appendChild(przycisk);
     }
   }
 
@@ -72,6 +125,7 @@
     }
   });
   chrome.storage.onChanged.addListener((zmiany,obszar) => {
+    if (obszar === "local" && zmiany.settings) odczytajSkale(zmiany.settings.newValue);
     if (obszar === "local" && zmiany[KLUCZ_TRYBU]) {
       if (zmiany[KLUCZ_TRYBU].newValue !== "plywajacy") return;
       tryb = "plywajacy";

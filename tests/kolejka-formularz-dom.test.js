@@ -20,10 +20,10 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
   const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
   podtesty.after(() => przegladarka.close());
 
-  async function przygotuj(tryb = "edit") {
+  async function przygotuj(tryb = "edit", opcje = {}) {
     const strona = await przegladarka.newPage();
     await strona.route("**/*",trasa => trasa.abort());
-    await strona.setContent('<form id="eventForm"><input name="event[title]" value="Prawo pracy w praktyce"><label for="firma">Firma</label><input id="firma" value="SEMPER"><h3>Termin i miejsce wydarzenia</h3><div id="terminy"></div><button type="button" id="dodaj">Dodaj termin</button></form><aside id="esync-root"></aside>');
+    await strona.setContent(pliki.readFileSync(sciezki.resolve(__dirname,'fixtures/eventis-natywne-dodawanie.html'),'utf8'));
     await strona.addStyleTag({path:sciezki.resolve(__dirname,"../content/eventis.css")});
     for (const nazwa of ["wyszukiwanie","terminy","arkusz","kolejka-eventis","operacje-eventis","lista-eventis","mapowania-wydarzen-eventis","otwieranie-wydarzen-eventis"]) {
       await strona.addScriptTag({path:sciezki.resolve(__dirname,`../shared/${nazwa}.js`)});
@@ -31,6 +31,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     await strona.addScriptTag({content:`
       const MODE = ${JSON.stringify(tryb)};
       const PAGE_LOAD_ID = "strona-testowa";
+      const VERSION = "test";
       const REGIONS = {Warszawa:7,Kraków:6,Gdańsk:11};
       const NARZEDZIA_WYSZUKIWANIA = NarzedziaWyszukiwaniaEventis;
       const NARZEDZIA_TERMINOW = NarzedziaTerminowEventis;
@@ -60,7 +61,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       const audit = async () => {};
       const state = {organization:"SEMPER",organizatorWydarzenia:"SEMPER",eventisId:MODE === "add" ? "new:test" : "123",eventisTitle:getEventisTitle(),
         tabId:17,settings:{},zapis:{saveState:"IDLE"},source:{url:"https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,123.html"},
-        sourceTerms:[],eventisImportQueue:[],zapisaneTerminyEventis:[],przypisaneRecznieBiezacejKarty:[],mappingVerifiedThisSession:true};
+        sourceTerms:[],missingTerms:[],eventisImportQueue:[],zapisaneTerminyEventis:[],przypisaneRecznieBiezacejKarty:[],mappingVerifiedThisSession:true};
       const chrome = {runtime:{sendMessage:async wiadomosc => {
         if (wiadomosc.type === "CLAIM_PENDING_OPERATION") return NARZEDZIA_OPERACJI.uzyskajClaimOperacji({pobierz:async()=>magazyn.pendingOperations,zapisz:async dane=>{magazyn.pendingOperations=dane;}},wiadomosc.operation);
         throw Error("Nieoczekiwana wiadomość: " + wiadomosc.type);
@@ -70,17 +71,16 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         state.eventisImportQueue = magazyn.eventisImportQueue;
       };
       const setValue = (pole,wartosc) => { if(pole) pole.value=wartosc; };
-      const findAddTermButton = () => $('#dodaj');
       const uzupelnijDaneWydarzenia = async () => {};
       ${fragment(kodFormularza,"  function getExistingTerms()","  function compareTerms()")}
-      ${fragment(kodFormularza,"  function fillTerm(","  async function uzupelnijDaneWydarzenia")}
+      ${fragment(kodFormularza,"  function pobierzPolaTerminu(","  async function uzupelnijDaneWydarzenia")}
       ${fragment(kodFormularza,"  function przygotujTerminDoKolejki(","  function czyTrwaZapis()")}
       ${fragment(kodFormularza,"  function czyTrwaZapis()","  async function zwolnijOczekujacaOperacje")}
       ${fragment(kodFormularza,"  async function sprawdzBrakOczekujacejOperacji","  let obserwatorZapisu")}
       ${fragment(kodFormularza,"  async function zaktualizujBiezacaKolejke","  async function reconcileBiezacejKolejki")}
       ${fragment(kodFormularza,"  function dopasowaniaKolejkiDoBiezacegoTytulu","  function deconfirmedExistingMatches")}
       ${fragment(kodFormularza,"  function statusyBiezacejKarty","  async function renderOutboxStatus")}
-      ${fragment(kodFormularza,"  function renderujPrzyciskKolejki","  function render()")}
+      ${fragment(kodFormularza,"  function renderujPrzyciskKolejki","  function bindUI()")}
       ${fragment(kodFormularza,"  function renderTerm(","  function przelaczRecznePotwierdzenie")}
       ${fragment(kodFormularza,"  function bindUI()","  function observeTitleChanges()")}
       ${fragment(kodFormularza,"  async function confirmPendingSaved","  async function oznaczNieudanyZapis")}
@@ -92,22 +92,47 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       const potwierdzoneTerminyTytulu = () => [];
       ${fragment(kodListy,"  async function sprawdzTerminyWydarzenia","  async function uruchomPreflight").replace("location.origin",'"https://eventis.pl"')}
       ${fragment(kodListy,"  function renderujPreflight","  function renderujWyniki()")}
-      function render() {
-        $('#esync-root').innerHTML = renderujPrzyciskKolejki();
-        odswiezSekcjeKolejkiFormularza();
-        bindUI();
-      }
+      const czyTerminPotwierdzony = termin => termin.effectiveConfirmed ?? termin.confirmedOnSemper ?? termin.confirmed;
+      const renderujWeryfikacjeOtwartejKarty = () => '';
+      const renderujAkcjeZrodla = () => '<div id="zrodlo-testowe" class="esync-card">Źródło szkolenia</div>';
+      const renderMappingCard = () => '';
+      const renderTermsCard = () => '';
+      const renderPendingCard = () => '';
+      const renderujBiezaceOgloszenie = () => '';
+      ${fragment(kodFormularza,"  async function onAddMissing()","  async function switchOrganization")}
+      const compareTerms = () => {state.missingTerms=state.sourceTerms.filter(termin => !getExistingTerms().some(wpis => existingKey(wpis) === existingKey(termin)));};
+      const queueExistingTerms = () => {};
+      const renderOutboxStatus = () => {};
+      const wykonajAkcjePanelu = () => {};
       let liczbaFormularzy = 0;
-      $('#dodaj').addEventListener('click',() => {
+      let opoznienieFormularza = 0;
+      let opoznieniePol = 0;
+      let brakFormularza = false;
+      let liczbaKlikniec = 0;
+      function dodajNatywnyFormularz() {
         const numer = ++liczbaFormularzy;
-        const wiersz = document.createElement('div');
+        const wiersz = document.createElement('li');
         wiersz.id = 'li_eventdate_' + numer;
-        wiersz.innerHTML = '<select id="eventdate_is_online_'+numer+'"><option value=""></option><option value="1">Online</option></select>' +
+        const pola = '<select id="eventdate_is_online_'+numer+'"><option value=""></option><option value="1">Online</option></select>' +
           '<input id="eventdate_datestart_'+numer+'"><input id="eventdate_dateend_'+numer+'">' +
           '<select name="eventDate['+numer+'][is_guaranteed]"><option value="1">Tak</option></select>' +
           '<input name="eventDate['+numer+'][prices][0][taxRate]"><input name="eventDate['+numer+'][prices][0][price]">' +
-          '<textarea name="eventDate['+numer+'][online_description]"></textarea>';
+          '<textarea name="eventDate['+numer+'][online_description]"></textarea>' +
+          '<input name="eventDate['+numer+'][prices][0][price_name]">' +
+          '<input name="eventDate['+numer+'][info]"><input name="eventDate['+numer+'][city]">' +
+          '<select name="eventDate['+numer+'][region_id]"><option value=""></option><option value="7">Mazowieckie</option><option value="6">Małopolskie</option></select>' +
+          '<select id="price_contains_materials_type_select_'+numer+'_0"><option value="1">Online</option><option value="2">Druk</option></select>' +
+          [1,2,3,4,5].map(wartosc => '<input type="checkbox" class="event_price_contains" value="'+wartosc+'">').join('');
         $('#terminy').appendChild(wiersz);
+        if (opoznieniePol) setTimeout(() => {wiersz.innerHTML=pola;},opoznieniePol);
+        else wiersz.innerHTML=pola;
+        return wiersz;
+      }
+      $('#dodaj').addEventListener('click',() => {
+        liczbaKlikniec++;
+        if (brakFormularza) return;
+        if (opoznienieFormularza) setTimeout(dodajNatywnyFormularz,opoznienieFormularza);
+        else dodajNatywnyFormularz();
       });
       function ustawKolejke(statusy = ['PENDING','PENDING','PENDING']) {
         state.sourceTerms = [5,12,19].map(dzien => ({start:'2026-11-'+dzien.toString().padStart(2,'0'),end:'2026-11-'+dzien.toString().padStart(2,'0'),city:'Online',price:1000,confirmedOnSemper:false,confirmedByQueue:true}));
@@ -117,8 +142,336 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       }
       ustawKolejke();
     `});
+    if (opcje.rozpoznaj !== false) {
+      await strona.evaluate(() => rozpoznajNatywneDodawanie());
+      await strona.locator('#dodaj').click();
+      await strona.waitForFunction(() => !state.trwaRozpoznawanieNatywne);
+      asercje.equal(await strona.evaluate(() => findAddTermButton()?.id),'dodaj');
+      await strona.evaluate(() => {$('#terminy').replaceChildren();liczbaFormularzy=0;liczbaKlikniec=0;render();});
+    }
     return strona;
   }
+
+  await podtesty.test("bez rozpoznanego przycisku: zero kliknięć przypadkowych odnośników i brak DONE",async () => {
+    const strona = await przygotuj('edit',{rozpoznaj:false});
+    await strona.evaluate(async () => {
+      $('#dodaj').remove();
+      window.obceKlikniecia=0;
+      $('#niebieski-plus').addEventListener('click',() => window.obceKlikniecia++);
+      $('#obcy-termin').addEventListener('click',() => window.obceKlikniecia++);
+      await wprowadzTerminyZKolejki(['q0']);
+    });
+    asercje.equal(await strona.evaluate(() => window.obceKlikniecia),0);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),0);
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'ERROR');
+    asercje.match(await strona.evaluate(() => magazyn.eventisImportQueue[0].errorMessage),/Rozpoznaj natywne dodawanie/);
+    asercje.equal(await strona.evaluate(() => state.pendingOperation),null);
+    await strona.close();
+  });
+
+  await podtesty.test("rozpoznanie przyjmuje dopiero ręczne kliknięcie tworzące kompletny natywny formularz",async () => {
+    const strona = await przygotuj('edit',{rozpoznaj:false});
+    await strona.locator('#esync-kolejka-ogloszenia > summary').click();
+    await strona.locator('#esync-rozpoznaj-dodawanie').click();
+    asercje.equal(await strona.evaluate(() => findAddTermButton()),null);
+    await strona.locator('#dodaj').click();
+    await strona.waitForFunction(() => !state.trwaRozpoznawanieNatywne);
+    asercje.equal(await strona.evaluate(() => findAddTermButton()?.id),'dodaj');
+    await strona.evaluate(() => wprowadzTerminyZKolejki(['q0']));
+    asercje.equal(await strona.evaluate(() => liczbaKlikniec),1);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'WAITING_FOR_SAVE');
+    await strona.close();
+  });
+
+  await podtesty.test("asynchroniczny wiersz i osobno doładowane pola są gotowe przed wypełnieniem",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {opoznienieFormularza=1100;opoznieniePol=150;await wprowadzTerminyZKolejki(['q0','q1']);});
+    asercje.deepEqual(await strona.locator('[id^="eventdate_datestart_"]').evaluateAll(pola => pola.map(pole => pole.value)),['2026-11-05','2026-11-12']);
+    asercje.deepEqual(await strona.evaluate(() => magazyn.eventisImportQueue.map(wpis => wpis.status)),['WAITING_FOR_SAVE','WAITING_FOR_SAVE','PENDING']);
+    await strona.close();
+  });
+
+  await podtesty.test("brak nowego formularza kończy się błędem; ponowienie zachowuje tylko faktycznie dodane terminy",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {brakFormularza=true;await wprowadzTerminyZKolejki(['q0']);});
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'ERROR');
+    asercje.match(await strona.evaluate(() => magazyn.eventisImportQueue[0].errorMessage),/nie utworzył nowego formularza/);
+    asercje.equal(await strona.evaluate(() => state.pendingOperation),null);
+    await strona.evaluate(async () => {brakFormularza=false;await ponowKolejke('q0');await wprowadzTerminyZKolejki(['q0']);});
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'WAITING_FOR_SAVE');
+    await strona.close();
+  });
+
+  await podtesty.test("obserwator kończy się po sukcesie, przekroczeniu czasu, anulowaniu i zmianie kontekstu",async () => {
+    const strona = await przygotuj();
+    const wyniki = await strona.evaluate(async () => {
+      const OryginalnyObserwator = window.MutationObserver;
+      let aktywneObserwatory=0;
+      window.MutationObserver=class extends OryginalnyObserwator {
+        observe(...argumenty) {aktywneObserwatory++;super.observe(...argumenty);}
+        disconnect() {aktywneObserwatory--;super.disconnect();}
+      };
+      const wyniki=[];
+      for (const rodzaj of ['sukces','timeout','anulowanie','kontekst','niekompletny']) {
+        const kontroler = new AbortController();
+        const identyfikatory = new Set($$('[id^="li_eventdate_"]').map(wiersz => wiersz.id));
+        try {
+          await oczekujNaNatywnyFormularz(identyfikatory,state.sourceTerms[0],() => {
+            if (rodzaj==='sukces') dodajNatywnyFormularz();
+            if (rodzaj==='anulowanie') kontroler.abort();
+            if (rodzaj==='niekompletny') {const wiersz=dodajNatywnyFormularz();wiersz.querySelector('textarea').remove();}
+          },{sygnal:kontroler.signal,czas:35,czyAktualny:()=>rodzaj!=='kontekst'});
+          wyniki.push({rodzaj,blad:'',aktywneObserwatory});
+        } catch (blad) {wyniki.push({rodzaj,blad:blad.message,aktywneObserwatory});}
+      }
+      window.MutationObserver=OryginalnyObserwator;
+      return wyniki;
+    });
+    asercje.deepEqual(wyniki.map(wynik => wynik.aktywneObserwatory),[0,0,0,0,0]);
+    asercje.equal(wyniki[0].blad,'');
+    asercje.match(wyniki[1].blad,/nie utworzył/);
+    asercje.match(wyniki[2].blad,/Anulowano/);
+    asercje.match(wyniki[3].blad,/Kontekst/);
+    asercje.match(wyniki[4].blad,/opisOnline/);
+    await strona.close();
+  });
+
+  await podtesty.test("błędne ceny i daty nie tworzą formularza, a brakujące pola nie są pobierane spoza wiersza",async () => {
+    const strona = await przygotuj();
+    const wyniki = await strona.evaluate(async () => {
+      const wyniki=[];
+      for (const cena of [null,'',' ',NaN,-1,'abc']) {
+        const wynik=await addSelectedTerms([{...state.sourceTerms[0],price:cena}]);
+        wyniki.push([wynik.dodane.length,wynik.bledy.length]);
+      }
+      const wynikDaty=await addSelectedTerms([{...state.sourceTerms[0],start:'2026-02-31'}]);
+      const wiersz=dodajNatywnyFormularz();
+      document.body.appendChild(wiersz.querySelector('[id^="eventdate_datestart_"]'));
+      let blad='';
+      try {fillTerm(wiersz,state.sourceTerms[0]);} catch (wyjatek) {blad=wyjatek.message;}
+      return {wyniki,klikniecia:liczbaKlikniec,blad,bladDaty:wynikDaty.bledy.length,koniec:wiersz.querySelector('[id^="eventdate_dateend_"]').value};
+    });
+    asercje.deepEqual(wyniki.wyniki,Array.from({length:6},()=>[0,1]));
+    asercje.equal(wyniki.klikniecia,0);
+    asercje.equal(wyniki.bladDaty,1);
+    asercje.equal(wyniki.koniec,'');
+    asercje.match(wyniki.blad,/wymaganych pól/);
+    await strona.close();
+  });
+
+  await podtesty.test("odrzucenie wartości przez Eventis przywraca pusty formularz i nie kończy kolejki",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {
+      const wiersz=dodajNatywnyFormularz();
+      natywneDodawanie.puste.set(wiersz,odciskPolTerminu(wiersz));
+      const cena=wiersz.querySelector('input[name$="[price]"]');
+      Object.defineProperty(cena,'value',{get:()=>'',set:()=>{},configurable:true});
+      await wprowadzTerminyZKolejki(['q0']);
+    });
+    asercje.equal(await strona.locator('[id^="eventdate_datestart_"]').inputValue(),'');
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'ERROR');
+    await strona.close();
+  });
+
+  await podtesty.test("termin zapisany jest rozliczany osobno, a import nie zmienia wcześniejszych wartości",async () => {
+    const strona = await przygotuj();
+    const przed = await strona.evaluate(() => {
+      const wiersz=dodajNatywnyFormularz();fillTerm(wiersz,state.sourceTerms[0]);
+      state.zapisaneTerminyEventis=getExistingTerms();return odciskPolTerminu(wiersz);
+    });
+    await strona.evaluate(() => wprowadzTerminyZKolejki());
+    asercje.deepEqual(await strona.evaluate(() => magazyn.eventisImportQueue.map(wpis => wpis.status)),['COMPLETED_EXISTING','WAITING_FOR_SAVE','WAITING_FOR_SAVE']);
+    asercje.equal(await strona.evaluate(() => odciskPolTerminu($('#li_eventdate_1'))),przed);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),3);
+    await strona.close();
+  });
+
+  await podtesty.test("termin niezapisanego formularza jest wiązany z operacją bez nowego kliknięcia i bez DONE",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(() => {
+      fillTerm(dodajNatywnyFormularz(),state.sourceTerms[0]);
+      state.eventisImportQueue=state.eventisImportQueue.slice(0,1);magazyn.eventisImportQueue=state.eventisImportQueue;render();
+    });
+    asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),false);
+    await strona.locator('#esync-add-queue-terms').click();
+    await strona.waitForFunction(() => state.status==='FORM_FILLED');
+    asercje.equal(await strona.evaluate(() => liczbaKlikniec),0);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'WAITING_FOR_SAVE');
+    await strona.close();
+  });
+
+  await podtesty.test("przycisk pozwala rozliczyć jedyny już zapisany termin bez rozpoznawania i nowego wiersza",async () => {
+    const strona=await przygotuj('edit',{rozpoznaj:false});
+    await strona.evaluate(() => {
+      fillTerm(dodajNatywnyFormularz(),state.sourceTerms[0]);state.zapisaneTerminyEventis=getExistingTerms();
+      state.eventisImportQueue=state.eventisImportQueue.slice(0,1);magazyn.eventisImportQueue=state.eventisImportQueue;render();
+    });
+    asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),false);
+    await strona.locator('#esync-add-queue-terms').click();
+    await strona.waitForFunction(() => magazyn.eventisImportQueue[0].status==='COMPLETED_EXISTING');
+    asercje.equal(await strona.evaluate(() => liczbaKlikniec),0);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    await strona.close();
+  });
+
+  await podtesty.test("niekompletny niezapisany termin wymaga uwagi i nie jest oznaczany jako gotowy do zapisu",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {
+      const wiersz=dodajNatywnyFormularz();fillTerm(wiersz,state.sourceTerms[0]);
+      wiersz.querySelector('input[name$="[price]"]').value='';
+      await wprowadzTerminyZKolejki(['q0']);
+    });
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'NEEDS_ATTENTION');
+    asercje.equal(await strona.evaluate(() => state.pendingOperation),null);
+    await strona.close();
+  });
+
+  await podtesty.test("jawna akceptacja danych kolejki umożliwia import pomimo nieprawidłowej ceny źródła",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(() => {state.sourceTerms[0].price='abc';render();});
+    await strona.locator('#esync-kolejka-ogloszenia > summary').click();
+    await strona.locator('.esync-dane-terminu summary').click();
+    await strona.locator('[data-pole-terminu="price"]').fill('1250');
+    await strona.locator('[data-zgoda-terminu]').check();
+    await strona.locator('[data-zatwierdz-dane]').click();
+    await strona.evaluate(() => wprowadzTerminyZKolejki(['q0']));
+    asercje.equal(await strona.locator('input[name$="[price]"]').inputValue(),'1250');
+    asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'WAITING_FOR_SAVE');
+    asercje.equal(await strona.evaluate(() => state.pendingOperation.expectedTerms[0].confirmedOnSemper),false);
+    await strona.close();
+  });
+
+  await podtesty.test("oczekiwanie obejmuje również opcje kontrolek doładowane po utworzeniu wiersza",async () => {
+    const strona = await przygotuj();
+    const wynik=await strona.evaluate(async () => {
+      const poczatkoweId=new Set();
+      const wiersz=await oczekujNaNatywnyFormularz(poczatkoweId,state.sourceTerms[0],() => {
+        const nowy=dodajNatywnyFormularz();
+        const tryb=nowy.querySelector('[id^="eventdate_is_online_"]');
+        tryb.replaceChildren();
+        setTimeout(() => tryb.innerHTML='<option value="1">Online</option>',100);
+      });
+      return brakujacePolaTerminu(wiersz,state.sourceTerms[0]);
+    });
+    asercje.deepEqual(wynik,[]);
+    await strona.close();
+  });
+
+  await podtesty.test("zapis jednego z kilku terminów operacji nie kończy pozostałych rekordów",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {
+      await wprowadzTerminyZKolejki(['q0','q1']);$('#li_eventdate_2').remove();
+      state.zapis={saveState:'SUCCESS'};await confirmPendingSaved('AUTO_SUCCESS_MARKER');
+    });
+    asercje.deepEqual(await strona.evaluate(() => magazyn.eventisImportQueue.map(wpis => wpis.status)),['DONE','NEEDS_ATTENTION','PENDING']);
+    await strona.close();
+  });
+
+  await podtesty.test("potwierdzenie kolejki i potwierdzenie źródłowe zachowują osobne akcje oraz metadane",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {compareTerms();await onAddMissing();});
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),0);
+    await strona.evaluate(async () => {state.sourceTerms[0].confirmedOnSemper=true;await wprowadzTerminyZKolejki(['q0']);});
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    asercje.equal(await strona.evaluate(() => state.pendingOperation.pochodzenie),'queue');
+    asercje.equal(await strona.evaluate(() => state.pendingOperation.expectedTerms[0].confirmedOnSemper),true);
+    await strona.close();
+  });
+
+  await podtesty.test("podwójny import źródła i kliknięcie kolejki nie uruchamiają równoległego dodawania",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {
+      state.sourceTerms.forEach(termin => termin.confirmedOnSemper=true);
+      opoznienieFormularza=50;
+      await Promise.all([onAddMissing(),onAddMissing(),wprowadzTerminyZKolejki()]);
+    });
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),3);
+    asercje.equal(await strona.evaluate(() => liczbaKlikniec),3);
+    asercje.equal(await strona.evaluate(() => state.pendingOperation.pochodzenie),'source');
+    asercje.deepEqual(await strona.evaluate(() => magazyn.eventisImportQueue.map(wpis => wpis.status)),['PENDING','PENDING','PENDING']);
+    await strona.close();
+  });
+
+  await podtesty.test("IIST, wielodniowy ONLINE i stacjonarny wariant pozostają niezależne",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(async () => {
+      $('#firma').value='IIST';state.organization='IIST';state.organizatorWydarzenia='IIST';
+      state.sourceTerms=[{...state.sourceTerms[0],end:'2026-11-07'}, {...state.sourceTerms[0],end:'2026-11-07',city:'Warszawa'}];
+      state.eventisImportQueue=state.sourceTerms.map((termin,indeks)=>({...state.eventisImportQueue[0],...termin,id:'iist'+indeks,recordKey:'rekord-iist'+indeks,signature:'iist'+indeks,organization:'IIST'}));
+      magazyn.eventisImportQueue=state.eventisImportQueue;
+      await wprowadzTerminyZKolejki();
+    });
+    asercje.deepEqual(await strona.evaluate(() => getExistingTerms().map(termin => [termin.start,termin.end,termin.city])),[['2026-11-05','2026-11-07','Online'],['2026-11-05','2026-11-07','Warszawa']]);
+    asercje.equal(await strona.locator('#esync-kolejka-ogloszenia [data-element-kolejki]').count(),2);
+    asercje.equal(await strona.locator('select[name$="[region_id]"]').nth(1).inputValue(),'7');
+    asercje.equal(await strona.locator('input[name$="[price_name]"]').nth(1).inputValue(),'szkolenie stacjonarne');
+    await strona.close();
+  });
+
+  await podtesty.test("odświeżenie panelu zachowuje rozwinięcie, cenę i zgodę użytkownika",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(() => {state.sourceTerms=[];render();});
+    await strona.locator('#esync-kolejka-ogloszenia > summary').click();
+    await strona.locator('.esync-dane-terminu summary').first().click();
+    await strona.locator('[data-pole-terminu="price"]').first().fill('1234.50');
+    await strona.locator('[data-zgoda-terminu]').first().check();
+    await strona.evaluate(() => render());
+    asercje.equal(await strona.locator('[data-pole-terminu="price"]').first().inputValue(),'1234.50');
+    asercje.equal(await strona.locator('[data-zgoda-terminu]').first().isChecked(),true);
+    asercje.equal(await strona.locator('.esync-dane-terminu').first().getAttribute('open'),'');
+    await strona.close();
+  });
+
+  await podtesty.test("ten sam DOM kolejki otwiera się przed źródłem w panelu pływającym i bocznym",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(() => {
+      window.odbierzPanel=null;
+      chrome.runtime.id='test';
+      chrome.runtime.onMessage={addListener:obsluga => {window.odbierzPanel=obsluga;}};
+      chrome.storage={onChanged:{addListener() {}}};
+      chrome.runtime.sendMessage=async () => ({obslugiwany:true});
+    });
+    await strona.addScriptTag({path:sciezki.resolve(__dirname,'../shared/host-panelu.js')});
+    const widok=await strona.evaluate(() => new Promise(odpowiedz => window.odbierzPanel({type:'POBIERZ_WIDOK_PANELU'},{id:'test'},odpowiedz)));
+    asercje.equal(widok.ok,true);
+    asercje.equal(await strona.locator('#esync-root').isHidden(),true);
+    const panel=await przegladarka.newPage({viewport:{width:360,height:800}});
+    await panel.route('**/*',trasa => trasa.abort());
+    await panel.setContent('<nav><button id="plywajacy">Panel</button><span id="komunikat"></span></nav><aside id="esync-root"></aside>');
+    await panel.addStyleTag({path:sciezki.resolve(__dirname,'../content/eventis.css')});
+    await panel.addStyleTag({path:sciezki.resolve(__dirname,'../sidepanel.css')});
+    await panel.evaluate(widok => {
+      window.chrome={runtime:{sendMessage:async () => ({...widok,identyfikatorKarty:17})}};
+      window.setInterval=()=>0;
+    },widok);
+    await panel.addScriptTag({path:sciezki.resolve(__dirname,'../sidepanel.js')});
+    await panel.waitForSelector('#esync-kolejka-ogloszenia');
+    asercje.equal(await panel.locator('#esync-root .esync-body > :first-child').getAttribute('id'),'esync-kolejka-ogloszenia');
+    asercje.equal(await panel.locator('#esync-kolejka-ogloszenia').count(),1);
+    asercje.equal(await panel.locator('#esync-kolejka-ogloszenia').evaluate(element => element.nextElementSibling.id),'zrodlo-testowe');
+    asercje.equal(await panel.locator('#esync-kolejka-ogloszenia').evaluate(element => element.getBoundingClientRect().width <= 360),true);
+    await panel.close();
+    await strona.close();
+  });
+
+  await podtesty.test("licznik gotowych jest zgodny z przyciskiem także dla ERROR i NEEDS_ATTENTION",async () => {
+    const strona=await przygotuj();
+    for (const status of ['PENDING','ERROR','NEEDS_ATTENTION']) {
+      await strona.evaluate(status=>{state.eventisImportQueue=state.eventisImportQueue.slice(0,1);state.eventisImportQueue[0].status=status;render();},status);
+      const gotowe=status==='PENDING'?1:0;
+      asercje.match(await strona.locator('#esync-kolejka-ogloszenia > summary').innerText(),new RegExp('Do dodania: '+gotowe));
+      asercje.match(await strona.locator('#esync-add-queue-terms').innerText(),new RegExp('\\('+gotowe+'\\)'));
+      asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),!gotowe);
+    }
+    await strona.evaluate(()=>{state.eventisImportQueue[0].status='PENDING';state.sourceTerms[0].price=null;render();});
+    asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),true);
+    asercje.match(await strona.locator('#esync-kolejka-ogloszenia').textContent(),/Brak poprawnej ceny/);
+    await strona.close();
+  });
 
   await podtesty.test("normalne i podwójne kliknięcie: jeden import, brak MouseEvent i duplikatów",async () => {
     const strona = await przygotuj();
@@ -166,15 +519,19 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     await strona.close();
   });
 
-  await podtesty.test("lista nad sekcją terminów pokazuje wszystkie siedem stanów i uczestników",async () => {
+  await podtesty.test("kolejka na górze panelu pokazuje siedem stanów i usuwa tylko dawną sekcję asystenta",async () => {
     const strona = await przygotuj();
     await strona.evaluate(() => {
       const element=state.eventisImportQueue[0];
+      $('#eventForm').insertAdjacentHTML('afterbegin','<section id="esync-terminy-formularza" class="esync-card">Stara kolejka</section>');
       state.eventisImportQueue=['PENDING','WAITING_FOR_SAVE','DONE','COMPLETED_EXISTING','ERROR','NEEDS_ATTENTION','SKIPPED'].map((status,indeks)=>({...element,id:'stan'+indeks,status}));render();
     });
-    asercje.equal(await strona.locator('#esync-terminy-formularza [data-element-kolejki]').count(),7);
-    asercje.match(await strona.locator('#esync-terminy-formularza').innerText(),/6 osób/);
-    asercje.equal(await strona.locator('#esync-terminy-formularza').evaluate(element=>element.nextElementSibling.textContent),'Termin i miejsce wydarzenia');
+    asercje.equal(await strona.locator('#esync-terminy-formularza').count(),0);
+    asercje.equal(await strona.locator('#esync-root .esync-body > :first-child').getAttribute('id'),'esync-kolejka-ogloszenia');
+    asercje.equal(await strona.locator('#esync-kolejka-ogloszenia [data-element-kolejki]').count(),7);
+    await strona.locator('#esync-kolejka-ogloszenia > summary').click();
+    asercje.match(await strona.locator('#esync-kolejka-ogloszenia').innerText(),/6 osób/);
+    asercje.equal(await strona.locator('#eventForm h3').innerText(),'Termin i miejsce wydarzenia');
     await strona.close();
   });
 
@@ -196,6 +553,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(147, 51, 234)');
     await przycisk.hover();
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(126, 34, 206)');
+    await strona.keyboard.press('Tab');
     await przycisk.focus();
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).outlineStyle),'solid');
     await strona.evaluate(()=>{state.sourceTerms.forEach(termin=>termin.confirmedOnSemper=true);render();});
@@ -236,7 +594,8 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       const strona=await przygotuj(tryb);
       await strona.evaluate(()=>{state.source=null;state.sourceTerms=[];state.mappingVerifiedThisSession=false;state.statusZrodla='NOT_FOUND';state.eventisImportQueue=state.eventisImportQueue.slice(0,1);magazyn.eventisImportQueue=state.eventisImportQueue;render();});
       asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),true);
-      await strona.locator('#esync-terminy-formularza summary').click();
+      await strona.locator('#esync-kolejka-ogloszenia > summary').click();
+      await strona.locator('.esync-dane-terminu summary').click();
       await strona.locator('[data-pole-terminu="price"]').fill('1200');
       await strona.locator('[data-zatwierdz-dane]').click();
       asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),true);

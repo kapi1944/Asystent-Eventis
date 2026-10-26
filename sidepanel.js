@@ -32,6 +32,8 @@
       const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
       if (!widok?.ok) throw new Error(widok?.error || "Otwórz kartę Eventis.");
       komunikat.textContent = widok.komunikat || "";
+      const skala = typeof widok.skala === "number" && Number.isFinite(widok.skala) ? Math.max(60,Math.min(140,widok.skala)) : 100;
+      korzen.style.setProperty("--esync-skala",String(skala / 100));
       if (widok.html !== ostatniHtml || identyfikatorKarty !== widok.identyfikatorKarty) {
         const przewiniecie = window.scrollY;
         const przewiniecieListy = korzen.querySelector(".esync-body")?.scrollTop || 0;

@@ -52,10 +52,29 @@
 .esync-przycisk-kolejki.good{background:#16a34a;border-color:#16a34a;color:#fff}.esync-przycisk-kolejki.good:hover:not(:disabled){background:#15803d}
 .esync-przycisk-kolejki.purple{background:#9333ea;border-color:#9333ea;color:#fff}.esync-przycisk-kolejki.purple:hover:not(:disabled){background:#7e22ce}
 .esync-przycisk-kolejki:focus-visible{outline:3px solid #2563eb;outline-offset:3px}.esync-przycisk-kolejki:disabled{background:#e2e8f0;border-color:#cbd5e1;color:#475569;opacity:1;cursor:not-allowed}.esync-przycisk-kolejki[aria-busy="true"]{cursor:progress}
-#esync-terminy-formularza{font:13px/1.45 "Segoe UI",Arial,sans-serif;color:#172033;margin:12px 0;padding:12px;max-width:100%;clear:both}
-#esync-terminy-formularza h3{font-size:14px;margin:0 0 8px}#esync-terminy-formularza .esync-import-summary{display:flex;flex-wrap:wrap;gap:5px 14px;margin:9px 0}
-#esync-terminy-formularza .esync-wiersz-kolejki{padding:8px 0;border-top:1px solid #e2e8f0}#esync-terminy-formularza .esync-term-main{margin-bottom:5px}
-#esync-terminy-formularza .esync-dane-terminu{margin-top:6px}#esync-terminy-formularza summary{cursor:pointer}
-#esync-terminy-formularza .esync-pola-terminu{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:7px 0}
-#esync-terminy-formularza .esync-pola-terminu input{display:block;width:100%;padding:6px;border:1px solid #94a3b8;border-radius:5px}
-#esync-terminy-formularza input[readonly]{background:#f1f5f9}#esync-terminy-formularza button{margin-top:5px}
+#esync-root .esync-kolejka-ogloszenia{padding:8px;margin-bottom:8px;font-size:11px}
+#esync-root .esync-kolejka-ogloszenia summary{cursor:pointer;font-size:11px}
+#esync-root .esync-kolejka-ogloszenia .esync-import-summary{display:flex;flex-wrap:wrap;gap:3px 9px;margin:4px 0 0;font-size:10px}
+#esync-root .esync-kolejka-ogloszenia .esync-wiersz-kolejki{padding:6px 0;border-top:1px solid #e2e8f0;margin-top:6px}
+#esync-root .esync-kolejka-ogloszenia .esync-term-main{font-size:11px;margin-bottom:4px;overflow-wrap:anywhere}
+#esync-root .esync-kolejka-ogloszenia .esync-badge{font-size:9px;padding:2px 4px}
+#esync-root .esync-kolejka-ogloszenia .esync-btn{font-size:10px;padding:4px 6px;margin-top:5px}
+#esync-root .esync-kolejka-ogloszenia .esync-dane-terminu{margin-top:5px}
+#esync-root .esync-kolejka-ogloszenia .esync-pola-terminu{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:6px 0}
+#esync-root .esync-kolejka-ogloszenia .esync-pola-terminu input{box-sizing:border-box;display:block;width:100%;min-width:0;padding:4px;border:1px solid #94a3b8;border-radius:4px}
+#esync-root .esync-kolejka-ogloszenia input[readonly]{background:#f1f5f9}
+#esync-root{zoom:var(--esync-skala,1);max-width:calc(100vw / var(--esync-skala,1) - 16px);max-height:calc(100dvh / var(--esync-skala,1) - 100px);display:flex;flex-direction:column}
+#esync-root .esync-head{flex-wrap:wrap;flex-shrink:0;gap:5px}
+#esync-root .esync-head-text{min-width:0;flex:1}
+#esync-root #esync-skala{display:inline-flex;flex-wrap:nowrap;align-items:center;gap:2px;flex-shrink:0;order:2}
+#esync-root #esync-skala button{font:600 10px/1.2 "Segoe UI",Arial,sans-serif;min-height:24px;min-width:24px;padding:3px 5px;border:1px solid #d8dee8;border-radius:5px;background:#fff;color:#172033;cursor:pointer;white-space:nowrap}
+#esync-root #esync-skala button:disabled{opacity:.45;cursor:default}
+#esync-root #esync-skala button:focus-visible{outline:2px solid #16628f;outline-offset:1px}
+#esync-root .esync-head-actions{order:3;flex-wrap:wrap}
+#esync-root.esync-collapsed #esync-skala{display:none}
+#esync-root .esync-body{min-height:0;overflow-x:hidden;overflow-y:auto;overflow-wrap:anywhere}
+#esync-root .esync-panel-action{padding:6px 9px;gap:4px;max-height:42vh;overflow-y:auto}
+#esync-root .esync-panel-action .esync-btn{min-height:30px;padding:5px 7px}
+#esync-root .esync-card{padding:8px;margin-bottom:7px}
+#esync-root .esync-input,#esync-root .esync-select,#esync-root .esync-textarea{min-width:0}
+#esync-root #esync-tryb-panelu{order:1;flex-shrink:0}#esync-root.esync-collapsed #esync-tryb-panelu{display:none}

@@ -898,8 +898,8 @@
       const przesuniecieY = zdarzenie.clientY - prostokat.top;
       const przesun = ruch => {
         korzen.style.right = "auto";
-        korzen.style.left = `${Math.max(0,Math.min(window.innerWidth - prostokat.width,ruch.clientX - przesuniecieX))}px`;
-        korzen.style.top = `${Math.max(0,Math.min(window.innerHeight - prostokat.height,ruch.clientY - przesuniecieY))}px`;
+        korzen.style.left = `${Math.max(0,Math.min(window.innerWidth - prostokat.width,ruch.clientX - przesuniecieX)) / (Number(getComputedStyle(korzen).zoom) || 1)}px`;
+        korzen.style.top = `${Math.max(0,Math.min(window.innerHeight - prostokat.height,ruch.clientY - przesuniecieY)) / (Number(getComputedStyle(korzen).zoom) || 1)}px`;
       };
       const zakoncz = () => {
         document.removeEventListener("pointermove",przesun);
