@@ -32,6 +32,32 @@ if (chrome.sidePanel?.setOptions) {
   });
 }
 
+function powiadomHostyPanelu() {
+  chrome.tabs.query({}).then(karty => Promise.all(karty.filter(karta => czyKartaPaneluEventis(karta.url)).map(karta =>
+    chrome.tabs.sendMessage(karta.id,{type:"ODSWIEZ_AKTYWNOSC_PANELU"}).catch(() => {})
+  ))).catch(() => {});
+}
+chrome.tabs.onActivated?.addListener(powiadomHostyPanelu);
+chrome.tabs.onUpdated?.addListener((identyfikator,zmiany) => {
+  if (zmiany.url !== undefined || zmiany.status === "complete") powiadomHostyPanelu();
+});
+chrome.windows?.onFocusChanged?.addListener(powiadomHostyPanelu);
+
+chrome.runtime.onConnect?.addListener(port => {
+  if (port.name !== "panel-boczny" || port.sender?.url !== chrome.runtime.getURL("sidepanel.html")) return;
+  let identyfikatorKarty = null;
+  const zwolnij = () => {
+    if (identyfikatorKarty !== null) chrome.tabs.sendMessage(identyfikatorKarty,{type:"ZAMKNIETO_PANEL_BOCZNY"}).catch(() => {});
+    identyfikatorKarty = null;
+  };
+  port.onMessage.addListener(wiadomosc => {
+    if (wiadomosc?.identyfikatorKarty === identyfikatorKarty) return;
+    zwolnij();
+    if (Number.isInteger(wiadomosc?.identyfikatorKarty)) identyfikatorKarty = wiadomosc.identyfikatorKarty;
+  });
+  port.onDisconnect.addListener(zwolnij);
+});
+
 chrome.action?.onClicked?.addListener(karta => {
   if (!chrome.sidePanel?.open || !karta?.id || !czyKartaPaneluEventis(karta.url)) return;
   chrome.sidePanel.open({tabId:karta.id})
@@ -456,6 +482,13 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu,
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     switch (message?.type) {
+      case "CZY_AKTYWNY_KONTEKST_PANELU": {
+        if (!sender.tab?.id) throw new Error("Brak karty panelu.");
+        const okno = await chrome.windows.getLastFocused();
+        const [karta] = await chrome.tabs.query({active:true,windowId:okno.id});
+        sendResponse({ok:true,aktywny:!!okno.focused && karta?.id === sender.tab.id && czyKartaPaneluEventis(karta.url)});
+        break;
+      }
       case "CZY_PANEL_BOCZNY": {
         sendResponse({ok:true,obslugiwany:typeof chrome.sidePanel?.open === "function"});
         break;
@@ -470,10 +503,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case "PRZEKAZ_DO_PANELU": {
         if (sender.tab || sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("Nieprawidłowy nadawca panelu.");
-        const [karta] = await chrome.tabs.query({active:true,lastFocusedWindow:true});
+        const [karta] = await chrome.tabs.query(message.identyfikatorOkna ? {active:true,windowId:message.identyfikatorOkna} : {active:true,lastFocusedWindow:true});
         if (!karta?.id || !czyKartaPaneluEventis(karta.url)) throw new Error("Otwórz aktywną kartę listy lub edycji Eventis.");
         if (message.identyfikatorKarty && message.identyfikatorKarty !== karta.id) throw new Error("Aktywna karta zmieniła się. Odśwież panel.");
-        if (!["POBIERZ_WIDOK_PANELU","AKCJA_PANELU"].includes(message.wiadomosc?.type)) throw new Error("Nieobsługiwany komunikat panelu.");
+        if (!["POBIERZ_WIDOK_PANELU","AKCJA_PANELU","ZAMKNIETO_PANEL_BOCZNY"].includes(message.wiadomosc?.type)) throw new Error("Nieobsługiwany komunikat panelu.");
         const wynik = await chrome.tabs.sendMessage(karta.id,message.wiadomosc);
         sendResponse({...wynik,identyfikatorKarty:karta.id});
         break;

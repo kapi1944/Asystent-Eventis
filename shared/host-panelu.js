@@ -1,9 +1,10 @@
 (() => {
   "use strict";
-  const KLUCZ_TRYBU = "eventisTrybPanelu";
   const SELEKTOR_AKCJI = "button,input,textarea,select,details,a";
   let tryb = "plywajacy";
   let obslugiwany = false;
+  let aktywnyKontekst = false;
+  let numerZapytania = 0;
   let wersja = 0;
   let ostatniHtml = "";
   let skale = {plywajacy:100,boczny:100};
@@ -80,7 +81,7 @@
     const korzen = document.querySelector("#esync-root");
     if (!korzen) return;
     zastosujSkale(korzen);
-    korzen.hidden = tryb === "boczny";
+    korzen.hidden = !aktywnyKontekst || tryb === "boczny";
     if (!korzen.querySelector("#esync-tryb-panelu")) {
       const przycisk = document.createElement("button");
       przycisk.type = "button";
@@ -98,8 +99,22 @@
     }
   }
 
+  async function odswiezAktywnosc() {
+    const numer = ++numerZapytania;
+    try {
+      const wynik = await chrome.runtime.sendMessage({type:"CZY_AKTYWNY_KONTEKST_PANELU"});
+      if (numer !== numerZapytania) return;
+      aktywnyKontekst = !!wynik?.aktywny;
+      zastosujTryb();
+    } catch (blad) { console.warn("Aktywność panelu",blad); }
+  }
+  document.addEventListener("visibilitychange",odswiezAktywnosc);
+  odswiezAktywnosc();
+
   chrome.runtime.onMessage.addListener((wiadomosc, nadawca, odpowiedz) => {
     if (nadawca.id !== chrome.runtime.id) return;
+    if (wiadomosc?.type === "ODSWIEZ_AKTYWNOSC_PANELU") odswiezAktywnosc();
+    if (wiadomosc?.type === "ZAMKNIETO_PANEL_BOCZNY") { tryb = "plywajacy"; zastosujTryb(); odpowiedz({ok:true}); }
     if (wiadomosc?.type === "POBIERZ_WIDOK_PANELU") {
       tryb = "boczny";
       zastosujTryb();
@@ -126,11 +141,6 @@
   });
   chrome.storage.onChanged.addListener((zmiany,obszar) => {
     if (obszar === "local" && zmiany.settings) odczytajSkale(zmiany.settings.newValue);
-    if (obszar === "local" && zmiany[KLUCZ_TRYBU]) {
-      if (zmiany[KLUCZ_TRYBU].newValue !== "plywajacy") return;
-      tryb = "plywajacy";
-      zastosujTryb();
-    }
   });
   const obserwator = new MutationObserver(zastosujTryb);
   obserwator.observe(document.body,{childList:true,subtree:true});

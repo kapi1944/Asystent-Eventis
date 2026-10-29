@@ -9,6 +9,16 @@
   let trwaAkcja = false;
   let ostatnieWartosci = [];
   let trwaZanikanie = false;
+  let trwaOdswiezanie = false;
+  let identyfikatorOkna = null;
+  let port;
+  function polaczPanel() {
+    if (!chrome.runtime.connect) return;
+    port = chrome.runtime.connect({name:"panel-boczny"});
+    port.onDisconnect.addListener(() => { port = null; setTimeout(polaczPanel,1000); });
+    if (identyfikatorKarty !== null) port.postMessage({identyfikatorKarty});
+  }
+  polaczPanel();
 
   function kluczPozycji(element) {
     return element.dataset.kluczKarty || element.querySelector('[data-queue-remove]')?.dataset.queueRemove;
@@ -27,9 +37,11 @@
   }
 
   async function odswiez() {
-    if (trwaAkcja || trwaZanikanie || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
+    if (trwaOdswiezanie || trwaAkcja || trwaZanikanie || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
+    trwaOdswiezanie = true;
     try {
-      const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
+      if (identyfikatorOkna === null && chrome.windows?.getCurrent) identyfikatorOkna = (await chrome.windows.getCurrent()).id;
+      const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
       if (!widok?.ok) throw new Error(widok?.error || "Otwórz kartę Eventis.");
       komunikat.textContent = widok.komunikat || "";
       const skala = typeof widok.skala === "number" && Number.isFinite(widok.skala) ? Math.max(60,Math.min(140,widok.skala)) : 100;
@@ -70,6 +82,7 @@
       }
       wersja = widok.wersja;
       identyfikatorKarty = widok.identyfikatorKarty;
+      port?.postMessage({identyfikatorKarty});
       korzen.className = widok.klasy || "";
       ostatnieWartosci = widok.wartosci;
       Array.from(korzen.querySelectorAll(selektor)).filter(element => !element.closest('[aria-hidden="true"]')).forEach((element,indeks) => {
@@ -83,7 +96,8 @@
       korzen.replaceChildren();
       ostatniHtml = "";
       identyfikatorKarty = null;
-    }
+      port?.postMessage({identyfikatorKarty:null});
+    } finally { trwaOdswiezanie = false; }
   }
 
   async function przekazAkcje(zdarzenie) {
@@ -96,7 +110,7 @@
     if (zdarzenie.type === "toggle" && element.open === ostatnieWartosci[elementy.indexOf(element)]?.otwarty) return;
     trwaAkcja = true;
     try {
-      const wynik = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorKarty,wiadomosc:{
+      const wynik = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty,wiadomosc:{
         type:"AKCJA_PANELU",wersja,indeks:elementy.indexOf(element),zdarzenie:zdarzenie.type,otwarty:element.open,
         wartosci:elementy.map(pole => ({wartosc:pole.value,zaznaczony:pole.checked}))
       }});
@@ -106,7 +120,10 @@
   }
   for (const zdarzenie of ["click","input","change","toggle"]) korzen.addEventListener(zdarzenie,przekazAkcje,true);
   document.querySelector("#plywajacy").addEventListener("click",async () => {
-    await chrome.storage.local.set({eventisTrybPanelu:"plywajacy"});
+    if (identyfikatorKarty !== null) {
+      await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty,wiadomosc:{type:"ZAMKNIETO_PANEL_BOCZNY"}});
+      port?.postMessage({identyfikatorKarty:null});
+    }
     if (chrome.sidePanel?.close) {
       try {
         const okno = await chrome.windows.getCurrent();

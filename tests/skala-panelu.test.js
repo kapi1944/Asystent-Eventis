@@ -11,7 +11,7 @@ test('skala: zakres, krok, reset, pamięć trybów i rzeczywisty układ DOM',asy
  await strona.addStyleTag({path:'content/eventis.css'});
  await strona.evaluate(()=>{
   window.magazyn={settings:{operatorInitial:'Z',skalePanelu:{plywajacy:100,boczny:80}}};
-  window.chrome={runtime:{id:'test',onMessage:{addListener:obsluga=>window.odbierz=obsluga},sendMessage:async()=>({obslugiwany:true})},storage:{local:{get:async()=>structuredClone(window.magazyn),set:async dane=>{Object.assign(window.magazyn,dane);window.zmien({settings:{newValue:dane.settings}},'local');}},onChanged:{addListener:obsluga=>window.zmien=obsluga}}};
+  window.chrome={runtime:{id:'test',onMessage:{addListener:obsluga=>window.odbierz=obsluga},sendMessage:async()=>({obslugiwany:true,aktywny:true})},storage:{local:{get:async()=>structuredClone(window.magazyn),set:async dane=>{Object.assign(window.magazyn,dane);window.zmien({settings:{newValue:dane.settings}},'local');}},onChanged:{addListener:obsluga=>window.zmien=obsluga}}};
  });
  await strona.addScriptTag({path:'shared/host-panelu.js'});
  const wartosc=()=>strona.locator('[data-skala="100"]').textContent();
@@ -46,7 +46,7 @@ test('skala: zakres, krok, reset, pamięć trybów i rzeczywisty układ DOM',asy
  await panel.route('**/*',trasa=>trasa.abort());
  await panel.setContent('<nav><button id="plywajacy">Panel</button><span id="komunikat"></span></nav><aside id="esync-root"></aside>');
  for(const plik of ['content/eventis.css','sidepanel.css']) await panel.addStyleTag({path:plik});
- await panel.evaluate(widok=>{window.widok=widok;window.chrome={runtime:{sendMessage:async()=>window.widok}};window.setInterval=funkcja=>{window.odswiez=funkcja;};},widok);
+ await panel.evaluate(widok=>{window.widok=widok;window.chrome={runtime:{sendMessage:async()=>window.widok,connect:()=>({onDisconnect:{addListener(){}},postMessage(){}})}};window.setInterval=funkcja=>{window.odswiez=funkcja;};},widok);
  await panel.addScriptTag({path:'sidepanel.js'});
  await panel.waitForSelector('#esync-skala');
  for(const skala of [60,80,100,120,140]) {
@@ -55,7 +55,7 @@ test('skala: zakres, krok, reset, pamięć trybów i rzeczywisty układ DOM',asy
   const szerokosc=await panel.locator('#esync-root').evaluate(element=>element.getBoundingClientRect().width);
   asercje.ok(Math.abs(szerokosc-280)<2);
  }
- await strona.evaluate(()=>window.zmien({eventisTrybPanelu:{newValue:'plywajacy'}},'local'));
+ await strona.evaluate(()=>window.odbierz({type:'ZAMKNIETO_PANEL_BOCZNY'},{id:'test'},()=>{}));
  asercje.equal(await wartosc(),'🔍 140%');
  // Ponowne utworzenie panelu używa ustawień zapisanych w magazynie.
  await strona.locator('#esync-root').evaluate(element=>{element.innerHTML='<div class="esync-head"></div><div class="esync-body">Nowe ogłoszenie</div>';});

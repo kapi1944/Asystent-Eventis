@@ -13,17 +13,20 @@ function utworzWorker({obslugiwany = true,bladOtwarcia = false} = {}) {
   const opcjePanelu = [];
   const zdarzenia = {};
   const karta = {id:17,url:"https://eventis.pl/company"};
+  const okno = {id:1,focused:true};
+  const zapytania = [];
   const chrome = {
     runtime:{getURL:sciezka=>`chrome-extension://test/${sciezka}`,onInstalled:{addListener(){}},onMessage:{addListener(funkcja){obsluga=funkcja;}}},
     storage:{local:{set:async dane=>Object.assign(zapis,dane)}},
     action:{onClicked:{addListener:funkcja=>zdarzenia.klikniecie=funkcja}},
-    tabs:{onRemoved:{addListener(){}},onUpdated:{addListener:funkcja=>zdarzenia.aktualizacja=funkcja},onActivated:{addListener:funkcja=>zdarzenia.aktywacja=funkcja},get:async()=>karta,query:async()=>[karta],sendMessage:async (id,wiadomosc)=>{przekazane.push({id,wiadomosc});return {ok:true,html:"widok"};}},
+    tabs:{onRemoved:{addListener(){}},onUpdated:{addListener:funkcja=>{const poprzednia=zdarzenia.aktualizacja;zdarzenia.aktualizacja=(...argumenty)=>{poprzednia?.(...argumenty);funkcja(...argumenty);};}},onActivated:{addListener:funkcja=>{const poprzednia=zdarzenia.aktywacja;zdarzenia.aktywacja=(...argumenty)=>{poprzednia?.(...argumenty);funkcja(...argumenty);};}},get:async()=>karta,query:async opcje=>{zapytania.push(opcje);return [karta];},sendMessage:async (id,wiadomosc)=>{if(wiadomosc.type!=="ODSWIEZ_AKTYWNOSC_PANELU") przekazane.push({id,wiadomosc});return {ok:true,html:"widok"};}},
+    windows:{getLastFocused:async()=>okno},
     sidePanel:obslugiwany ? {setOptions:async opcje=>opcjePanelu.push(opcje),open:async opcje=>{otwarcia.push(opcje);if(bladOtwarcia) throw Error("Brak gestu użytkownika");}} : undefined
   };
   maszyna.runInNewContext(pliki.readFileSync(require.resolve("../background.js"),"utf8"),{
     chrome,importScripts(){},EventisSyncConfig:{DEFAULT_SETTINGS:{}},KlientMostuArkuszaEventis:{},console
   });
-  return {zapis,przekazane,otwarcia,opcjePanelu,zdarzenia,karta,wyslij:(wiadomosc,nadawca={url:chrome.runtime.getURL("sidepanel.html")})=>new Promise(rozwiaz=>obsluga(wiadomosc,nadawca,rozwiaz))};
+  return {zapis,przekazane,otwarcia,opcjePanelu,zdarzenia,karta,okno,zapytania,wyslij:(wiadomosc,nadawca={url:chrome.runtime.getURL("sidepanel.html")})=>new Promise(rozwiaz=>obsluga(wiadomosc,nadawca,rozwiaz))};
 }
 
 test("otwarcie panelu zapisuje tryb dopiero po sukcesie i pozostawia fallback bez API",async () => {
@@ -86,11 +89,18 @@ test("akcje panelu trafiają tylko do aktywnej karty Eventis; zmiana karty odrzu
   asercje.equal(worker.przekazane.length,1);
 });
 
+test("natywny panel pobiera kartę własnego okna",async () => {
+  const worker = utworzWorker();
+  const wynik = await worker.wyslij({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna:42,wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
+  asercje.equal(wynik.ok,true);
+  asercje.ok(worker.zapytania.some(zapytanie=>zapytanie.windowId === 42 && zapytanie.active === true));
+});
+
 test("host jest domyślnie widoczny mimo zapamiętanego trybu bocznego i ukrywa się po odebraniu widoku przez panel boczny",async () => {
   const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
   try {
     const strona = await przegladarka.newPage();
-    await strona.setContent('<aside id="esync-root"><div class="esync-head-actions"></div><textarea id="tekst"></textarea><button id="akcja">Analizuj</button></aside>');
+    await strona.setContent('<aside id="esync-root"><div class="esync-head"><div class="esync-head-actions"></div></div><textarea id="tekst"></textarea><button id="akcja">Analizuj</button></aside>');
     await strona.addStyleTag({path:"content/eventis.css"});
     await strona.evaluate(() => {
       window.wiadomosci=[];
@@ -98,7 +108,7 @@ test("host jest domyślnie widoczny mimo zapamiętanego trybu bocznego i ukrywa 
       window.obsluga=null;
       window.klikniecia=0;
       document.querySelector("#akcja").addEventListener("click",()=>window.klikniecia++);
-      window.chrome={runtime:{id:"test",onMessage:{addListener:funkcja=>window.obsluga=funkcja},sendMessage:async()=>({obslugiwany:true})},storage:{local:{get:async()=>({eventisTrybPanelu:"boczny"})},onChanged:{addListener:funkcja=>window.zmienTryb=funkcja}}};
+      window.chrome={runtime:{id:"test",onMessage:{addListener:funkcja=>window.obsluga=funkcja},sendMessage:async()=>({obslugiwany:true,aktywny:true})},storage:{local:{get:async()=>({eventisTrybPanelu:"boczny"})},onChanged:{addListener:funkcja=>window.zmienTryb=funkcja}}};
     });
     await strona.addScriptTag({path:"shared/host-panelu.js"});
     await strona.waitForFunction(()=>document.querySelector("#esync-tryb-panelu"));
@@ -120,10 +130,10 @@ test("host jest domyślnie widoczny mimo zapamiętanego trybu bocznego i ukrywa 
     asercje.equal(wynik.klikniecia,1);
     asercje.equal(wynik.tekst,"rekord kolejki");
     asercje.equal(await strona.locator("#esync-root").isVisible(),false);
-    await strona.evaluate(()=>window.zmienTryb({eventisTrybPanelu:{newValue:"plywajacy"}},"local"));
+    await strona.evaluate(()=>window.obsluga({type:"ZAMKNIETO_PANEL_BOCZNY"},{id:"test"},()=>{}));
     asercje.equal(await strona.locator("#esync-root").isVisible(),true);
     await strona.evaluate(()=>{
-      window.chrome.runtime.sendMessage=async()=>({obslugiwany:false});
+      window.chrome.runtime.sendMessage=async()=>({obslugiwany:false,aktywny:true});
       document.querySelector("#esync-root").hidden=false;
     });
     await strona.addScriptTag({path:"shared/host-panelu.js"});
@@ -147,5 +157,51 @@ test("host jest domyślnie widoczny mimo zapamiętanego trybu bocznego i ukrywa 
       await strona.setViewportSize({width:szerokosc,height:800});
       asercje.ok(await strona.evaluate(()=>document.documentElement.scrollWidth <= window.innerWidth));
     }
+  } finally { await przegladarka.close(); }
+});
+
+test("aktywność wymaga aktywnej karty w oknie z fokusem",async () => {
+  const worker = utworzWorker();
+  asercje.equal((await worker.wyslij({type:"CZY_AKTYWNY_KONTEKST_PANELU"},{tab:worker.karta})).aktywny,true);
+  asercje.equal((await worker.wyslij({type:"CZY_AKTYWNY_KONTEKST_PANELU"},{tab:{id:18}})).aktywny,false);
+  worker.okno.focused=false;
+  asercje.equal((await worker.wyslij({type:"CZY_AKTYWNY_KONTEKST_PANELU"},{tab:worker.karta})).aktywny,false);
+  worker.okno.focused=true;
+  asercje.equal((await worker.wyslij({type:"CZY_AKTYWNY_KONTEKST_PANELU"},{tab:worker.karta})).aktywny,true);
+  worker.karta.url="https://gmail.com/";
+  asercje.equal((await worker.wyslij({type:"CZY_AKTYWNY_KONTEKST_PANELU"},{tab:worker.karta})).aktywny,false);
+});
+
+test("ukrycie i przywrócenie hosta zachowuje formularz, kolejkę i zwinięcie",async () => {
+  const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
+  try {
+    const strona = await przegladarka.newPage();
+    await strona.setContent('<aside id="esync-root" class="esync-collapsed"><div class="esync-head"></div><div class="esync-body"><details open><summary>Kolejka</summary><textarea>termin</textarea></details></div></aside>');
+    await strona.addStyleTag({path:"content/eventis.css"});
+    await strona.evaluate(() => {
+      window.aktywny=true;
+      window.chrome={runtime:{id:"test",onMessage:{addListener:funkcja=>window.obsluga=funkcja},sendMessage:async()=>({aktywny:window.aktywny,obslugiwany:true})},storage:{local:{get:async()=>({})},onChanged:{addListener(){}}}};
+    });
+    await strona.addScriptTag({path:"shared/host-panelu.js"});
+    await strona.waitForFunction(()=>!document.querySelector('#esync-root').hidden);
+    await strona.evaluate(()=>{window.aktywny=false;window.obsluga({type:"ODSWIEZ_AKTYWNOSC_PANELU"},{id:"test"},()=>{});});
+    await strona.waitForFunction(()=>document.querySelector('#esync-root').hidden);
+    await strona.evaluate(()=>{window.aktywny=true;window.obsluga({type:"ODSWIEZ_AKTYWNOSC_PANELU"},{id:"test"},()=>{});});
+    await strona.waitForFunction(()=>!document.querySelector('#esync-root').hidden);
+    asercje.equal(await strona.locator('textarea').inputValue(),"termin");
+    asercje.equal(await strona.locator('details').evaluate(element=>element.open),true);
+    asercje.equal(await strona.locator('#esync-root').evaluate(element=>element.classList.contains('esync-collapsed')),true);
+    await strona.evaluate(()=>window.dispatchEvent(new Event('blur')));
+    asercje.equal(await strona.locator('#esync-root').evaluate(element=>element.hidden),false);
+    await strona.evaluate(()=>{
+      window.odpowiedzi=[];
+      window.chrome.runtime.sendMessage=()=>new Promise(odpowiedz=>window.odpowiedzi.push(odpowiedz));
+      window.obsluga({type:'ODSWIEZ_AKTYWNOSC_PANELU'},{id:'test'},()=>{});
+      window.obsluga({type:'ODSWIEZ_AKTYWNOSC_PANELU'},{id:'test'},()=>{});
+      window.odpowiedzi[1]({aktywny:true});
+      window.odpowiedzi[0]({aktywny:false});
+    });
+    await strona.waitForTimeout(20);
+    asercje.equal(await strona.locator('#esync-root').evaluate(element=>element.hidden),false);
   } finally { await przegladarka.close(); }
 });
