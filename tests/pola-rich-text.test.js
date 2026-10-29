@@ -597,7 +597,7 @@ test("obie ścieżki importu uzupełniają opisy przed potwierdzeniem operacji i
       const czynnosci = [];
       const stan = {organization:"SEMPER",eventisTitle:"Szkolenie",zapisaneTerminyEventis:[],mappingVerifiedThisSession:true,source:{opisy:{}},sourceTerms:[termin],missingTerms:[termin]};
       const uruchom = vm.runInNewContext(`${fragment};${poczatek}`,{
-        state:stan,NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),NARZEDZIA_OPERACJI:require("../shared/operacje-eventis"),
+        state:stan,natywneDodawanie:{komunikat:""},NARZEDZIA_KOLEJKI:require("../shared/kolejka-eventis"),NARZEDZIA_OPERACJI:require("../shared/operacje-eventis"),
         normalize:tekst=>tekst,getEventisTitle:()=>"Szkolenie",wykryjOrganizatora:()=>({organizator:"SEMPER"}),sprawdzBrakOczekujacejOperacji:async () => true,odswiezKolejke:async () => {},compareTerms() {},
         dopasowaniaKolejkiDoBiezacegoTytulu:() => [{element:{id:"1",recordStatus:"CONFIRMED",status:"PENDING"},terminy:[termin]}],
         powodBlokadyKolejki:() => "",

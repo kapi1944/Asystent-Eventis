@@ -32,7 +32,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       const MODE = ${JSON.stringify(tryb)};
       const PAGE_LOAD_ID = "strona-testowa";
       const VERSION = "test";
-      const REGIONS = {Warszawa:7,Kraków:6,Gdańsk:11};
+      const REGIONS = {Warszawa:7,Kraków:6,Gdańsk:11,Zakopane:6};
       const NARZEDZIA_WYSZUKIWANIA = NarzedziaWyszukiwaniaEventis;
       const NARZEDZIA_TERMINOW = NarzedziaTerminowEventis;
       const NARZEDZIA_ARKUSZA = NarzedziaArkuszaEventis;
@@ -211,8 +211,48 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     asercje.equal(await strona.evaluate(() => window.obceKlikniecia),0);
     asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),0);
     asercje.equal(await strona.evaluate(() => magazyn.eventisImportQueue[0].status),'ERROR');
-    asercje.match(await strona.evaluate(() => magazyn.eventisImportQueue[0].errorMessage),/Rozpoznaj natywne dodawanie/);
+    asercje.match(await strona.evaluate(() => magazyn.eventisImportQueue[0].errorMessage),/Nie znaleziono przycisku/);
     asercje.equal(await strona.evaluate(() => state.pendingOperation),null);
+    await strona.close();
+  });
+
+  await podtesty.test("automatyczne rozpoznanie czeka na przycisk w sekcji i odrzuca niejednoznaczność",async () => {
+    const strona = await przygotuj('edit',{rozpoznaj:false});
+    const wynik = await strona.evaluate(async () => {
+      const przycisk = $('#dodaj');
+      przycisk.remove();
+      setTimeout(() => {przycisk.textContent='+ Dodaj termin'; $('#terminy').after(przycisk);},30);
+      const znaleziony = await oczekujNaPrzyciskTerminu(() => true,1000);
+      const kopia = znaleziony.cloneNode(true);
+      znaleziony.after(kopia);
+      let blad = '';
+      try { findAddTermButton(); } catch (wyjatek) { blad = wyjatek.message; }
+      kopia.remove();
+      return {id:znaleziony.id,blad};
+    });
+    asercje.equal(wynik.id,'dodaj');
+    asercje.match(wynik.blad,/kilka przycisków/);
+    await strona.evaluate(async () => { await wprowadzTerminyZKolejki(['q0','q1']); });
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),2);
+    asercje.equal(await strona.evaluate(() => liczbaKlikniec),2);
+    await strona.close();
+  });
+
+  await podtesty.test("SEMPER 697: ONLINE i Zakopane to dwa terminy, ponowienie nie tworzy duplikatów",async () => {
+    const strona = await przygotuj('edit',{rozpoznaj:false});
+    const wynik = await strona.evaluate(async () => {
+      $('#dodaj').textContent='+ Dodaj termin';
+      const terminy = [
+        {start:'2026-11-04',end:'2026-11-06',city:'Online',price:2390},
+        {start:'2026-11-04',end:'2026-11-06',city:'Zakopane',price:2890}
+      ];
+      const pierwszy = await addSelectedTerms(terminy.slice(0,1));
+      const drugi = await addSelectedTerms(terminy);
+      const trzeci = await addSelectedTerms(terminy);
+      return [pierwszy.dodane.length,drugi.dodane.length,trzeci.dodane.length,liczbaKlikniec];
+    });
+    asercje.deepEqual(wynik,[1,1,0,2]);
+    asercje.deepEqual(await strona.locator('input[name$="[price]"]').evaluateAll(pola => pola.map(pole => pole.value)),['2390','2890']);
     await strona.close();
   });
 

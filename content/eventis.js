@@ -1246,8 +1246,45 @@
 
   function findAddTermButton() {
     const przycisk = natywneDodawanie.przycisk;
-    return przycisk?.isConnected && natywneDodawanie.formularz === $("#eventForm")
-      && natywneDodawanie.formularz.contains(przycisk) && !przycisk.disabled ? przycisk : null;
+    const formularz = $("#eventForm");
+    if (przycisk?.isConnected && natywneDodawanie.formularz === formularz
+      && formularz.contains(przycisk) && !przycisk.disabled) return przycisk;
+    if (!formularz) return null;
+    const naglowki = $$('h1,h2,h3,h4,h5,h6,legend',formularz)
+      .filter(element => normalize(element.textContent) === normalize("Termin i miejsce wydarzenia"));
+    if (naglowki.length > 1) throw new Error("Niejednoznaczna sekcja terminów Eventis. Sprawdź formularz przed dodaniem.");
+    if (!naglowki.length) return null;
+    let sekcja = naglowki[0].parentElement;
+    while (sekcja && sekcja !== formularz) {
+      const kandydaci = $$('button,a,input[type="button"]',sekcja).filter(element =>
+        !element.closest('[id^="li_eventdate_"],#esync-root') && !element.disabled
+        && element.getAttribute("aria-disabled") !== "true" && element.type !== "submit"
+        && /^\+?\s*dodaj termin\s*$/i.test((element.textContent || element.value || element.getAttribute("aria-label") || "").trim()));
+      if (kandydaci.length > 1) throw new Error("Znaleziono kilka przycisków „Dodaj termin” w sekcji terminów. Sprawdź formularz przed dodaniem.");
+      if (kandydaci.length === 1) return kandydaci[0];
+      sekcja = sekcja.parentElement;
+    }
+    return null;
+  }
+
+  function oczekujNaPrzyciskTerminu(czyAktualny, czas = 6000) {
+    return new Promise((rozwiaz, odrzuc) => {
+      let licznik;
+      const zakoncz = (blad, przycisk) => { obserwator.disconnect(); clearTimeout(licznik); window.removeEventListener("pagehide",anuluj); blad ? odrzuc(blad) : rozwiaz(przycisk); };
+      const anuluj = () => zakoncz(new Error("Anulowano oczekiwanie na przycisk dodawania terminu."));
+      const sprawdz = () => {
+        try {
+          if (!czyAktualny()) return zakoncz(new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu."));
+          const przycisk = findAddTermButton();
+          if (przycisk) zakoncz(null,przycisk);
+        } catch (blad) { zakoncz(blad); }
+      };
+      const obserwator = new MutationObserver(sprawdz);
+      obserwator.observe(document.body,{childList:true,subtree:true,attributes:true,characterData:true});
+      window.addEventListener("pagehide",anuluj,{once:true});
+      licznik = setTimeout(() => zakoncz(new Error("Nie znaleziono przycisku „Dodaj termin” w sekcji terminów Eventis.")),czas);
+      sprawdz();
+    });
   }
 
   function oczekujNaNatywnyFormularz(poczatkoweId, termin, akcja, {sygnal,czas = 6000,czyAktualny = () => true,wierszDocelowy = null,tylkoPodstawowe = false} = {}) {
@@ -1377,20 +1414,31 @@
     }
     const rozdzielenie = NARZEDZIA_KOLEJKI.rozdzielTerminyDoWprowadzenia(terminy,getExistingTerms());
     const doDodania = rozdzielenie.doWprowadzenia;
-    if (!doDodania.length) return {dodane:[],pominiete:rozdzielenie.pominiete,bledy:[]};
     const wynik = {dodane:[],pominiete:rozdzielenie.pominiete,bledy:[]};
+    for (const termin of rozdzielenie.pominiete) {
+      const istniejacy = getExistingTerms().find(wpis => existingKey(wpis) === existingKey(termin));
+      if (istniejacy && (istniejacy.price == null || Number(istniejacy.price) !== Number(termin.price))) {
+        wynik.bledy.push({termin,komunikat:"Potencjalny duplikat: istniejący termin ma inną lub nieznaną cenę. Sprawdź go ręcznie."});
+      }
+    }
     const organizacja = state.organization;
     const tytul = getEventisTitle();
     const czyAktualny = () => state.organization === organizacja && wykryjOrganizatora().organizator === organizacja && getEventisTitle() === tytul && !czyTrwaZapis();
-    for (const termin of doDodania) {
+    for (const [indeks,termin] of doDodania.entries()) {
       try {
         sprawdzDaneTerminu(termin);
         if (!czyAktualny()) throw new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu.");
+        const istniejacy = getExistingTerms().find(wpis => existingKey(wpis) === existingKey(termin));
+        if (istniejacy) {
+          if (istniejacy.price == null || Number(istniejacy.price) !== Number(termin.price)) throw new Error("Potencjalny duplikat: istniejący termin ma inną lub nieznaną cenę. Sprawdź go ręcznie.");
+          wynik.pominiete.push(termin);
+          continue;
+        }
         let formularz = $$('[id^="li_eventdate_"]',$("#eventForm")).find(wiersz => natywneDodawanie.puste.has(wiersz)
           && natywneDodawanie.puste.get(wiersz) === odciskPolTerminu(wiersz));
         if (!formularz) {
-          const przycisk = findAddTermButton();
-          if (!przycisk) throw new Error("Nie rozpoznano natywnego przycisku dodawania. Użyj „Rozpoznaj natywne dodawanie” w panelu i ręcznie dodaj pusty termin w Eventis.");
+          const przycisk = await oczekujNaPrzyciskTerminu(czyAktualny);
+          if (getExistingTerms().some(wpis => existingKey(wpis) === existingKey(termin))) throw new Error("Potencjalny duplikat: termin pojawił się podczas oczekiwania. Sprawdź formularz.");
           const poczatkoweId = new Set($$('[id^="li_eventdate_"]',$("#eventForm")).map(wiersz => wiersz.id));
           formularz = await oczekujNaNatywnyFormularz(poczatkoweId,termin,() => przycisk.click(),{czyAktualny,tylkoPodstawowe:true});
           natywneDodawanie.puste.set(formularz,odciskPolTerminu(formularz));
@@ -1406,7 +1454,7 @@
         natywneDodawanie.puste.delete(formularz);
         wynik.dodane.push(termin);
       } catch (blad) {
-        wynik.bledy.push(...doDodania.slice(wynik.dodane.length).map(pozostaly => ({termin:pozostaly,komunikat:blad.message})));
+        wynik.bledy.push(...doDodania.slice(indeks).map(pozostaly => ({termin:pozostaly,komunikat:blad.message})));
         break;
       }
     }
@@ -2410,14 +2458,16 @@
       const wynikWprowadzenia=wykonanie.wynik;
       if (!wynikWprowadzenia.dodane.length) {
         await zwolnijNiepotwierdzonyClaim(planOperacji);
-        return toast(wynikWprowadzenia.bledy[0]?.komunikat || "Żaden termin nie został dodany do formularza.");
+        natywneDodawanie.komunikat = wynikWprowadzenia.bledy[0]?.komunikat || "Żaden termin nie został dodany do formularza.";
+        return toast(natywneDodawanie.komunikat);
       }
       await audit("FORM_FILLED",{terms:wynikWprowadzenia.dodane.map(t=>({start:t.start,end:t.end,city:t.city,price:t.price})),errors:wynikWprowadzenia.bledy});
       state.status="FORM_FILLED";
       state.formularzZmieniony=true;
       compareTerms();
       render();
-      toast(`Formularz uzupełniony: ${wynikWprowadzenia.dodane.length}. Błędy terminów: ${wynikWprowadzenia.bledy.length}. Sprawdź go i zapisz ręcznie.`);
+      natywneDodawanie.komunikat = wynikWprowadzenia.bledy.length ? `Operacja częściowa: dodano ${wynikWprowadzenia.dodane.length}. ${wynikWprowadzenia.bledy[0].komunikat}` : `Wprowadzono ${wynikWprowadzenia.dodane.length} terminów. Sprawdź formularz i zapisz ręcznie.`;
+      toast(natywneDodawanie.komunikat);
     }catch(e){state.status="ERROR";state.lastError=e.message;render();toast(e.message);}
     } finally { state.trwaDodawanieZrodla = false; render(); }
   }
@@ -2657,7 +2707,7 @@
     const uwaga = dopasowania.filter(wpis => ["PENDING","ERROR","NEEDS_ATTENTION"].includes(wpis.element.status)
       && !gotowe.some(gotowy => gotowy.element.id === wpis.element.id)).length;
     const otwarta = $("#esync-kolejka-ogloszenia")?.open;
-    return `<details id="esync-kolejka-ogloszenia" data-wersja-terminow="2026-10-26" class="esync-card esync-kolejka-ogloszenia" ${otwarta ? 'open' : ''}><summary><b>📥 Kolejka dla tego ogłoszenia (${dopasowania.length})</b><span class="esync-import-summary"><span>Do dodania: <b>${oczekujace}</b></span><span>Czeka na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zapisane: <b>${zapisane}</b></span><span>Uwaga: <b>${uwaga}</b></span></span></summary>${wiersze || '<div class="esync-small">Brak przypisanych rekordów.</div>'}<div class="esync-small" role="status">${esc(natywneDodawanie.komunikat || 'Przed pierwszym importem rozpoznaj natywny przycisk Eventis na tej stronie.')}<br><button type="button" class="esync-btn" id="esync-rozpoznaj-dodawanie" ${state.trwaWypelnianieOperacji || state.trwaWprowadzanieKolejki || state.trwaDodawanieZrodla || czyTrwaZapis() ? 'disabled' : ''}>Rozpoznaj natywne dodawanie</button></div></details>`;
+    return `<details id="esync-kolejka-ogloszenia" data-wersja-terminow="2026-10-26" class="esync-card esync-kolejka-ogloszenia" ${otwarta ? 'open' : ''}><summary><b>📥 Kolejka dla tego ogłoszenia (${dopasowania.length})</b><span class="esync-import-summary"><span>Do dodania: <b>${oczekujace}</b></span><span>Czeka na zapis: <b>${podsumowanie.waitingForSave}</b></span><span>Zapisane: <b>${zapisane}</b></span><span>Uwaga: <b>${uwaga}</b></span></span></summary>${wiersze || '<div class="esync-small">Brak przypisanych rekordów.</div>'}<div class="esync-small" role="status">${esc(natywneDodawanie.komunikat || 'Przycisk dodawania jest rozpoznawany automatycznie. Ręczne rozpoznanie jest opcją awaryjną.')}<br><button type="button" class="esync-btn" id="esync-rozpoznaj-dodawanie" ${state.trwaWypelnianieOperacji || state.trwaWprowadzanieKolejki || state.trwaDodawanieZrodla || czyTrwaZapis() ? 'disabled' : ''}>Rozpoznaj natywne dodawanie</button></div></details>`;
   }
 
   async function zatwierdzDaneTerminu(przycisk) {
