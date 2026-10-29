@@ -1219,8 +1219,7 @@
       koniec:pole("date_end") || formularz.querySelector(`[id="eventdate_dateend_${identyfikator}"]`),
       potwierdzenie:pole("is_guaranteed","select"), vat:pole("prices][0][taxRate"), cena:pole("prices][0][price"),
       pakiet:pole("prices][0][price_name"), opisOnline:pole("online_description","textarea"),
-      informacja:pole("info"), region:pole("region_id","select"), miasto:pole("city"),
-      materialy:formularz.querySelector(`[id="price_contains_materials_type_select_${identyfikator}_0"]`)
+      informacja:pole("info"), region:pole("region_id","select"), miasto:pole("city")
     };
   }
 
@@ -1230,22 +1229,18 @@
     return JSON.stringify($$('input,select,textarea',formularz).map(pole => [pole.name,pole.value,pole.checked]));
   }
 
-  function brakujacePolaTerminu(formularz, termin) {
+  function brakujacePolaTerminu(formularz, termin, tylkoPodstawowe = false) {
     const pola = pobierzPolaTerminu(formularz);
-    const wymagane = ["tryb","poczatek","koniec","potwierdzenie","vat","cena","pakiet","materialy"];
-    wymagane.push(...(termin?.city === "Online" ? ["opisOnline"] : termin ? ["informacja","region","miasto"]
+    const wymagane = ["tryb","poczatek","koniec","potwierdzenie","vat","cena","pakiet"];
+    if (!tylkoPodstawowe) wymagane.push(...(termin?.city === "Online" ? ["opisOnline"] : termin ? ["informacja","region","miasto"]
       : pola.opisOnline ? ["opisOnline"] : ["informacja","region","miasto"]));
     const brakujace = wymagane.filter(nazwa => !pola[nazwa] || pola[nazwa].disabled);
-    const wymaganeOpcje = [["tryb",termin?.city === "Online" || !termin ? "1" : ""],["potwierdzenie","1"],
-      ["materialy",termin?.city === "Online" || !termin ? "1" : "2"]];
-    if (termin && termin.city !== "Online") wymaganeOpcje.push(["region",String(REGIONS[termin.city])]);
+    const wymaganeOpcje = [["tryb",termin?.city === "Online" || !termin ? "1" : ""],["potwierdzenie","1"]];
+    if (!tylkoPodstawowe && termin && termin.city !== "Online") wymaganeOpcje.push(["region",String(REGIONS[termin.city])]);
     for (const [nazwa,wartosc] of wymaganeOpcje) {
       if (pola[nazwa] && !Array.from(pola[nazwa].options || []).some(opcja => opcja.value === wartosc)) brakujace.push(`opcja ${nazwa}`);
     }
-    for (const wartosc of termin?.city === "Online" ? ["1","2","3"] : ["1","2","3","4","5"]) {
-      const pole = formularz.querySelector(`.event_price_contains[value="${wartosc}"]`);
-      if (!pole || pole.disabled) brakujace.push(`element pakietu ${wartosc}`);
-    }
+
     return brakujace;
   }
 
@@ -1255,7 +1250,7 @@
       && natywneDodawanie.formularz.contains(przycisk) && !przycisk.disabled ? przycisk : null;
   }
 
-  function oczekujNaNatywnyFormularz(poczatkoweId, termin, akcja, {sygnal,czas = 6000,czyAktualny = () => true,wierszDocelowy = null} = {}) {
+  function oczekujNaNatywnyFormularz(poczatkoweId, termin, akcja, {sygnal,czas = 6000,czyAktualny = () => true,wierszDocelowy = null,tylkoPodstawowe = false} = {}) {
     return new Promise((rozwiaz, odrzuc) => {
       const formularz = $("#eventForm");
       if (!formularz || sygnal?.aborted) return odrzuc(new Error("Anulowano oczekiwanie na formularz Eventis."));
@@ -1279,7 +1274,7 @@
         if (!formularz.isConnected || !czyAktualny()) return zakoncz(new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu."));
         const nowe = noweWiersze();
         if (nowe.length > 1) return zakoncz(new Error("Jedna akcja utworzyła kilka formularzy. Sprawdź natywny przycisk Eventis."));
-        if (nowe.length === 1 && !brakujacePolaTerminu(nowe[0],termin).length) zakoncz(null,nowe[0]);
+        if (nowe.length === 1 && !brakujacePolaTerminu(nowe[0],termin,tylkoPodstawowe).length) zakoncz(null,nowe[0]);
       };
       const obserwator = new MutationObserver(sprawdz);
       obserwator.observe(document.body,{childList:true,subtree:true,attributes:true});
@@ -1290,7 +1285,7 @@
       licznik = setTimeout(() => {
         const nowe = noweWiersze();
         zakoncz(new Error(nowe.length === 1
-          ? `Formularz Eventis nie jest gotowy. Brak pól: ${brakujacePolaTerminu(nowe[0],termin).join(", ")}.`
+          ? `Formularz Eventis nie jest gotowy. Brak pól: ${brakujacePolaTerminu(nowe[0],termin,tylkoPodstawowe).join(", ")}.`
           : "Eventis nie utworzył nowego formularza terminu. Rozpoznaj ponownie natywne dodawanie w panelu."));
       },czas);
       try { akcja(); sprawdz(); } catch (blad) { zakoncz(blad); }
@@ -1342,16 +1337,16 @@
 
   function fillTerm(formularz,termin) {
     sprawdzDaneTerminu(termin);
-    const {tryb,poczatek:dataPoczatkowa,koniec:dataKoncowa,potwierdzenie,vat:stawkaVat,cena,opisOnline,informacja,region,miasto,pakiet,materialy} = pobierzPolaTerminu(formularz);
+    const {tryb,poczatek:dataPoczatkowa,koniec:dataKoncowa,potwierdzenie,vat:stawkaVat,cena,opisOnline,informacja,region,miasto,pakiet} = pobierzPolaTerminu(formularz);
     if (brakujacePolaTerminu(formularz,termin).length) throw new Error("Formularz terminu Eventis nie zawiera wszystkich wymaganych pól.");
     if (dataPoczatkowa.value || dataKoncowa.value) throw new Error("Formularz zawiera już termin. Nie został nadpisany.");
     const poprzednieWartosci = $$('input,select,textarea',formularz).map(pole => ({pole,wartosc:pole.value,zaznaczony:pole.checked}));
     try {
       if (termin.city === "Online") {
-        setValue(tryb,"1");
+        if (tryb.value !== "1") setValue(tryb,"1");
         setValue(opisOnline,"-");
       } else {
-        setValue(tryb,"");
+        if (tryb.value !== "") setValue(tryb,"");
         setValue(informacja,termin.city);
         setValue(region,REGIONS[termin.city]);
         setValue(miasto,termin.city);
@@ -1362,19 +1357,13 @@
       setValue(pakiet,termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne");
       setValue(stawkaVat,"23");
       setValue(cena,termin.price);
-      formularz.querySelectorAll(".event_price_contains").forEach(pole=>{
-        pole.checked = termin.city === "Online" ? ["1","2","3"].includes(pole.value) : ["1","2","3","4","5"].includes(pole.value);
-        pole.dispatchEvent(new Event("change",{bubbles:true}));
-      });
-      setValue(materialy,termin.city === "Online" ? "1" : "2");
       if (dataPoczatkowa.value !== termin.start || dataKoncowa.value !== termin.end || String(cena.value).trim() === "" || Number(cena.value) !== Number(termin.price)
         || potwierdzenie.value !== "1" || Number(stawkaVat.value) !== 23
         || tryb.value !== (termin.city === "Online" ? "1" : "")
         || pakiet.value !== (termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne")
-        || materialy.value !== (termin.city === "Online" ? "1" : "2")
-        || $$('[type="checkbox"].event_price_contains',formularz).some(pole => pole.checked !== (termin.city === "Online" ? ["1","2","3"] : ["1","2","3","4","5"]).includes(pole.value))
         || (termin.city === "Online" ? opisOnline.value !== "-" : miasto.value !== termin.city || informacja.value !== termin.city || region.value !== String(REGIONS[termin.city]))) {
-        throw new Error("Eventis nie przyjął wszystkich wartości terminu. Sprawdź formularz przed ponowieniem.");
+        const oczekiwane = [["data rozpoczęcia",dataPoczatkowa,termin.start],["data zakończenia",dataKoncowa,termin.end],["cena",cena,termin.price],["tryb",tryb,termin.city === "Online" ? "1" : ""],["pakiet",pakiet,termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne"],["VAT",stawkaVat,"23"],["potwierdzenie",potwierdzenie,"1"]];
+        throw new Error(`Eventis nie przyjął wartości terminu: ${oczekiwane.filter(([,pole,wartosc]) => String(pole.value) !== String(wartosc)).map(([nazwa]) => nazwa).join(", ") || "lokalizacja"}. Sprawdź formularz przed ponowieniem.`);
       }
     } catch (blad) {
       for (const zapis of poprzednieWartosci) { zapis.pole.value = zapis.wartosc; zapis.pole.checked = zapis.zaznaczony; }
@@ -1403,11 +1392,16 @@
           const przycisk = findAddTermButton();
           if (!przycisk) throw new Error("Nie rozpoznano natywnego przycisku dodawania. Użyj „Rozpoznaj natywne dodawanie” w panelu i ręcznie dodaj pusty termin w Eventis.");
           const poczatkoweId = new Set($$('[id^="li_eventdate_"]',$("#eventForm")).map(wiersz => wiersz.id));
-          formularz = await oczekujNaNatywnyFormularz(poczatkoweId,termin,() => przycisk.click(),{czyAktualny});
+          formularz = await oczekujNaNatywnyFormularz(poczatkoweId,termin,() => przycisk.click(),{czyAktualny,tylkoPodstawowe:true});
           natywneDodawanie.puste.set(formularz,odciskPolTerminu(formularz));
-        } else if (brakujacePolaTerminu(formularz,termin).length) {
-          await oczekujNaNatywnyFormularz(new Set(),termin,() => {},{czyAktualny,wierszDocelowy:formularz});
+        } else if (brakujacePolaTerminu(formularz,termin,true).length) {
+          await oczekujNaNatywnyFormularz(new Set(),termin,() => {},{czyAktualny,wierszDocelowy:formularz,tylkoPodstawowe:true});
         }
+        await oczekujNaNatywnyFormularz(new Set(),termin,() => {
+          const poleTrybu = pobierzPolaTerminu(formularz).tryb;
+          const wartosc = termin.city === "Online" ? "1" : "";
+          if (poleTrybu.value !== wartosc) setValue(poleTrybu,wartosc);
+        },{czyAktualny,wierszDocelowy:formularz});
         fillTerm(formularz,termin);
         natywneDodawanie.puste.delete(formularz);
         wynik.dodane.push(termin);

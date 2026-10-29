@@ -70,7 +70,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         magazyn.eventisImportQueue = NARZEDZIA_KOLEJKI.scalElementyKolejki(magazyn.eventisImportQueue,zmiany);
         state.eventisImportQueue = magazyn.eventisImportQueue;
       };
-      const setValue = (pole,wartosc) => { if(pole) pole.value=wartosc; };
+      ${fragment(kodFormularza,"  function setValue(","  async function zweryfikujKarteSesjiOtwarcia")}
       const uzupelnijDaneWydarzenia = async () => {};
       ${fragment(kodFormularza,"  function getExistingTerms()","  function compareTerms()")}
       ${fragment(kodFormularza,"  function pobierzPolaTerminu(","  async function uzupelnijDaneWydarzenia")}
@@ -150,6 +150,53 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       await strona.evaluate(() => {$('#terminy').replaceChildren();liczbaFormularzy=0;liczbaKlikniec=0;render();});
     }
     return strona;
+  }
+
+
+  // Formularz testowy modeluje zdarzenia i przebudowę DOM; nie potwierdza kontraktu serwera Eventis.
+  for (const tryb of ['add','edit']) {
+    for (const wariant of ['brak','obecne','inne opcje','przebudowa']) {
+      await podtesty.test(tryb + ': materiały ' + wariant + ' nie blokują terminów i zachowują wartości',async () => {
+        const strona = await przygotuj(tryb);
+        const wynik = await strona.evaluate(async wariant => {
+          opoznienieFormularza=20;
+          const pierwotneDodawanie=dodajNatywnyFormularz;
+          dodajNatywnyFormularz=() => {
+            const wiersz=pierwotneDodawanie();
+            const przygotuj=() => {
+              const materialy=wiersz.querySelector('select[id^="price_contains_materials"]');
+              if(wariant==='brak') materialy.remove();
+              else if(wariant==='obecne') {materialy.value='2';}
+              else {materialy.innerHTML='<option value="9" selected>Wybór ręczny</option>';}
+              wiersz.querySelectorAll('.event_price_contains').forEach(pole => {pole.checked=pole.value==='5';});
+              if(wariant==='przebudowa') {
+                wiersz.querySelector('textarea').remove();
+                wiersz.addEventListener('change',zdarzenie => {
+                  if(!zdarzenie.target.id.startsWith('eventdate_is_online_')) return;
+                  wiersz.querySelectorAll('input[name$="[price]"],input[id^="eventdate_date"]').forEach(pole=>pole.remove());
+                  setTimeout(() => {
+                    wiersz.insertAdjacentHTML('beforeend','<textarea name="eventDate['+liczbaFormularzy+'][online_description]"></textarea><input name="eventDate['+liczbaFormularzy+'][prices][0][price]"><input id="eventdate_datestart_'+liczbaFormularzy+'"><input id="eventdate_dateend_'+liczbaFormularzy+'">');
+                  },25);
+                });
+              }
+            };
+            przygotuj();
+            return wiersz;
+          };
+          const terminy=[{start:'2026-11-04',end:'2026-11-06',city:'Online',price:1590},{start:'2026-11-07',end:'2026-11-08',city:'Kraków',price:1690}];
+          const wynik=await addSelectedTerms(terminy);
+          return {bledy:wynik.bledy,liczba:wynik.dodane.length,pola:$$('[id^="li_eventdate_"]').map(wiersz=>{
+            const pola=pobierzPolaTerminu(wiersz);
+            return [pola.poczatek.value,pola.koniec.value,pola.tryb.value,pola.miasto.value,pola.cena.value,wiersz.querySelector('select[id^="price_contains_materials"]')?.value || null,$$('.event_price_contains:checked',wiersz).map(pole=>pole.value)];
+          })};
+        },wariant);
+        asercje.deepEqual(wynik.bledy,[]);
+        asercje.equal(wynik.liczba,2);
+        const materialy=wariant==='brak'?null:wariant==='obecne'?'2':'9';
+        asercje.deepEqual(wynik.pola,[['2026-11-04','2026-11-06','1','','1590',materialy,['5']],['2026-11-07','2026-11-08','','Kraków','1690',materialy,['5']]]);
+        await strona.close();
+      });
+    }
   }
 
   await podtesty.test("bez rozpoznanego przycisku: zero kliknięć przypadkowych odnośników i brak DONE",async () => {
