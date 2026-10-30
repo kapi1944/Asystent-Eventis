@@ -365,6 +365,15 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu,
           bezposredniEdytor?.ckeditorInstance?.getData?.(),
           ...edytowalneElementy.flatMap(element => [element.innerHTML, element.ckeditorInstance?.getData?.()])]
           .some(czyMaTresc)) {
+          const recznaTresc = [instancjaCkeditora4,field?.ckeditorInstance,bezposredniEdytor?.ckeditorInstance,
+            ...edytowalneElementy.map(element => element.ckeditorInstance)]
+            .map(instancja => instancja?.getData?.()).find(czyMaTresc);
+          if (field && recznaTresc && field.value !== recznaTresc) {
+            // Zachowujemy model użytkownika i synchronizujemy wyłącznie pole wysyłane w formularzu.
+            ustawWartoscNatywnie(field,recznaTresc);
+            field.dispatchEvent(new Event("input",{bubbles:true}));
+            field.dispatchEvent(new Event("change",{bubbles:true}));
+          }
           return {ok:true,pominieto:true,field:nazwaPola};
         }
         if (instancjaCkeditora4) {

@@ -262,7 +262,7 @@
     state.settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     state.eventisTitle = getEventisTitle();
     state.eventisId = detectEventisId();
-    state.zapisaneTerminyEventis = getExistingTerms();
+    state.zapisaneTerminyEventis = getExistingTerms().filter(termin => rozpoznajStanWiersza(termin.row) === "EXISTING_SAVED_TERM");
     const wykrytyOrganizator = wykryjOrganizatora();
     state.organization = wykrytyOrganizator.organizator;
     state.organizatorWydarzenia = wykrytyOrganizator.organizator;
@@ -892,7 +892,12 @@
   }
 
   function getExistingTerms() {
-    return NARZEDZIA_TERMINOW.odczytajTerminyEventis($("#eventForm") || document);
+    return NARZEDZIA_TERMINOW.odczytajTerminyEventis($("#eventForm") || document)
+      .filter(termin => {
+        const stan = rozpoznajStanWiersza(termin.row);
+        return !["PRISTINE_TEMPLATE","NEW_EMPTY_ROW"].includes(stan)
+          && !(stan === "EXTENSION_FILLED_DRAFT" && stanyWierszy.get(termin.row)?.gotowy === false);
+      });
   }
 
   function potwierdzoneZapisaneTerminy() {
@@ -1045,6 +1050,10 @@
     if (setter) setter.call(el,String(val ?? "")); else el.value = String(val ?? "");
     el.dispatchEvent(new Event("input",{bubbles:true}));
     el.dispatchEvent(new Event("change",{bubbles:true}));
+    // Bootstrap Datepicker aktualizuje własny model po keyup, nie po samym change.
+    if (/\[(date_start|date_end)\]$/.test(el.name || "") || /^eventdate_(datestart|dateend)_/.test(el.id || "")) {
+      el.dispatchEvent(new KeyboardEvent("keyup",{bubbles:true,key:"Tab"}));
+    }
   }
 
   async function zweryfikujKarteSesjiOtwarcia() {
@@ -1218,6 +1227,8 @@
       poczatek:pole("date_start") || formularz.querySelector(`[id="eventdate_datestart_${identyfikator}"]`),
       koniec:pole("date_end") || formularz.querySelector(`[id="eventdate_dateend_${identyfikator}"]`),
       potwierdzenie:pole("is_guaranteed","select"), vat:pole("prices][0][taxRate"), cena:pole("prices][0][price"),
+      waluta:pole("prices][0][currency","select"), zwolnienieVat:pole("prices][0][freeOfTax"),
+      rekord:pole("id"), akcja:pole("action"),
       pakiet:pole("prices][0][price_name"), opisOnline:pole("online_description","textarea"),
       informacja:pole("info"), region:pole("region_id","select"), miasto:pole("city")
     };
@@ -1229,13 +1240,101 @@
     return JSON.stringify($$('input,select,textarea',formularz).map(pole => [pole.name,pole.value,pole.checked]));
   }
 
+  const stanyWierszy = new WeakMap();
+  const reczneWiersze = new WeakSet();
+  document.addEventListener("input",chronReczneZmianyTerminu,true);
+  document.addEventListener("change",chronReczneZmianyTerminu,true);
+
+  function chronReczneZmianyTerminu(zdarzenie) {
+    const wiersz = zdarzenie.target.closest?.('[id^="li_eventdate_"]');
+    if (zdarzenie.isTrusted && wiersz) reczneWiersze.add(wiersz);
+  }
+
+  function rozpoznajStanWiersza(wiersz) {
+    if (!wiersz?.isConnected) return "UNKNOWN";
+    const pola = pobierzPolaTerminu(wiersz);
+    if (pola.rekord?.value && pola.rekord.value !== "0") return "EXISTING_SAVED_TERM";
+    if (reczneWiersze.has(wiersz)) return "USER_MODIFIED_DRAFT";
+    const zapis = stanyWierszy.get(wiersz);
+    if (zapis) return zapis.odcisk === odciskPolTerminu(wiersz) ? zapis.stan : "USER_MODIFIED_DRAFT";
+    if (natywneDodawanie.puste.has(wiersz)) return natywneDodawanie.puste.get(wiersz) === odciskPolTerminu(wiersz) ? "NEW_EMPTY_ROW" : "USER_MODIFIED_DRAFT";
+    const kontrolki = $$('input,select,textarea',wiersz);
+    const zmienione = kontrolki.some(pole => {
+      if (pole.type === "hidden" || pole.disabled) return false;
+      if (["checkbox","radio"].includes(pole.type)) return pole.checked !== pole.defaultChecked;
+      if (pole.tagName === "SELECT") {
+        const domyslna = Array.from(pole.options).find(opcja => opcja.defaultSelected) || pole.options[0];
+        return pole.value !== (domyslna?.value ?? "");
+      }
+      return pole.value !== pole.defaultValue;
+    });
+    if (zmienione) return "USER_MODIFIED_DRAFT";
+    // Kontrakt Eventis: action=new i id=0 oznaczają niezapisany rekord, nie numer wiersza.
+    const nowyRekord = pola.akcja?.value === "new" && pola.rekord?.value === "0";
+    const pusteDaty = !pola.poczatek?.value && !pola.koniec?.value;
+    const daneUzytkownika = [pola.cena,pola.vat,pola.miasto,pola.informacja,pola.opisOnline]
+      .some(pole => pole?.value.trim()) || (pola.pakiet?.value.trim() && !/^Pakiet\s+1$/i.test(pola.pakiet.value.trim()));
+    if (!kontrolki.length || daneUzytkownika || (!nowyRekord && !(MODE === "add" && pusteDaty))) return "UNKNOWN";
+    return "PRISTINE_TEMPLATE";
+  }
+
+  function zapamietajStanWiersza(wiersz, stan, termin = null, gotowy = false) {
+    stanyWierszy.set(wiersz,{stan,termin,gotowy,odcisk:odciskPolTerminu(wiersz)});
+  }
+
+  function wartosciTerminuDoDiagnostyki(wiersz) {
+    if (!wiersz?.isConnected) return null;
+    const pola = pobierzPolaTerminu(wiersz);
+    return Object.fromEntries(["poczatek","koniec","cena","vat","tryb","miasto","region","potwierdzenie","waluta"]
+      .map(nazwa => [nazwa,pola[nazwa]?.value]));
+  }
+
+  function sprawdzOchroneWiersza(wiersz, termin) {
+    const stan = rozpoznajStanWiersza(wiersz);
+    if (["PRISTINE_TEMPLATE","NEW_EMPTY_ROW"].includes(stan)) return stan;
+    if (stan === "EXTENSION_FILLED_DRAFT" && stanyWierszy.get(wiersz)?.termin === existingKey(termin)) return stan;
+    throw new Error(stan === "EXISTING_SAVED_TERM" ? "Wykryto zapisany termin — nie wolno go nadpisywać."
+      : stan === "USER_MODIFIED_DRAFT" ? "Wiersz zawiera ręczne zmiany — pominięto nadpisywanie."
+      : "Nie można ustalić stanu wiersza terminu. Sprawdź formularz ręcznie.");
+  }
+
+  function oczekiwanePotwierdzenie(termin) {
+    return (termin.effectiveConfirmed ?? (termin.confirmedOnSemper || termin.confirmed || termin.confirmedByQueue || termin.confirmedManually)) ? "1" : "0";
+  }
+
+  function oczekiwanaCenaNetto(termin) {
+    if (termin.priceType === "gross" || /brutto/i.test(termin.rawText || "")) {
+      if (termin.vatRate == null) throw new Error("Cena brutto wymaga jawnej konfiguracji VAT. Uzupełnij dane źródłowe.");
+      return Math.round(Number(termin.price) / (1 + Number(termin.vatRate)/100) * 100)/100;
+    }
+    return Number(termin.price);
+  }
+
+  function zweryfikujWartosciTerminu(wiersz, termin) {
+    if (!wiersz?.isConnected) throw new Error("Formularz zmienił strukturę podczas wypełniania.");
+    const pola = pobierzPolaTerminu(wiersz);
+    const brakujace = brakujacePolaTerminu(wiersz,termin);
+    if (brakujace.length) throw new Error(`Formularz nie zawiera wymaganych pól: ${brakujace.join(", ")}.`);
+    const oczekiwane = [["data rozpoczęcia",pola.poczatek,termin.start],["data zakończenia",pola.koniec,termin.end],
+      ["tryb",pola.tryb,termin.city === "Online" ? "1" : ""],["potwierdzenie",pola.potwierdzenie,oczekiwanePotwierdzenie(termin)],
+      ["pakiet",pola.pakiet,termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne"]];
+    const bledy = oczekiwane.filter(([,pole,wartosc]) => pole.value !== wartosc).map(([nazwa]) => nazwa);
+    if (!pola.cena.value.trim() || Number(pola.cena.value.replace(",",".")) !== oczekiwanaCenaNetto(termin)) bledy.push("cena");
+    if (Number(pola.vat.value) !== Number(termin.vatRate ?? 23) || !pola.vat.value.trim()) bledy.push("VAT");
+    if (pola.waluta && pola.waluta.value !== "1") bledy.push("waluta PLN");
+    if (termin.city === "Online" ? !pola.opisOnline.value.trim()
+      : pola.miasto.value !== termin.city || pola.region.value !== String(REGIONS[termin.city]) || pola.informacja.value !== termin.city) bledy.push("lokalizacja");
+    if (bledy.length) throw new Error(`Eventis nie przyjął wartości terminu: ${bledy.join(", ")}. Sprawdź formularz przed ponowieniem.`);
+    return true;
+  }
+
   function brakujacePolaTerminu(formularz, termin, tylkoPodstawowe = false) {
     const pola = pobierzPolaTerminu(formularz);
     const wymagane = ["tryb","poczatek","koniec","potwierdzenie","vat","cena","pakiet"];
     if (!tylkoPodstawowe) wymagane.push(...(termin?.city === "Online" ? ["opisOnline"] : termin ? ["informacja","region","miasto"]
       : pola.opisOnline ? ["opisOnline"] : ["informacja","region","miasto"]));
     const brakujace = wymagane.filter(nazwa => !pola[nazwa] || pola[nazwa].disabled);
-    const wymaganeOpcje = [["tryb",termin?.city === "Online" || !termin ? "1" : ""],["potwierdzenie","1"]];
+    const wymaganeOpcje = [["tryb",termin?.city === "Online" || !termin ? "1" : ""],["potwierdzenie",termin ? oczekiwanePotwierdzenie(termin) : "1"]];
     if (!tylkoPodstawowe && termin && termin.city !== "Online") wymaganeOpcje.push(["region",String(REGIONS[termin.city])]);
     for (const [nazwa,wartosc] of wymaganeOpcje) {
       if (pola[nazwa] && !Array.from(pola[nazwa].options || []).some(opcja => opcja.value === wartosc)) brakujace.push(`opcja ${nazwa}`);
@@ -1293,11 +1392,13 @@
       if (!formularz || sygnal?.aborted) return odrzuc(new Error("Anulowano oczekiwanie na formularz Eventis."));
       let zakonczone = false;
       let licznik;
+      let stabilizacja;
       const zakoncz = (blad, wiersz) => {
         if (zakonczone) return;
         zakonczone = true;
         obserwator.disconnect();
         clearTimeout(licznik);
+        clearTimeout(stabilizacja);
         sygnal?.removeEventListener("abort",anuluj);
         window.removeEventListener("pagehide",anuluj);
         formularz.removeEventListener("input",sprawdz);
@@ -1305,13 +1406,21 @@
         if (blad) odrzuc(blad); else rozwiaz(wiersz);
       };
       const anuluj = () => zakoncz(new Error("Anulowano oczekiwanie na formularz Eventis."));
-      const noweWiersze = () => wierszDocelowy ? (formularz.contains(wierszDocelowy) ? [wierszDocelowy] : [])
-        : $$('[id^="li_eventdate_"]',formularz).filter(wiersz => !poczatkoweId.has(wiersz.id));
+      const noweWiersze = () => wierszDocelowy
+        ? $$('[id^="li_eventdate_"]',formularz).filter(wiersz => wiersz === wierszDocelowy || (!wierszDocelowy.isConnected && wiersz.id === wierszDocelowy.id))
+        : $$('[id^="li_eventdate_"]',formularz).filter(wiersz => !poczatkoweId.has(wiersz.id) && !poczatkoweId.has(wiersz));
       const sprawdz = () => {
+        clearTimeout(stabilizacja);
         if (!formularz.isConnected || !czyAktualny()) return zakoncz(new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu."));
         const nowe = noweWiersze();
         if (nowe.length > 1) return zakoncz(new Error("Jedna akcja utworzyła kilka formularzy. Sprawdź natywny przycisk Eventis."));
-        if (nowe.length === 1 && !brakujacePolaTerminu(nowe[0],termin,tylkoPodstawowe).length) zakoncz(null,nowe[0]);
+        if (nowe.length === 1 && !brakujacePolaTerminu(nowe[0],termin,tylkoPodstawowe).length) {
+          stabilizacja = setTimeout(() => {
+            if (!czyAktualny()) return zakoncz(new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu."));
+            const aktualne = noweWiersze();
+            if (aktualne.length === 1 && !brakujacePolaTerminu(aktualne[0],termin,tylkoPodstawowe).length) zakoncz(null,aktualne[0]);
+          },80);
+        }
       };
       const obserwator = new MutationObserver(sprawdz);
       obserwator.observe(document.body,{childList:true,subtree:true,attributes:true});
@@ -1370,40 +1479,50 @@
       || termin.price == null || String(termin.price).trim() === "" || !Number.isFinite(Number(termin.price)) || Number(termin.price) < 0
       || termin.confirmationConflict || termin.effectiveConfirmed === false) throw new Error("Termin ma nieprawidłowe dane daty, lokalizacji, potwierdzenia lub ceny.");
     if (termin.city !== "Online" && REGIONS[termin.city] == null) throw new Error(`Brak mapowania regionu Eventis dla miasta „${termin.city}”.`);
+    if (termin.vatRate != null && (String(termin.vatRate).trim() === "" || !Number.isFinite(Number(termin.vatRate)) || Number(termin.vatRate) < 0 || Number(termin.vatRate) > 100)) throw new Error("Nieprawidłowa konfiguracja VAT terminu.");
+    oczekiwanaCenaNetto(termin);
   }
 
   function fillTerm(formularz,termin) {
     sprawdzDaneTerminu(termin);
-    const {tryb,poczatek:dataPoczatkowa,koniec:dataKoncowa,potwierdzenie,vat:stawkaVat,cena,opisOnline,informacja,region,miasto,pakiet} = pobierzPolaTerminu(formularz);
     if (brakujacePolaTerminu(formularz,termin).length) throw new Error("Formularz terminu Eventis nie zawiera wszystkich wymaganych pól.");
-    if (dataPoczatkowa.value || dataKoncowa.value) throw new Error("Formularz zawiera już termin. Nie został nadpisany.");
+    sprawdzOchroneWiersza(formularz,termin);
+    const tryb = pobierzPolaTerminu(formularz).tryb;
+    const wartoscTrybu = termin.city === "Online" ? "1" : "";
+    if (tryb.value !== wartoscTrybu) setValue(tryb,wartoscTrybu);
     const poprzednieWartosci = $$('input,select,textarea',formularz).map(pole => ({pole,wartosc:pole.value,zaznaczony:pole.checked}));
+    const ustaw = (nazwa,wartosc) => {
+      if (reczneWiersze.has(formularz)) throw new Error("Wiersz zawiera ręczne zmiany — przerwano wypełnianie.");
+      if (!formularz.isConnected) throw new Error("Formularz zmienił strukturę podczas wypełniania.");
+      const pole = pobierzPolaTerminu(formularz)[nazwa];
+      if (!pole || pole.disabled) throw new Error(`Formularz zmienił strukturę podczas wypełniania: ${nazwa}.`);
+      if (pole.value !== String(wartosc)) setValue(pole,wartosc);
+    };
     try {
+      const cenaNetto = oczekiwanaCenaNetto(termin);
+      // Historyczne mapowanie SEMPER/IIST: ceny netto w PLN, standardowy pakiet +23% VAT.
+      // Jawna stawka źródłowa ma pierwszeństwo; zwolnienie odbiorcy nie zmienia stawki oferty.
       if (termin.city === "Online") {
-        if (tryb.value !== "1") setValue(tryb,"1");
-        setValue(opisOnline,"-");
+        ustaw("opisOnline","-");
       } else {
-        if (tryb.value !== "") setValue(tryb,"");
-        setValue(informacja,termin.city);
-        setValue(region,REGIONS[termin.city]);
-        setValue(miasto,termin.city);
+        ustaw("informacja",termin.city);
+        ustaw("region",REGIONS[termin.city]);
+        ustaw("miasto",termin.city);
       }
-      setValue(dataPoczatkowa,termin.start);
-      setValue(dataKoncowa,termin.end);
-      setValue(potwierdzenie,"1");
-      setValue(pakiet,termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne");
-      setValue(stawkaVat,"23");
-      setValue(cena,termin.price);
-      if (dataPoczatkowa.value !== termin.start || dataKoncowa.value !== termin.end || String(cena.value).trim() === "" || Number(cena.value) !== Number(termin.price)
-        || potwierdzenie.value !== "1" || Number(stawkaVat.value) !== 23
-        || tryb.value !== (termin.city === "Online" ? "1" : "")
-        || pakiet.value !== (termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne")
-        || (termin.city === "Online" ? opisOnline.value !== "-" : miasto.value !== termin.city || informacja.value !== termin.city || region.value !== String(REGIONS[termin.city]))) {
-        const oczekiwane = [["data rozpoczęcia",dataPoczatkowa,termin.start],["data zakończenia",dataKoncowa,termin.end],["cena",cena,termin.price],["tryb",tryb,termin.city === "Online" ? "1" : ""],["pakiet",pakiet,termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne"],["VAT",stawkaVat,"23"],["potwierdzenie",potwierdzenie,"1"]];
-        throw new Error(`Eventis nie przyjął wartości terminu: ${oczekiwane.filter(([,pole,wartosc]) => String(pole.value) !== String(wartosc)).map(([nazwa]) => nazwa).join(", ") || "lokalizacja"}. Sprawdź formularz przed ponowieniem.`);
-      }
+      ustaw("poczatek",termin.start);
+      ustaw("koniec",termin.end);
+      ustaw("potwierdzenie",oczekiwanePotwierdzenie(termin));
+      ustaw("pakiet",termin.city === "Online" ? "szkolenie online" : "szkolenie stacjonarne");
+      ustaw("vat",termin.vatRate ?? 23);
+      if (pobierzPolaTerminu(formularz).waluta) ustaw("waluta","1");
+      ustaw("cena",cenaNetto);
+      zweryfikujWartosciTerminu(formularz,termin);
+      zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin),true);
     } catch (blad) {
-      for (const zapis of poprzednieWartosci) { zapis.pole.value = zapis.wartosc; zapis.pole.checked = zapis.zaznaczony; }
+      if (!reczneWiersze.has(formularz)) {
+        for (const zapis of poprzednieWartosci) if (formularz.contains(zapis.pole)) { zapis.pole.value = zapis.wartosc; zapis.pole.checked = zapis.zaznaczony; }
+        zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin));
+      }
       throw blad;
     }
   }
@@ -1417,43 +1536,79 @@
     const wynik = {dodane:[],pominiete:rozdzielenie.pominiete,bledy:[]};
     for (const termin of rozdzielenie.pominiete) {
       const istniejacy = getExistingTerms().find(wpis => existingKey(wpis) === existingKey(termin));
-      if (istniejacy && (istniejacy.price == null || Number(istniejacy.price) !== Number(termin.price))) {
+      if (istniejacy && (istniejacy.price == null || Number(istniejacy.price) !== oczekiwanaCenaNetto(termin))) {
         wynik.bledy.push({termin,komunikat:"Potencjalny duplikat: istniejący termin ma inną lub nieznaną cenę. Sprawdź go ręcznie."});
       }
     }
     const organizacja = state.organization;
     const tytul = getEventisTitle();
-    const czyAktualny = () => state.organization === organizacja && wykryjOrganizatora().organizator === organizacja && getEventisTitle() === tytul && !czyTrwaZapis();
+    const ogloszenie = state.eventisId;
+    const zrodlo = state.source?.url;
+    const czyAktualny = () => state.organization === organizacja && wykryjOrganizatora().organizator === organizacja && getEventisTitle() === tytul
+      && state.eventisId === ogloszenie && state.source?.url === zrodlo && !czyTrwaZapis();
     for (const [indeks,termin] of doDodania.entries()) {
+      state.diagnostykaWypelniania = {zadanie:state.pendingOperation?.operationId || termin.queueItemId || PAGE_LOAD_ID,ogloszenie:state.eventisId,
+        etap:"NOWY",zrodlo:{start:termin.start,end:termin.end,city:termin.city,price:termin.price}};
       try {
         sprawdzDaneTerminu(termin);
         if (!czyAktualny()) throw new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu.");
         const istniejacy = getExistingTerms().find(wpis => existingKey(wpis) === existingKey(termin));
         if (istniejacy) {
-          if (istniejacy.price == null || Number(istniejacy.price) !== Number(termin.price)) throw new Error("Potencjalny duplikat: istniejący termin ma inną lub nieznaną cenę. Sprawdź go ręcznie.");
+          if (istniejacy.price == null || Number(istniejacy.price) !== oczekiwanaCenaNetto(termin)) throw new Error("Potencjalny duplikat: istniejący termin ma inną lub nieznaną cenę. Sprawdź go ręcznie.");
           wynik.pominiete.push(termin);
           continue;
         }
-        let formularz = $$('[id^="li_eventdate_"]',$("#eventForm")).find(wiersz => natywneDodawanie.puste.has(wiersz)
-          && natywneDodawanie.puste.get(wiersz) === odciskPolTerminu(wiersz));
+        let formularz = $$('[id^="li_eventdate_"]',$("#eventForm")).find(wiersz => {
+          const stan = rozpoznajStanWiersza(wiersz);
+          return ["PRISTINE_TEMPLATE","NEW_EMPTY_ROW"].includes(stan)
+            || (stan === "EXTENSION_FILLED_DRAFT" && stanyWierszy.get(wiersz)?.termin === existingKey(termin));
+        });
         if (!formularz) {
           const przycisk = await oczekujNaPrzyciskTerminu(czyAktualny);
           if (getExistingTerms().some(wpis => existingKey(wpis) === existingKey(termin))) throw new Error("Potencjalny duplikat: termin pojawił się podczas oczekiwania. Sprawdź formularz.");
-          const poczatkoweId = new Set($$('[id^="li_eventdate_"]',$("#eventForm")).map(wiersz => wiersz.id));
+          const poczatkoweId = new Set($$('[id^="li_eventdate_"]',$("#eventForm")));
           formularz = await oczekujNaNatywnyFormularz(poczatkoweId,termin,() => przycisk.click(),{czyAktualny,tylkoPodstawowe:true});
+          const pola = pobierzPolaTerminu(formularz);
+          if ([pola.cena,pola.vat,pola.miasto,pola.informacja,pola.opisOnline].some(pole => pole?.value.trim())
+            || [pola.poczatek,pola.koniec].some(pole => pole.value !== pole.defaultValue)) throw new Error("Nowy wiersz zawiera dane — pominięto nadpisywanie.");
           natywneDodawanie.puste.set(formularz,odciskPolTerminu(formularz));
+          sprawdzOchroneWiersza(formularz,termin);
+          zapamietajStanWiersza(formularz,"NEW_EMPTY_ROW");
         } else if (brakujacePolaTerminu(formularz,termin,true).length) {
           await oczekujNaNatywnyFormularz(new Set(),termin,() => {},{czyAktualny,wierszDocelowy:formularz,tylkoPodstawowe:true});
         }
-        await oczekujNaNatywnyFormularz(new Set(),termin,() => {
+        const stanWiersza = sprawdzOchroneWiersza(formularz,termin);
+        const wierszPrzedZmianaTrybu = formularz;
+        const diagnostyka = {zadanie:state.pendingOperation?.operationId || termin.queueItemId || PAGE_LOAD_ID,ogloszenie:state.eventisId,
+          wiersz:formularz.id,stanWiersza,etap:"WYPEŁNIANIE",zrodlo:{start:termin.start,end:termin.end,city:termin.city,price:termin.price}};
+        state.diagnostykaWypelniania = diagnostyka;
+        formularz = await oczekujNaNatywnyFormularz(new Set(),termin,() => {
           const poleTrybu = pobierzPolaTerminu(formularz).tryb;
           const wartosc = termin.city === "Online" ? "1" : "";
           if (poleTrybu.value !== wartosc) setValue(poleTrybu,wartosc);
         },{czyAktualny,wierszDocelowy:formularz});
+        if (reczneWiersze.has(wierszPrzedZmianaTrybu) || reczneWiersze.has(formularz)) throw new Error("Wiersz zawiera ręczne zmiany — pominięto nadpisywanie.");
+        // Zmiana rodzaju i daty inicjalizacyjne Eventis należą do tej operacji.
+        if (pobierzPolaTerminu(formularz).rekord?.value && pobierzPolaTerminu(formularz).rekord.value !== "0") throw new Error("Wykryto zapisany termin — nie wolno go nadpisywać.");
+        zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin));
         fillTerm(formularz,termin);
+        zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin));
+        await new Promise(rozwiaz => setTimeout(rozwiaz,100));
+        if (!czyAktualny()) throw new Error("Kontekst ogłoszenia zmienił się podczas dodawania terminu.");
+        if (reczneWiersze.has(formularz)) sprawdzOchroneWiersza(formularz,termin);
+        zweryfikujWartosciTerminu(formularz,termin);
+        sprawdzOchroneWiersza(formularz,termin);
+        zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin),true);
+        diagnostyka.etap = "WYPEŁNIONY";
+        diagnostyka.formularz = wartosciTerminuDoDiagnostyki(formularz);
+        console.info("Asystent Eventis: zweryfikowano termin",diagnostyka);
         natywneDodawanie.puste.delete(formularz);
         wynik.dodane.push(termin);
       } catch (blad) {
+        const diagnostyka = {...state.diagnostykaWypelniania,etap:"BŁĄD_WYPEŁNIANIA",blad:blad.message};
+        diagnostyka.formularz = wartosciTerminuDoDiagnostyki(document.getElementById(diagnostyka.wiersz));
+        state.diagnostykaWypelniania = diagnostyka;
+        console.warn("Asystent Eventis: błąd wypełniania",diagnostyka);
         wynik.bledy.push(...doDodania.slice(indeks).map(pozostaly => ({termin:pozostaly,komunikat:blad.message})));
         break;
       }
@@ -1465,7 +1620,8 @@
     const liczbaDni = Math.max(1,...terminy.map(termin=>durationDays(termin.start,termin.end)));
     const poleCzasuTrwania = $('[name="event[hours]"]') || znajdzPolePoEtykiecie("Godziny zajęć (czas trwania)");
     const czasTrwania = liczbaDni === 1 ? "1 dzień" : `${liczbaDni} dni`;
-    if (MODE === "add") setValue($('input[name="event[title]"],textarea[name="event[title]"],#title'),zrodlo.title);
+    const poleTytulu = $('input[name="event[title]"],textarea[name="event[title]"],#title');
+    if (MODE === "add" && !poleTytulu?.value?.trim()) setValue(poleTytulu,zrodlo.title);
     if (poleCzasuTrwania?.name || document.getElementById("eventHours")) await ustawPoleRichText(poleCzasuTrwania?.name,`<p>${czasTrwania}</p>`,{elementId:"eventHours",tylkoPuste:MODE === "edit"});
     else if (MODE === "add" || !poleCzasuTrwania?.value?.trim()) setValue(poleCzasuTrwania,czasTrwania);
     if (MODE === "add") {
@@ -1476,7 +1632,7 @@
     await NARZEDZIA_POL_RICH_TEXT.uzupelnijPolaOpisowe(
       zrodlo.opisy,
       NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH,
-      ustawPoleRichText
+      (pole,html,opcje) => ustawPoleRichText(pole,html,{...opcje,tylkoPuste:true})
     );
     if (MODE !== "add") return;
     const participantType=$('input[name="event[participantsType]"][value="1"]'); if(participantType){participantType.checked=true;participantType.dispatchEvent(new Event("change",{bubbles:true}));}
@@ -1587,6 +1743,7 @@
     await storageSet({pendingOperations});
     await zapiszElementyKolejki(zaktualizowanaKolejka.filter((element,indeks) => element !== aktualnaKolejka[indeks]));
     state.pendingOperation=potwierdzona;
+    if (state.diagnostykaWypelniania?.etap === "WYPEŁNIONY") state.diagnostykaWypelniania.etap = "OCZEKUJE_NA_ZAPIS";
     state.zapis={saveState:"IDLE"};
     return potwierdzona;
   }
@@ -1985,11 +2142,11 @@
 
   function czyNiezapisanyTerminKompletny(termin) {
     const wiersz = getExistingTerms().find(wpis => existingKey(wpis) === existingKey(termin))?.row;
-    if (!wiersz || brakujacePolaTerminu(wiersz,termin).length) return false;
-    const pola = pobierzPolaTerminu(wiersz);
-    return !!pola.poczatek.value && !!pola.koniec.value && pola.potwierdzenie.value === "1"
-      && String(pola.cena.value).trim() !== "" && Number.isFinite(Number(pola.cena.value)) && Number(pola.cena.value) >= 0
-      && String(pola.vat.value).trim() !== "" && !!pola.pakiet.value.trim();
+    if (!wiersz) return false;
+    try {
+      sprawdzOchroneWiersza(wiersz,termin);
+      return zweryfikujWartosciTerminu(wiersz,termin);
+    } catch { return false; }
   }
 
   async function wprowadzTerminyZKolejki(identyfikatoryDozwolone = null) {
@@ -2072,7 +2229,10 @@
               : element));
           }
           const powiazanie=NARZEDZIA_KOLEJKI.powiazDodaneTerminy(doPrzetworzenia,[...wynikWprowadzenia.dodane,...juzWFormularzu.map(dopasowanie=>dopasowanie.terminy[0])]);
-          if (!powiazanie.terms.length) return {wynikWprowadzenia,powiazanie,operacja};
+          if (!powiazanie.terms.length) {
+            if (MODE === "add" && state.source && aktualnyKontekst()) await uzupelnijDaneWydarzenia(state.source,termy);
+            return {wynikWprowadzenia,powiazanie,operacja};
+          }
           try {
             if (state.source) await uzupelnijDaneWydarzenia(state.source,powiazanie.terms);
           } catch (blad) {
@@ -2434,6 +2594,11 @@
     if (!potwierdzoneZrodlem.length) return toast("Brak brakujących terminów potwierdzonych na stronie źródłowej.");
     try {
       const chosen=[...potwierdzoneZrodlem];
+      const organizacja = state.organization;
+      const ogloszenie = state.eventisId;
+      const tytul = getEventisTitle();
+      const zrodlo = state.source;
+      const czyAktualny = () => state.organization === organizacja && state.eventisId === ogloszenie && getEventisTitle() === tytul && state.source === zrodlo;
       const planOperacji=utworzPlanOperacji(chosen);
       const wykonanie=await NARZEDZIA_OPERACJI.wykonajPoUzyskaniuClaimu(
         () => uzyskajClaimOperacji(planOperacji),
@@ -2441,7 +2606,11 @@
           state.trwaWypelnianieOperacji=true;
           try {
           const wynikWprowadzenia=await addSelectedTerms(chosen);
-          if (!wynikWprowadzenia.dodane.length) return wynikWprowadzenia;
+          if (!czyAktualny()) throw new Error("Przypisanie szkolenia zmieniło się podczas przygotowania formularza. Opisy nie zostały zmienione.");
+          if (!wynikWprowadzenia.dodane.length) {
+            if (MODE === "add") await uzupelnijDaneWydarzenia(state.source,chosen);
+            return wynikWprowadzenia;
+          }
           try {
             await uzupelnijDaneWydarzenia(state.source,wynikWprowadzenia.dodane);
           } catch (blad) {

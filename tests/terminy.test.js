@@ -126,6 +126,14 @@ test("wspólny odczyt formularza Eventis rozpoznaje datę końcową i ONLINE", (
   assert.deepEqual({start:termin.start,end:termin.end,city:termin.city},{start:"2026-11-18",end:"2026-11-19",city:"Online"});
 });
 
+test("cena formularza Eventis zachowuje grosze, polski separator i cenę zerową", () => {
+  for (const [wartosc,oczekiwana] of [["1590,00",1590],["1 590,50",1590.5],["1590.50",1590.5],["0,00",0],["",null],["abc",null]]) {
+    const wiersz = {id:"li_eventdate_7",querySelector:selektor => selektor.includes("date_start") ? {value:"2026-11-16"}
+      : selektor === 'input[name*="[price]"]' ? {value:wartosc} : null};
+    assert.equal(narzedzia.odczytajTerminyEventis({querySelectorAll:() => [wiersz]})[0].price,oczekiwana);
+  }
+});
+
 test("odczyt formularza Eventis normalizuje polski format zakresu ONLINE", () => {
   const pola = new Map([
     ['input[name="eventDate[8][date_start]"]',{value:"14.10.2026"}],

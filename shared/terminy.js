@@ -179,7 +179,8 @@
         || wiersz.querySelector(`#eventdate_is_online_${identyfikator}`)?.value;
       const opisTrybu = wiersz.querySelector(`select[name="eventDate[${identyfikator}][is_online]"]`)?.selectedOptions?.[0]?.textContent || "";
       const lokalizacja = tryb === "1" || /\bonline\b/.test(normalizuj(`${tryb || ""} ${opisTrybu}`)) ? "Online" : (miasto || informacja);
-      const cena = Number(wiersz.querySelector('input[name*="[price]"]')?.value || 0) || null;
+      const surowaCena = String(wiersz.querySelector('input[name*="[price]"]')?.value ?? "").replace(/\s/g,"").replace(",",".");
+      const cena = surowaCena && Number.isFinite(Number(surowaCena)) ? Number(surowaCena) : null;
       const znormalizowanyPoczatek = zakresDatZTresci(poczatek)?.start || poczatek;
       const znormalizowanyKoniec = zakresDatZTresci(koniec)?.end || koniec;
       if (poczatek) terminy.push({start:znormalizowanyPoczatek,end:znormalizowanyKoniec,city:String(lokalizacja).replace(/\s+/g," ").trim(),price:cena,row:wiersz,id:identyfikator});

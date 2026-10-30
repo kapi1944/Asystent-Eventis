@@ -405,10 +405,11 @@ test("rzeczywisty DOM: osobny div CKEditora i pola _post trafiają do danych for
       zrodlo.ckeditorInstance.setData(miejsce === "model" ? "<p>Własny program</p>" : "");
       document.getElementById("plan_post").value = miejsce === "pole" ? "<p>Własny program</p>" : "";
     },miejsce);
-    const przed = await strona.locator("form").innerHTML();
+    const przed = await strona.locator("#plan + .ck-editor__editable").innerHTML();
     const wynik = await wyslij({type:"SET_RICH_FIELD",name:"event[plan]",html:"<p>Program SEMPER</p>",tylkoPuste:true});
     assert.equal(wynik.pominieto,true);
-    assert.equal(await strona.locator("form").innerHTML(),przed);
+    assert.equal(await strona.locator("#plan + .ck-editor__editable").innerHTML(),przed);
+    assert.equal(await strona.locator("#plan_post").inputValue(),"<p>Własny program</p>");
   }
   await strona.evaluate(() => {
     document.getElementById("plan").ckeditorInstance.setData("<p>&nbsp;<br></p>");
@@ -579,10 +580,10 @@ test("dodawanie i edycja przekazują czas trwania i cztery opisy do właściwych
     await uzupelnij({title:"Szkolenie",opisy:{celHtml:"Cel",korzysciHtml:"Korzyści",grupaHtml:"Grupa",programHtml:"Program"}},[{}]);
     assert.deepEqual(wywolania,[
       ["event[hours]","<p>2 dni</p>",tryb === "edit"],
-      ["event[information]","Cel",false],
-      ["event[reason]","Korzyści",false],
-      ["event[forWho]","Grupa",false],
-      ["event[plan]","Program",false]
+      ["event[information]","Cel",true],
+      ["event[reason]","Korzyści",true],
+      ["event[forWho]","Grupa",true],
+      ["event[plan]","Program",true]
     ]);
     assert.equal(tytul.value,tryb === "add" ? "Szkolenie" : undefined);
   }

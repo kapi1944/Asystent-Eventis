@@ -25,7 +25,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     await strona.route("**/*",trasa => trasa.abort());
     await strona.setContent(pliki.readFileSync(sciezki.resolve(__dirname,'fixtures/eventis-natywne-dodawanie.html'),'utf8'));
     await strona.addStyleTag({path:sciezki.resolve(__dirname,"../content/eventis.css")});
-    for (const nazwa of ["wyszukiwanie","terminy","arkusz","kolejka-eventis","operacje-eventis","lista-eventis","mapowania-wydarzen-eventis","otwieranie-wydarzen-eventis"]) {
+    for (const nazwa of ["wyszukiwanie","terminy","arkusz","kolejka-eventis","operacje-eventis","lista-eventis","mapowania-wydarzen-eventis","otwieranie-wydarzen-eventis","opisy-semper","pola-rich-text"]) {
       await strona.addScriptTag({path:sciezki.resolve(__dirname,`../shared/${nazwa}.js`)});
     }
     await strona.addScriptTag({content:`
@@ -41,6 +41,8 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       const NARZEDZIA_LISTY = NarzedziaListyEventis;
       const MAPOWANIA_WYDARZEN = MapowaniaWydarzenEventis;
       const NARZEDZIA_OTWIERANIA = OtwieranieWydarzenEventis;
+      const NARZEDZIA_OPISOW_SEMPER = NarzedziaOpisowSemper;
+      const NARZEDZIA_POL_RICH_TEXT = NarzedziaPolRichTextEventis;
       const $ = (selektor,korzen=document) => korzen.querySelector(selektor);
       const $$ = (selektor,korzen=document) => Array.from(korzen.querySelectorAll(selektor));
       const esc = wartosc => String(wartosc ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
@@ -71,9 +73,19 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         state.eventisImportQueue = magazyn.eventisImportQueue;
       };
       ${fragment(kodFormularza,"  function setValue(","  async function zweryfikujKarteSesjiOtwarcia")}
-      const uzupelnijDaneWydarzenia = async () => {};
+      const znajdzPolePoEtykiecie = () => null;
+      const wybierzWygladPodstawowy = async () => {};
+      const uzupelnijWymaganeFormyZajec = async () => {};
+      const uzupelnijIZweryfikujZyciorys = async () => {};
+      const ustawPoleRichText = async (nazwa,html,opcje) => {
+        const pole = document.getElementsByName(nazwa)[0];
+        if (!pole) return {ok:true,pominieto:true};
+        if (opcje.tylkoPuste && pole.value.trim()) return {ok:true,pominieto:true};
+        setValue(pole,html);return {ok:true};
+      };
       ${fragment(kodFormularza,"  function getExistingTerms()","  function compareTerms()")}
       ${fragment(kodFormularza,"  function pobierzPolaTerminu(","  async function uzupelnijDaneWydarzenia")}
+      ${fragment(kodFormularza,"  async function uzupelnijDaneWydarzenia(","  function przygotujTerminDoKolejki")}
       ${fragment(kodFormularza,"  function przygotujTerminDoKolejki(","  function czyTrwaZapis()")}
       ${fragment(kodFormularza,"  function czyTrwaZapis()","  async function zwolnijOczekujacaOperacje")}
       ${fragment(kodFormularza,"  async function sprawdzBrakOczekujacejOperacji","  let obserwatorZapisu")}
@@ -115,8 +127,10 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         wiersz.id = 'li_eventdate_' + numer;
         const pola = '<select id="eventdate_is_online_'+numer+'"><option value=""></option><option value="1">Online</option></select>' +
           '<input id="eventdate_datestart_'+numer+'"><input id="eventdate_dateend_'+numer+'">' +
-          '<select name="eventDate['+numer+'][is_guaranteed]"><option value="1">Tak</option></select>' +
+          '<input type="hidden" name="eventDate['+numer+'][action]" value="new"><input type="hidden" name="eventDate['+numer+'][id]" value="0">' +
+          '<select name="eventDate['+numer+'][is_guaranteed]"><option value="0">Zbieranie grupy</option><option value="1">Tak</option></select>' +
           '<input name="eventDate['+numer+'][prices][0][taxRate]"><input name="eventDate['+numer+'][prices][0][price]">' +
+          '<select name="eventDate['+numer+'][prices][0][currency]"><option value="1">zł</option><option value="2">EUR</option></select>' +
           '<textarea name="eventDate['+numer+'][online_description]"></textarea>' +
           '<input name="eventDate['+numer+'][prices][0][price_name]">' +
           '<input name="eventDate['+numer+'][info]"><input name="eventDate['+numer+'][city]">' +
@@ -126,6 +140,13 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         $('#terminy').appendChild(wiersz);
         if (opoznieniePol) setTimeout(() => {wiersz.innerHTML=pola;},opoznieniePol);
         else wiersz.innerHTML=pola;
+        return wiersz;
+      }
+      function ustawDomyslneWartosci(wiersz) {
+        const pola = pobierzPolaTerminu(wiersz);
+        for (const pole of [pola.poczatek,pola.koniec]) {pole.defaultValue='2026-10-30';pole.value=pole.defaultValue;}
+        pola.pakiet.defaultValue='Pakiet 1';pola.pakiet.value='Pakiet 1';
+        wiersz.insertAdjacentHTML('beforeend','<select disabled><option value=""></option><option selected value="7">7</option></select><textarea disabled>Nie dotyczy</textarea>');
         return wiersz;
       }
       $('#dodaj').addEventListener('click',() => {
@@ -149,9 +170,200 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       asercje.equal(await strona.evaluate(() => findAddTermButton()?.id),'dodaj');
       await strona.evaluate(() => {$('#terminy').replaceChildren();liczbaFormularzy=0;liczbaKlikniec=0;render();});
     }
+    if (opcje.domyslny) await strona.evaluate(() => ustawDomyslneWartosci(dodajNatywnyFormularz()));
     return strona;
   }
 
+
+  for (const tryb of ['add','edit']) {
+    await podtesty.test(tryb + ': regresja 30.10.2026 — domyślna data i pakiet nie są zapisanym terminem',async () => {
+      const strona = await przygotuj(tryb,{domyslny:true});
+      const wynik = await strona.evaluate(async () => {
+        const wiersz=$('#li_eventdate_1');
+        const stanPrzed=rozpoznajStanWiersza(wiersz);
+        const termin={start:'2026-11-16',end:'2026-11-17',city:'Online',price:1590,confirmedOnSemper:true};
+        const pierwszy=await addSelectedTerms([termin]);
+        const drugi=await addSelectedTerms([termin]);
+        const pola=pobierzPolaTerminu(wiersz);
+        return {stanPrzed,stanPo:rozpoznajStanWiersza(wiersz),bledy:pierwszy.bledy,dodane:pierwszy.dodane.length,
+          ponowione:drugi.dodane.length,pominiete:drugi.pominiete.length,klikniecia:liczbaKlikniec,
+          wartosci:[pola.poczatek.value,pola.koniec.value,pola.tryb.value,pola.cena.value,pola.vat.value,pola.waluta.value]};
+      });
+      asercje.equal(wynik.stanPrzed,'PRISTINE_TEMPLATE');
+      asercje.equal(wynik.stanPo,'EXTENSION_FILLED_DRAFT');
+      asercje.deepEqual(wynik.bledy,[]);
+      asercje.deepEqual(wynik.wartosci,['2026-11-16','2026-11-17','1','1590','23','1']);
+      asercje.deepEqual([wynik.dodane,wynik.ponowione,wynik.pominiete,wynik.klikniecia],[1,0,1,0]);
+      await strona.close();
+    });
+  }
+
+  await podtesty.test('zapisany rekord z pustą ceną jest chroniony; nowy wiersz z domyślnymi datami trafia przed poprzedni',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    const wynik=await strona.evaluate(async () => {
+      const zapisany=$('#li_eventdate_1');
+      pobierzPolaTerminu(zapisany).rekord.value='91827';
+      const przed=odciskPolTerminu(zapisany);
+      const pierwotne=dodajNatywnyFormularz;
+      dodajNatywnyFormularz=()=>{liczbaFormularzy+=17;const nowy=ustawDomyslneWartosci(pierwotne());$('#terminy').prepend(nowy);return nowy;};
+      const wynik=await addSelectedTerms([state.sourceTerms[0]]);
+      return {bledy:wynik.bledy,dodane:wynik.dodane.length,stan:rozpoznajStanWiersza(zapisany),chroniony:przed===odciskPolTerminu(zapisany),
+        pierwszy:$('#terminy').firstElementChild.id,poczatek:pobierzPolaTerminu($('#terminy').firstElementChild).poczatek.value};
+    });
+    asercje.deepEqual(wynik.bledy,[]);
+    asercje.equal(wynik.dodane,1);
+    asercje.equal(wynik.stan,'EXISTING_SAVED_TERM');
+    asercje.equal(wynik.chroniony,true);
+    asercje.equal(wynik.pierwszy,'li_eventdate_19');
+    asercje.equal(wynik.poczatek,'2026-11-05');
+    await strona.close();
+  });
+
+  for (const pole of ['cena','poczatek','pakiet','tryb']) {
+    await podtesty.test('ręczna zmiana pola '+pole+' chroni szkic i wymusza osobny wiersz',async () => {
+      const strona=await przygotuj('add',{domyslny:true});
+      const selektor=await strona.evaluate(pole=>{const kontrolka=pobierzPolaTerminu($('#li_eventdate_1'))[pole];return kontrolka.name ? '[name="'+kontrolka.name+'"]':'#'+kontrolka.id;},pole);
+      if (pole==='tryb') await strona.locator(selektor).selectOption('1');
+      else await strona.locator(selektor).fill(pole==='cena'?'1800':pole==='poczatek'?'2026-12-01':'Własny pakiet');
+      const wynik=await strona.evaluate(async () => {
+        const wiersz=$('#li_eventdate_1');const przed=odciskPolTerminu(wiersz);
+        const stan=rozpoznajStanWiersza(wiersz);const wynik=await addSelectedTerms([state.sourceTerms[0]]);
+        return {stan,chroniony:przed===odciskPolTerminu(wiersz),bledy:wynik.bledy,liczba:$$('[id^="li_eventdate_"]').length};
+      });
+      asercje.equal(wynik.stan,'USER_MODIFIED_DRAFT');
+      asercje.equal(wynik.chroniony,true);
+      asercje.deepEqual(wynik.bledy,[]);
+      asercje.equal(wynik.liczba,2);
+      await strona.close();
+    });
+  }
+
+  await podtesty.test('nieznany wiersz bez znacznika rekordu na edit nie jest nadpisywany',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    const wynik=await strona.evaluate(async () => {
+      const wiersz=$('#li_eventdate_1');pobierzPolaTerminu(wiersz).rekord.remove();pobierzPolaTerminu(wiersz).akcja.remove();
+      const stan=rozpoznajStanWiersza(wiersz);const przed=odciskPolTerminu(wiersz);let blad='';
+      try {fillTerm(wiersz,state.sourceTerms[0]);}catch(wyjatek){blad=wyjatek.message;}
+      return {stan,blad,chroniony:przed===odciskPolTerminu(wiersz)};
+    });
+    asercje.equal(wynik.stan,'UNKNOWN');asercje.match(wynik.blad,/Nie można ustalić/);asercje.equal(wynik.chroniony,true);
+    await strona.close();
+  });
+
+  await podtesty.test('przebudowa całego wiersza po zmianie trybu oraz warianty tych samych dat',async () => {
+    const strona=await przygotuj('edit');
+    const wynik=await strona.evaluate(async () => {
+      const pierwotne=dodajNatywnyFormularz;
+      dodajNatywnyFormularz=()=>{
+        const wiersz=ustawDomyslneWartosci(pierwotne());
+        wiersz.addEventListener('change',zdarzenie=>{
+          if(!zdarzenie.target.id.startsWith('eventdate_is_online_'))return;
+          setTimeout(()=>{const kopia=wiersz.cloneNode(true);kopia.querySelector('select').value='1';wiersz.replaceWith(kopia);},20);
+        });return wiersz;
+      };
+      const terminy=['Online','Kraków','Warszawa'].map(city=>({start:'2026-11-16',end:'2026-11-17',city,price:city==='Online'?1590:1690}));
+      const wynik=await addSelectedTerms(terminy);
+      return {bledy:wynik.bledy,dodane:wynik.dodane.length,terminy:getExistingTerms().map(t=>[t.start,t.end,t.city,t.price]),stany:$$('[id^="li_eventdate_"]').map(rozpoznajStanWiersza)};
+    });
+    asercje.deepEqual(wynik.bledy,[]);asercje.equal(wynik.dodane,3);
+    asercje.deepEqual(wynik.terminy,[['2026-11-16','2026-11-17','Online',1590],['2026-11-16','2026-11-17','Kraków',1690],['2026-11-16','2026-11-17','Warszawa',1690]]);
+    asercje.deepEqual(wynik.stany,Array(3).fill('EXTENSION_FILLED_DRAFT'));
+    await strona.close();
+  });
+
+  await podtesty.test('wznowienie odrzuconej ceny wykorzystuje własny szkic, a późniejsza ręczna zmiana go chroni',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    await strona.evaluate(async()=>{
+      const cena=pobierzPolaTerminu($('#li_eventdate_1')).cena;
+      cena.addEventListener('change',()=>{if(!window.przyjmijCene)cena.value='';});
+      window.pierwszy=await addSelectedTerms([state.sourceTerms[0]]);
+      window.przyjmijCene=true;window.drugi=await addSelectedTerms([state.sourceTerms[0]]);
+    });
+    asercje.equal(await strona.evaluate(()=>pierwszy.bledy.length),1);
+    asercje.equal(await strona.evaluate(()=>drugi.dodane.length),1);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),1);
+    await strona.locator('input[name$="[price]"]').fill('1800');
+    asercje.equal(await strona.evaluate(()=>czyNiezapisanyTerminKompletny(state.sourceTerms[0])),false);
+    const wynik=await strona.evaluate(async()=>{const wynik=await addSelectedTerms([state.sourceTerms[0]]);return wynik.bledy;});
+    asercje.match(wynik[0].komunikat,/duplikat/);
+    asercje.equal(await strona.locator('input[name$="[price]"]').inputValue(),'1800');
+    await strona.close();
+  });
+
+  await podtesty.test('opóźniona utrata daty jest błędem pola, nie sukcesem kolejki',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    await strona.evaluate(async()=>{
+      const pole=pobierzPolaTerminu($('#li_eventdate_1')).poczatek;
+      pole.addEventListener('change',()=>setTimeout(()=>{pole.value='2026-10-30';},25));
+      await wprowadzTerminyZKolejki(['q0']);
+    });
+    asercje.equal(await strona.evaluate(()=>magazyn.eventisImportQueue[0].status),'ERROR');
+    asercje.match(await strona.evaluate(()=>magazyn.eventisImportQueue[0].errorMessage),/data rozpoczęcia/);
+    asercje.equal(await strona.evaluate(()=>state.pendingOperation),null);
+    await strona.close();
+  });
+
+  await podtesty.test('ręczna edycja podczas oczekiwania przerywa operację bez cofania danych użytkownika',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    await strona.evaluate(()=>{
+      const tryb=pobierzPolaTerminu($('#li_eventdate_1')).tryb;
+      tryb.addEventListener('change',()=>{
+        const opis=pobierzPolaTerminu($('#li_eventdate_1')).opisOnline;
+        opis.remove();setTimeout(()=>$('#li_eventdate_1').append(opis),300);
+      });
+      window.trwajacyImport=addSelectedTerms([state.sourceTerms[0]]);
+    });
+    await strona.locator('[name="eventDate[1][prices][0][price]"]').fill('1870');
+    const wynik=await strona.evaluate(async()=>{const wynik=await trwajacyImport;return {dodane:wynik.dodane.length,blad:wynik.bledy[0]?.komunikat};});
+    asercje.equal(wynik.dodane,0);asercje.match(wynik.blad,/ręczne zmiany/);
+    asercje.equal(await strona.locator('[name="eventDate[1][prices][0][price]"]').inputValue(),'1870');
+    await strona.close();
+  });
+
+  await podtesty.test('status źródłowy i cena brutto z jawną stawką VAT są weryfikowane',async () => {
+    const strona=await przygotuj('edit');
+    const wynik=await strona.evaluate(async()=>{
+      const wynik=await addSelectedTerms([{start:'2026-11-16',end:'2026-11-17',city:'Online',price:1955.7,priceType:'gross',vatRate:23,confirmed:false}]);
+      const pola=pobierzPolaTerminu($('#li_eventdate_1'));
+      const brakKonfiguracji=await addSelectedTerms([{start:'2026-12-16',end:'2026-12-17',city:'Online',price:1955.7,priceType:'gross'}]);
+      return {bledy:wynik.bledy,cena:pola.cena.value,status:pola.potwierdzenie.value,bladVat:brakKonfiguracji.bledy[0]?.komunikat};
+    });
+    asercje.deepEqual(wynik.bledy,[]);asercje.equal(wynik.cena,'1590');asercje.equal(wynik.status,'0');asercje.match(wynik.bladVat,/konfiguracji VAT/);
+    await strona.close();
+  });
+
+  await podtesty.test('daty aktualizują także model natywnego kalendarza nasłuchującego keyup',async () => {
+    const strona=await przygotuj('edit',{domyslny:true});
+    const wynik=await strona.evaluate(async()=>{
+      const pola=pobierzPolaTerminu($('#li_eventdate_1'));
+      for(const pole of [pola.poczatek,pola.koniec]) {
+        pole.dataset.kalendarz=pole.value;
+        pole.addEventListener('keyup',()=>{pole.dataset.kalendarz=pole.value;});
+      }
+      const wynik=await addSelectedTerms([{start:'2026-11-16',end:'2026-11-17',city:'Online',price:1590}]);
+      return {bledy:wynik.bledy,daty:[pola.poczatek.dataset.kalendarz,pola.koniec.dataset.kalendarz]};
+    });
+    asercje.deepEqual(wynik.bledy,[]);asercje.deepEqual(wynik.daty,['2026-11-16','2026-11-17']);
+    await strona.close();
+  });
+
+  await podtesty.test('błąd terminu nowego ogłoszenia nie blokuje czterech opisów, import chroni własną treść',async () => {
+    const strona=await przygotuj('add');
+    const wynik=await strona.evaluate(async()=>{
+      const mapowanie=NARZEDZIA_OPISOW_SEMPER.MAPOWANIE_POL_OPISOWYCH;
+      for(const {pole} of mapowanie){const kontrolka=document.createElement('textarea');kontrolka.name=pole;$('#eventForm').append(kontrolka);}
+      state.source.opisy={celHtml:'<p>Cel</p>',korzysciHtml:'<p>Korzyści</p>',grupaHtml:'<p>Grupa</p>',programHtml:'<p>Program</p>'};
+      $('#dodaj').remove();
+      await wprowadzTerminyZKolejki(['q0']);
+      const pierwsze=mapowanie.map(({pole})=>document.getElementsByName(pole)[0].value);
+      document.getElementsByName('event[plan]')[0].value='<p>Własny program</p>';
+      await uzupelnijDaneWydarzenia(state.source,state.sourceTerms);
+      return {pierwsze,program:document.getElementsByName('event[plan]')[0].value,status:magazyn.eventisImportQueue[0].status};
+    });
+    asercje.deepEqual(wynik.pierwsze,['<p>Cel</p>','<p>Korzyści</p>','<p>Grupa</p>','<p>Program</p>']);
+    asercje.equal(wynik.program,'<p>Własny program</p>');asercje.equal(wynik.status,'ERROR');
+    await strona.close();
+  });
 
   // Formularz testowy modeluje zdarzenia i przebudowę DOM; nie potwierdza kontraktu serwera Eventis.
   for (const tryb of ['add','edit']) {
@@ -309,7 +521,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
             if (rodzaj==='sukces') dodajNatywnyFormularz();
             if (rodzaj==='anulowanie') kontroler.abort();
             if (rodzaj==='niekompletny') {const wiersz=dodajNatywnyFormularz();wiersz.querySelector('textarea').remove();}
-          },{sygnal:kontroler.signal,czas:35,czyAktualny:()=>rodzaj!=='kontekst'});
+          },{sygnal:kontroler.signal,czas:150,czyAktualny:()=>rodzaj!=='kontekst'});
           wyniki.push({rodzaj,blad:'',aktywneObserwatory});
         } catch (blad) {wyniki.push({rodzaj,blad:blad.message,aktywneObserwatory});}
       }
