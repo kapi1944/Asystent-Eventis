@@ -1516,6 +1516,13 @@
       ustaw("vat",termin.vatRate ?? 23);
       if (pobierzPolaTerminu(formularz).waluta) ustaw("waluta","1");
       ustaw("cena",cenaNetto);
+      $$('input[type="checkbox"].event_price_contains',formularz).forEach((pole,indeks) => {
+        const zaznaczony = indeks < (termin.city === "Online" ? 3 : 5);
+        if (pole.checked === zaznaczony) return;
+        pole.checked = zaznaczony;
+        pole.dispatchEvent(new Event("input",{bubbles:true}));
+        pole.dispatchEvent(new Event("change",{bubbles:true}));
+      });
       zweryfikujWartosciTerminu(formularz,termin);
       zapamietajStanWiersza(formularz,"EXTENSION_FILLED_DRAFT",existingKey(termin),true);
     } catch (blad) {
@@ -2137,7 +2144,9 @@
   }
 
   function obsluzKlikniecieKolejki() {
-    wprowadzTerminyZKolejki().catch(blad => toast(blad.message));
+    const identyfikatory = gotoweDopasowaniaKolejki().filter(czyTerminKolejkiNiepotwierdzonyNaZrodle).map(dopasowanie => dopasowanie.element.id);
+    if (!identyfikatory.length) return;
+    wprowadzTerminyZKolejki(identyfikatory).catch(blad => toast(blad.message));
   }
 
   function czyNiezapisanyTerminKompletny(termin) {
@@ -2914,9 +2923,9 @@
   }
 
   function renderujPrzyciskKolejki(gotowe = gotoweDopasowaniaKolejki()) {
-    const fioletowy = gotowe.some(czyTerminKolejkiNiepotwierdzonyNaZrodle);
+    const liczba = gotowe.filter(czyTerminKolejkiNiepotwierdzonyNaZrodle).length;
     const trwa = state.trwaWprowadzanieKolejki || state.trwaWypelnianieOperacji || state.trwaDodawanieZrodla || state.trwaRozpoznawanieNatywne;
-    return `<button type="button" id="esync-add-queue-terms" class="esync-btn esync-przycisk-kolejki ${fioletowy ? 'purple' : 'good'}" aria-busy="${!!trwa}" ${!gotowe.length || trwa || czyTrwaZapis() ? 'disabled' : ''}>${trwa ? 'Wprowadzanie terminów…' : `Wprowadź terminy z kolejki (${gotowe.length})`}</button>`;
+    return `<button type="button" id="esync-add-queue-terms" class="esync-btn esync-przycisk-kolejki purple" aria-busy="${!!trwa}" ${!liczba || trwa || czyTrwaZapis() ? 'disabled' : ''}>${trwa ? 'Wprowadzanie terminów…' : `Wprowadź terminy z kolejki (${liczba})`}</button>`;
   }
 
   function render() {

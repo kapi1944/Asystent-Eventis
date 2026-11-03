@@ -136,7 +136,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
           '<input name="eventDate['+numer+'][info]"><input name="eventDate['+numer+'][city]">' +
           '<select name="eventDate['+numer+'][region_id]"><option value=""></option><option value="7">Mazowieckie</option><option value="6">Małopolskie</option></select>' +
           '<select id="price_contains_materials_type_select_'+numer+'_0"><option value="1">Online</option><option value="2">Druk</option></select>' +
-          [1,2,3,4,5].map(wartosc => '<input type="checkbox" class="event_price_contains" value="'+wartosc+'">').join('');
+          Array.from({length:12},(_,indeks) => '<input type="checkbox" class="event_price_contains" value="'+(indeks+1)+'">').join('');
         $('#terminy').appendChild(wiersz);
         if (opoznieniePol) setTimeout(() => {wiersz.innerHTML=pola;},opoznieniePol);
         else wiersz.innerHTML=pola;
@@ -368,7 +368,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
   // Formularz testowy modeluje zdarzenia i przebudowę DOM; nie potwierdza kontraktu serwera Eventis.
   for (const tryb of ['add','edit']) {
     for (const wariant of ['brak','obecne','inne opcje','przebudowa']) {
-      await podtesty.test(tryb + ': materiały ' + wariant + ' nie blokują terminów i zachowują wartości',async () => {
+      await podtesty.test(tryb + ': materiały ' + wariant + ' zachowują wybór, zakres ceny obejmuje 3 pola online i 5 stacjonarnie',async () => {
         const strona = await przygotuj(tryb);
         const wynik = await strona.evaluate(async wariant => {
           opoznienieFormularza=20;
@@ -380,7 +380,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
               if(wariant==='brak') materialy.remove();
               else if(wariant==='obecne') {materialy.value='2';}
               else {materialy.innerHTML='<option value="9" selected>Wybór ręczny</option>';}
-              wiersz.querySelectorAll('.event_price_contains').forEach(pole => {pole.checked=pole.value==='5';});
+              wiersz.querySelectorAll('.event_price_contains').forEach(pole => {pole.checked=true;});
               if(wariant==='przebudowa') {
                 wiersz.querySelector('textarea').remove();
                 wiersz.addEventListener('change',zdarzenie => {
@@ -405,7 +405,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
         asercje.deepEqual(wynik.bledy,[]);
         asercje.equal(wynik.liczba,2);
         const materialy=wariant==='brak'?null:wariant==='obecne'?'2':'9';
-        asercje.deepEqual(wynik.pola,[['2026-11-04','2026-11-06','1','','1590',materialy,['5']],['2026-11-07','2026-11-08','','Kraków','1690',materialy,['5']]]);
+        asercje.deepEqual(wynik.pola,[['2026-11-04','2026-11-06','1','','1590',materialy,['1','2','3']],['2026-11-07','2026-11-08','','Kraków','1690',materialy,['1','2','3','4','5']]]);
         await strona.close();
       });
     }
@@ -846,7 +846,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     await strona.close();
   });
 
-  await podtesty.test("przycisk: fiolet, zieleń, brak gotowych, ładowanie, hover i focus",async () => {
+  await podtesty.test("przycisk: tylko fiolet, zero dla potwierdzonych na źródle, ładowanie, hover i focus",async () => {
     const strona = await przygotuj();
     const przycisk=strona.locator('#esync-add-queue-terms');
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(147, 51, 234)');
@@ -856,12 +856,30 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     await przycisk.focus();
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).outlineStyle),'solid');
     await strona.evaluate(()=>{state.sourceTerms.forEach(termin=>termin.confirmedOnSemper=true);render();});
-    asercje.equal(await przycisk.getAttribute('class'),'esync-btn esync-przycisk-kolejki good');
+    asercje.equal(await przycisk.isDisabled(),true);
+    asercje.equal(await przycisk.innerText(),'Wprowadź terminy z kolejki (0)');
+    asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(226, 232, 240)');
+    await strona.evaluate(()=>{state.sourceTerms[1].confirmedOnSemper=false;render();});
+    asercje.equal(await przycisk.isDisabled(),false);
+    asercje.equal(await przycisk.innerText(),'Wprowadź terminy z kolejki (1)');
+    asercje.equal(await przycisk.getAttribute('class'),'esync-btn esync-przycisk-kolejki purple');
     await strona.evaluate(()=>{state.trwaWprowadzanieKolejki=true;render();});
     asercje.equal(await przycisk.isDisabled(),true);
     asercje.equal(await przycisk.getAttribute('aria-busy'),'true');
     await strona.evaluate(()=>{state.trwaWprowadzanieKolejki=false;state.eventisImportQueue=[];render();});
     asercje.equal(await przycisk.isDisabled(),true);
+    await strona.close();
+  });
+
+  await podtesty.test("kliknięcie kolejki pomija terminy już potwierdzone na źródle",async () => {
+    const strona = await przygotuj();
+    await strona.evaluate(()=>{state.sourceTerms[0].confirmedOnSemper=true;render();});
+    await strona.locator('#esync-add-queue-terms').click();
+    await strona.waitForFunction(()=>state.status==='FORM_FILLED');
+    asercje.deepEqual(await strona.evaluate(()=>magazyn.eventisImportQueue.map(wpis=>wpis.status)),['PENDING','WAITING_FOR_SAVE','WAITING_FOR_SAVE']);
+    asercje.equal(await strona.locator('#esync-add-queue-terms').innerText(),'Wprowadź terminy z kolejki (0)');
+    asercje.equal(await strona.locator('#esync-add-queue-terms').isDisabled(),true);
+    asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),2);
     await strona.close();
   });
 
