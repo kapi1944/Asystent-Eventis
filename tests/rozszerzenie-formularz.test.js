@@ -11,11 +11,18 @@ const wyszukiwanie = require("../shared/wyszukiwanie");
 test("Manifest V3: persistent context, źródło → kolejka → dynamiczny formularz, bez zapisu i sieci produkcyjnej",async podtest => {
   const profil = pliki.mkdtempSync(sciezki.join(require("node:os").tmpdir(),"eventis-regresja-mv3-"));
   const rozszerzenie = sciezki.resolve(__dirname,"..");
+  const kanal = process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge";
   const kontekst = await przegladarkaChromium.launchPersistentContext(profil,{
-    channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true,
+    channel:kanal,headless:true,
     ignoreDefaultArgs:["--disable-extensions"],
-    args:[`--disable-extensions-except=${rozszerzenie}`,`--load-extension=${rozszerzenie}`]
+    args:kanal === "chrome" ? ["--enable-unsafe-extension-debugging"]
+      : [`--disable-extensions-except=${rozszerzenie}`,`--load-extension=${rozszerzenie}`]
   });
+  if (kanal === "chrome") {
+    const sesja = await kontekst.browser().newBrowserCDPSession();
+    await sesja.send("Extensions.loadUnpacked",{path:rozszerzenie});
+    await sesja.detach();
+  }
   podtest.after(async () => {
     await kontekst.close();
     const katalogTymczasowy = sciezki.resolve(require("node:os").tmpdir()) + sciezki.sep;
@@ -92,23 +99,76 @@ test("Manifest V3: persistent context, źródło → kolejka → dynamiczny form
   await strona.locator('#esync-add-queue-terms:not([disabled])').waitFor({timeout:15000}).catch(async blad=>{
     throw new Error(blad.message+' '+JSON.stringify({bledy,panel:await strona.locator('#esync-root').textContent()}));
   });
+
+  const przelacznik = strona.getByRole("switch");
+  for (const wybor of ["true","false"]) {
+    await przelacznik.focus();
+    asercje.equal(await przelacznik.evaluate(element => element === document.activeElement),true,"fokus przed zmianą źródła");
+    await strona.keyboard.press("Space");
+    await strona.waitForFunction(wybor => document.querySelector("#esync-org").getAttribute("aria-checked") === wybor,wybor);
+    asercje.equal(await strona.evaluate(() => document.activeElement.id),"esync-org","fokus po zmianie źródła");
+  }
+  await strona.locator('#esync-add-queue-terms:not([disabled])').waitFor();
   const odczytajZapisany = () => strona.locator('#li_eventdate_7 input,#li_eventdate_7 select,#li_eventdate_7 textarea').evaluateAll(pola=>pola.map(pole=>[pole.name,pole.value,pole.checked]));
   const zapisanyPrzed = await odczytajZapisany();
-  await strona.locator('#esync-add-queue-terms').click();
-  await strona.waitForFunction(() => document.querySelector('[name="eventDate[0][prices][0][price]"]')?.value === '1590'
-    && document.querySelector('[name="eventDate[18][prices][0][price]"]')?.value === '1690');
-  await asercje.doesNotReject(async () => {
-    await strona.waitForFunction(() => document.querySelectorAll('[data-status-zapisu="WAITING_FOR_SAVE"]').length === 2);
-  });
-  asercje.deepEqual(await odczytajZapisany(),zapisanyPrzed);
-  asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),3);
-  for (const numer of [0,18]) {
-    asercje.equal(await strona.locator(`[name="eventDate[${numer}][date_start]"]`).inputValue(),"2026-11-16");
-    asercje.equal(await strona.locator(`[name="eventDate[${numer}][date_end]"]`).inputValue(),"2026-11-17");
+
+  async function sprawdzWidok(widok) {
+    const korzen = widok.locator("#esync-root");
+    asercje.equal(await korzen.locator(".esync-znak").innerText(),"E");
+    const naglowek = korzen.locator("#esync-kolejka-ogloszenia > summary");
+    await widok.emulateMedia({reducedMotion:"reduce"});
+    await naglowek.focus();
+    const odczytajIkone = () => naglowek.evaluate(element => {
+      const styl = getComputedStyle(element,"::after");
+      return [styl.width,styl.height,styl.transformOrigin,styl.transitionDuration,styl.transform];
+    });
+    asercje.deepEqual(await odczytajIkone(),["20px","20px","10px 10px","0s","none"]);
+    await widok.keyboard.press("Space");
+    asercje.deepEqual(await odczytajIkone(),["20px","20px","10px 10px","0s","matrix(0, 1, -1, 0, 0, 0)"]);
+    asercje.equal(await naglowek.evaluate(element => getComputedStyle(element).outlineStyle),"solid");
+    for (const szerokosc of [320,360,390,768,1024,1366,1920]) {
+      await widok.setViewportSize({width:szerokosc,height:800});
+      asercje.ok(await korzen.evaluate(element => {
+        const ramka = element.getBoundingClientRect();
+        return ramka.left >= 0 && ramka.right <= innerWidth && ramka.bottom <= innerHeight;
+      }),`Panel mieści się przy ${szerokosc} px`);
+      asercje.ok(await korzen.locator(".esync-body").evaluate(element => element.scrollWidth <= element.clientWidth),`Brak poziomego przewijania przy ${szerokosc} px`);
+      asercje.equal(await korzen.getByRole("button",{name:"Wprowadź terminy z kolejki (1)"}).isVisible(),true);
+    }
+    await naglowek.focus();
+    await widok.keyboard.press("Enter");
+    asercje.equal(await naglowek.evaluate(element => element.parentElement.open),false);
   }
+  await sprawdzWidok(strona);
+
+  const panel = await kontekst.newPage();
+  await panel.setContent('<nav><button id="plywajacy">Panel pływający</button><span id="komunikat" role="status"></span></nav><aside id="esync-root"></aside>');
+  for (const styl of ["content/eventis.css","content/akcja-panelu.css","content/porownanie-tytulow.css","sidepanel.css"]) {
+    await panel.addStyleTag({path:sciezki.join(rozszerzenie,styl)});
+  }
+  await strona.bringToFront();
+  await panel.exposeFunction("przekazDoKartyTestowej",wiadomosc => pracownik.evaluate(async wiadomosc => {
+    const [karta] = await chrome.tabs.query({url:"https://eventis.pl/event/edit/123"});
+    return {...await chrome.tabs.sendMessage(karta.id,wiadomosc),identyfikatorKarty:karta.id};
+  },wiadomosc));
+  await panel.evaluate(() => { window.chrome = {runtime:{sendMessage:({wiadomosc}) => window.przekazDoKartyTestowej(wiadomosc)}}; });
+  await panel.addScriptTag({path:sciezki.join(rozszerzenie,"sidepanel.js")});
+  await panel.locator('#esync-add-queue-terms:not([disabled])').waitFor();
+  await sprawdzWidok(panel);
+  await panel.locator("#esync-add-queue-terms").click();
+  await panel.waitForFunction(() => document.querySelectorAll('[data-status-zapisu="WAITING_FOR_SAVE"]').length === 1);
+  await panel.evaluate(() => window.przekazDoKartyTestowej({type:"ZAMKNIETO_PANEL_BOCZNY"}));
+  await panel.close();
+
+  await strona.waitForFunction(() => document.querySelector('[name="eventDate[0][prices][0][price]"]')?.value === '1690');
+  await strona.waitForFunction(() => document.querySelectorAll('[data-status-zapisu="WAITING_FOR_SAVE"]').length === 1);
+  asercje.deepEqual(await odczytajZapisany(),zapisanyPrzed);
+  asercje.equal(await strona.locator('[id^="li_eventdate_"]').count(),2);
+  asercje.equal(await strona.locator('[name="eventDate[0][date_start]"]').inputValue(),"2026-11-16");
+  asercje.equal(await strona.locator('[name="eventDate[0][date_end]"]').inputValue(),"2026-11-17");
   asercje.equal(await strona.locator('[name="event[plan]"]').inputValue(),"<p>Program testowy</p>");
   const stan = await pracownik.evaluate(async () => chrome.storage.local.get(["eventisImportQueue","pendingOperations"]));
-  asercje.deepEqual(stan.eventisImportQueue.map(element=>element.status),["WAITING_FOR_SAVE","WAITING_FOR_SAVE"]);
+  asercje.deepEqual(stan.eventisImportQueue.map(element=>element.status),["PENDING","WAITING_FOR_SAVE"]);
   asercje.equal(Object.values(stan.pendingOperations)[0].status,"WAITING_FOR_SAVE");
   asercje.deepEqual(probyZapisu,[]);
 });

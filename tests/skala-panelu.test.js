@@ -3,7 +3,7 @@ const test=require('node:test');
 const asercje=require('node:assert/strict');
 const {chromium:przegladarki}=require('playwright');
 test('skala: zakres, krok, reset, pamięć trybów i rzeczywisty układ DOM',async () => {
- const przegladarka=await przegladarki.launch({channel:'msedge',headless:true});
+ const przegladarka=await przegladarki.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || 'msedge',headless:true});
  try {
  const strona=await przegladarka.newPage({viewport:{width:1000,height:800}});
  await strona.route('**/*',trasa=>trasa.abort());

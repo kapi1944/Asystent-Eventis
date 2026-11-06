@@ -42,6 +42,7 @@
     try {
       if (identyfikatorOkna === null && chrome.windows?.getCurrent) identyfikatorOkna = (await chrome.windows.getCurrent()).id;
       const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
+      if (trwaAkcja || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
       if (!widok?.ok) throw new Error(widok?.error || "Otwórz kartę Eventis.");
       komunikat.textContent = widok.komunikat || "";
       const skala = typeof widok.skala === "number" && Number.isFinite(widok.skala) ? Math.max(60,Math.min(140,widok.skala)) : 100;
@@ -49,13 +50,17 @@
       if (widok.html !== ostatniHtml || identyfikatorKarty !== widok.identyfikatorKarty) {
         const przewiniecie = window.scrollY;
         const przewiniecieListy = korzen.querySelector(".esync-body")?.scrollTop || 0;
+        const aktywny = document.activeElement;
+        const taSamaKarta = identyfikatorKarty === widok.identyfikatorKarty;
+        const aktywnyId = taSamaKarta && korzen.contains(aktywny)
+          ? aktywny.id || aktywny.closest("summary")?.parentElement.id : "";
         const selektorPozycji = "[data-klucz-karty],.esync-termin-kolejki,.esync-import-row";
         const poprzedniePozycje = Array.from(korzen.querySelectorAll(selektorPozycji));
         korzen.innerHTML = widok.html;
         const nowePozycje = Array.from(korzen.querySelectorAll(selektorPozycji));
         const znajdzPozycje = element => nowePozycje.find(nowy => nowy.matches(element.dataset.kluczKarty ? "[data-klucz-karty]" : element.matches(".esync-import-row") ? ".esync-import-row" : ".esync-termin-kolejki") && kluczPozycji(nowy) === kluczPozycji(element));
         const znikajace = [];
-        if (identyfikatorKarty === widok.identyfikatorKarty) {
+        if (taSamaKarta && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
           for (const element of poprzedniePozycje) {
             if (!kluczPozycji(element) || znajdzPozycje(element)) continue;
             const karta = element.parentElement.closest("[data-klucz-karty]");
@@ -65,13 +70,17 @@
             if (!rodzic) continue;
             const kopia = element.cloneNode(true);
             kopia.setAttribute("aria-hidden","true");
+            kopia.inert = true;
             kopia.style.overflow = "hidden";
-            kopia.querySelectorAll(selektor).forEach(pole => { pole.disabled = true; });
             rodzic.insertBefore(kopia,nastepny || null);
             znikajace.push(kopia);
           }
         }
         ostatniHtml = widok.html;
+        if (aktywnyId) {
+          const odtworzony = korzen.querySelector(`#${CSS.escape(aktywnyId)}`);
+          (aktywny.matches("summary") ? odtworzony?.querySelector(":scope > summary") : odtworzony)?.focus({preventScroll:true});
+        }
         const lista = korzen.querySelector(".esync-body");
         if (lista) lista.scrollTop = przewiniecieListy;
         window.scrollTo(0,przewiniecie);

@@ -64,8 +64,12 @@
       && !document.querySelector("#esync-root")) {
     const korzen = document.createElement("aside");
     korzen.id = "esync-root";
-    korzen.innerHTML = '<div class="esync-head"><div class="esync-head-text"><div class="esync-head-title">Asystent Eventis</div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-collapse" id="esync-collapse" title="Zwiń lub rozwiń panel" aria-label="Zwiń lub rozwiń panel">−</button></div></div><div class="esync-body"><p>Otwórz listę ogłoszeń lub edycję wydarzenia, aby skorzystać z asystenta.</p><a class="esync-link" href="https://eventis.pl/company/listevents">Przejdź do listy ogłoszeń</a></div>';
-    korzen.querySelector("#esync-collapse").addEventListener("click",() => korzen.classList.toggle("esync-collapsed"));
+    korzen.innerHTML = '<div class="esync-head"><div class="esync-head-text"><span class="esync-znak" aria-hidden="true">E</span><div class="esync-head-title">Asystent Eventis</div></div><div class="esync-head-actions"><button type="button" class="esync-icon-btn esync-collapse" id="esync-collapse" aria-controls="esync-tresc" aria-expanded="true" aria-label="Zwiń lub rozwiń panel">−</button></div></div><div class="esync-body" id="esync-tresc"><p>Otwórz listę ogłoszeń lub edycję wydarzenia, aby skorzystać z asystenta.</p><a class="esync-link" href="https://eventis.pl/company/listevents">Przejdź do listy ogłoszeń</a></div>';
+    korzen.querySelector("#esync-collapse").addEventListener("click",zdarzenie => {
+      const zwiniety = korzen.classList.toggle("esync-collapsed");
+      zdarzenie.currentTarget.setAttribute("aria-expanded",String(!zwiniety));
+      zdarzenie.currentTarget.textContent = zwiniety ? "+" : "−";
+    });
     document.body.appendChild(korzen);
   }
 

@@ -6,7 +6,7 @@ const {chromium:przegladarkaChromium} = require("playwright");
 test("panel zachowuje przewinięcie i najpierw wygasza, a potem zwija usuniętą kartę",async () => {
   const przegladarka = await przegladarkaChromium.launch({channel:process.env.EVENTIS_KATEGORIE_PRZEGLADARKA || "msedge",headless:true});
   try {
-    const strona = await przegladarka.newPage({viewport:{width:400,height:650}});
+    const strona = await przegladarka.newPage({viewport:{width:400,height:650},reducedMotion:"no-preference"});
     await strona.setContent('<nav><button id="plywajacy">Panel</button><span id="komunikat"></span></nav><aside id="esync-root"></aside>');
     await strona.addStyleTag({path:"content/eventis.css"});
     await strona.addStyleTag({path:"content/akcja-panelu.css"});
@@ -18,6 +18,12 @@ test("panel zachowuje przewinięcie i najpierw wygasza, a potem zwija usuniętą
       window.odswiezPanel = null;
       window.setInterval = funkcja => { window.odswiezPanel = funkcja; };
       window.chrome = {runtime:{sendMessage:async()=>window.widok}};
+      const animuj = Element.prototype.animate;
+      Element.prototype.animate = function(...argumenty) {
+        const animacja = animuj.apply(this,argumenty);
+        animacja.pause();
+        return animacja;
+      };
     });
     await strona.addScriptTag({path:"sidepanel.js"});
     await strona.waitForSelector('[data-klucz-karty="3"]');
@@ -30,18 +36,28 @@ test("panel zachowuje przewinięcie i najpierw wygasza, a potem zwija usuniętą
       await window.odswiezPanel();
     });
     asercje.equal(await strona.locator(".esync-body").evaluate(element=>element.scrollTop),450);
-    await strona.locator('[data-klucz-karty="3"]').evaluate(element => { const animacja = element.getAnimations()[0]; animacja.pause(); animacja.currentTime = 90; });
+    await strona.locator('[data-klucz-karty="3"]').evaluate(element => { element.getAnimations()[0].currentTime = 90; });
     const wygaszanie = await strona.locator('[data-klucz-karty="3"]').evaluate(element=>({wysokosc:element.getBoundingClientRect().height,przezroczystosc:Number(getComputedStyle(element).opacity)}));
     asercje.equal(wygaszanie.wysokosc,160);
     asercje.ok(wygaszanie.przezroczystosc<1);
     await strona.locator('[data-klucz-karty="3"]').evaluate(element => element.getAnimations()[0].finish());
     await strona.waitForFunction(() => document.querySelector('[data-klucz-karty="3"]').getAnimations().length === 2);
-    await strona.locator('[data-klucz-karty="3"]').evaluate(element => { const animacja = element.getAnimations()[1]; animacja.pause(); animacja.currentTime = 120; });
+    await strona.locator('[data-klucz-karty="3"]').evaluate(element => { element.getAnimations()[1].currentTime = 120; });
     const zwijanie = await strona.locator('[data-klucz-karty="3"]').evaluate(element=>({wysokosc:element.getBoundingClientRect().height,przezroczystosc:Number(getComputedStyle(element).opacity)}));
     asercje.equal(zwijanie.przezroczystosc,0);
     asercje.ok(zwijanie.wysokosc<160);
     await strona.locator('[data-klucz-karty="3"]').evaluate(element => element.getAnimations()[1].finish());
     await strona.waitForSelector('[data-klucz-karty="3"]',{state:"detached"});
     asercje.equal(await strona.locator(".esync-body").evaluate(element=>element.scrollTop),450);
+
+    await strona.emulateMedia({reducedMotion:"reduce"});
+    await strona.evaluate(async () => {
+      const widok = document.createElement("div");
+      widok.innerHTML = window.widok.html;
+      widok.querySelector('[data-klucz-karty="4"]').remove();
+      window.widok = {...window.widok,html:widok.innerHTML,wersja:3,wartosci:Array.from({length:10},()=>({}))};
+      await window.odswiezPanel();
+    });
+    asercje.equal(await strona.locator('[data-klucz-karty="4"]').count(),0);
   } finally { await przegladarka.close(); }
 });

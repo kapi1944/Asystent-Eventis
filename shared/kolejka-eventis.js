@@ -281,11 +281,11 @@
     const nazwa = serwis === "zrodlo" ? DOZWOLONE_ORGANIZACJE.has(organizacja) ? organizacja : "ŹRÓDŁO" : "EVENTIS";
     const opisy = {
       FOUND:["green", "znaleziono"],
-      NOT_FOUND:[serwis === "zrodlo" ? "blue" : "red", serwis === "zrodlo" ? "nie znaleziono szkolenia" : "NIE ZNALEZIONO OGŁOSZENIA EVENTIS"],
+      NOT_FOUND:[serwis === "zrodlo" ? "yellow" : "red", serwis === "zrodlo" ? "nie znaleziono szkolenia" : "NIE ZNALEZIONO OGŁOSZENIA EVENTIS"],
       CREATE_NEW:["red", "wybrano utworzenie nowego ogłoszenia"],
       AMBIGUOUS:["yellow", "kilka podobnych wyników — wybierz właściwy"],
       SEARCHING:["gray", "wyszukiwanie trwa"],
-      ERROR:["gray", "Nie udało się zakończyć wyszukiwania. Spróbuj ponownie."],
+      ERROR:["red", "Nie udało się zakończyć wyszukiwania. Spróbuj ponownie."],
       UNKNOWN:["gray", "oczekuje na wyszukiwanie"]
     };
     const [klasa, opis] = opisy[status] || opisy.UNKNOWN;
@@ -305,7 +305,7 @@
 
   function opiszStatusElementu(element) {
     const opisy = {
-      PENDING:["gray", "oczekuje"], WAITING_FOR_SAVE:["blue", "🔵 Oczekuje na zapis"],
+      PENDING:["gray", "oczekuje"], WAITING_FOR_SAVE:["yellow", "🟠 Oczekuje na zapis"],
       DONE:["green", "✅ Zapisany w Eventis"], COMPLETED_EXISTING:["gray", "⚪ Już istnieje w Eventis"],
       ERROR:["red", "🔴 Błąd importu"], NEEDS_ATTENTION:["yellow", "🟠 Wymaga sprawdzenia"],
       SKIPPED:["gray", "pominięty"]

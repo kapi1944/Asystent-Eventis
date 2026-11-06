@@ -887,9 +887,9 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     const strona = await przygotuj();
     for (const organizacja of ['SEMPER','IIST']) {
       for (const [statusZrodla,statusOgloszenia,klasaZrodla,klasaOgloszenia] of [
-        ['NOT_FOUND','AUTO_MATCH','blue','green'],['FOUND','NOT_FOUND','green','red'],
-        ['NOT_FOUND','NOT_FOUND','blue','red'],['FOUND','AUTO_MATCH','green','green'],
-        ['AMBIGUOUS','AMBIGUOUS','yellow','yellow'],['ERROR','UNKNOWN','gray','gray'],['UNKNOWN','UNKNOWN','gray','gray']
+        ['NOT_FOUND','AUTO_MATCH','yellow','green'],['FOUND','NOT_FOUND','green','red'],
+        ['NOT_FOUND','NOT_FOUND','yellow','red'],['FOUND','AUTO_MATCH','green','green'],
+        ['AMBIGUOUS','AMBIGUOUS','yellow','yellow'],['ERROR','UNKNOWN','red','gray'],['UNKNOWN','UNKNOWN','gray','gray']
       ]) {
         await strona.evaluate(({organizacja,statusZrodla,statusOgloszenia})=>{
           stan.organizacja=organizacja;stan.preflight.wyniki={};
@@ -974,7 +974,29 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
       asercje.equal(wynik.statusZrodla,awaria?'ERROR':'NOT_FOUND');
       asercje.equal(wynik.sprawdzonoEventis,true);
       asercje.match(await strona.locator('.esync-pozycja-szkolenia > .esync-row > .esync-badge').nth(1).innerText(),/EVENTIS: znaleziono/);
-      asercje.equal(await strona.locator('.esync-pozycja-szkolenia > .esync-row > .esync-badge').nth(0).getAttribute('class'),`esync-badge ${awaria?'gray':'blue'}`);
+      asercje.equal(await strona.locator('.esync-pozycja-szkolenia > .esync-row > .esync-badge').nth(0).getAttribute('class'),`esync-badge ${awaria?'red':'yellow'}`);
+    }
+    await strona.close();
+  });
+
+  await podtesty.test("długi tytuł karty zawija się i zachowuje dostęp do działań przy 320 px",async () => {
+    const strona = await przygotuj();
+    await strona.setViewportSize({width:320,height:800});
+    const tytul = "Zarządzanie projektami i kontrola ryzyka ".repeat(6).trim();
+    await strona.evaluate(tytul => {
+      const pozycja = {organization:"SEMPER",sourceTitle:tytul,normalizedSourceTitle:normalize(tytul),
+        status:"AUTO_MATCH",selectedCandidate:{eventId:"123",url:"https://eventis.pl/event/edit/123"}};
+      const klucz = kluczRozstrzygniecia(pozycja);
+      stan.preflight.wyniki[klucz] = {status:"COMPLETE",statusZrodla:"FOUND",eventId:"123",
+        queueContext:{sourceUrl:"https://www.szkolenia-semper.pl/component/trainings/details/szkolenie,123.html"}};
+      $("#esync-root").innerHTML = '<div class="esync-body">' + renderujPozycjeSzkolenia(pozycja,0) + '</div>';
+    },tytul);
+    const naglowek = strona.locator(".esync-naglowek-szkolenia .esync-term-main");
+    asercje.equal(await naglowek.innerText(),tytul);
+    asercje.ok(await naglowek.evaluate(element => element.scrollWidth <= element.clientWidth
+      && element.getBoundingClientRect().height > parseFloat(getComputedStyle(element).lineHeight)));
+    for (const nazwa of ["Otwórz kartę mimo to","Pomiń otwieranie","Zmień przypisanie"]) {
+      asercje.equal(await strona.getByRole("button",{name:nazwa,exact:true}).isVisible(),true);
     }
     await strona.close();
   });
