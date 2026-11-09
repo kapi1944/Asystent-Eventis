@@ -42,7 +42,7 @@
       eventId,
       eventUrl,
       eventTitle:String(wpis.eventTitle || ""),
-      resolutionSource:["manual","exact","fuzzy"].includes(wpis.resolutionSource) ? wpis.resolutionSource : "manual",
+      resolutionSource:["manual","source-manual","exact","fuzzy"].includes(wpis.resolutionSource) ? wpis.resolutionSource : "manual",
       createdAt:String(wpis.createdAt || ""),
       updatedAt:String(wpis.updatedAt || ""),
       lastVerifiedAt:wpis.lastVerifiedAt ? String(wpis.lastVerifiedAt) : null,
@@ -70,6 +70,16 @@
   function pobierzMapowanie(magazyn, organizacja, normalizedTitle) {
     const wpis = normalizujMagazynMapowan(magazyn).entries[kluczMapowania(organizacja,normalizedTitle)];
     return wpis?.status === "ACTIVE" ? wpis : null;
+  }
+
+  function pobierzMapowaniePoIdEventis(magazyn, organizacja, eventId) {
+    const identyfikator = String(eventId || "");
+    if (!identyfikator) return null;
+    const zgodne = Object.values(normalizujMagazynMapowan(magazyn).entries).filter(wpis =>
+      wpis.status === "ACTIVE" && wpis.organization === String(organizacja || "").toUpperCase()
+      && wpis.eventId === identyfikator);
+    const tytuly = new Set(zgodne.map(wpis => wpis.normalizedTitle));
+    return tytuly.size === 1 ? zgodne.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] : null;
   }
 
   function pobierzBezpieczneMapowanie(magazyn, organizacja, normalizedTitle, sourceTitle) {
@@ -132,6 +142,7 @@
     kluczMapowania,
     normalizujMagazynMapowan,
     pobierzMapowanie,
+    pobierzMapowaniePoIdEventis,
     pobierzBezpieczneMapowanie,
     zapiszMapowanie,
     oznaczMapowanieNieprawidlowe,

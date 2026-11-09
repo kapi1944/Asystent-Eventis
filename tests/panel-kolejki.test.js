@@ -69,7 +69,7 @@ test('render zachowuje scroll kontenera i pozycję karty mimo zmiany wysokości 
 });
 test('akcje serwisowe są poza details na każdej karcie i zmiana uruchamia dotychczasowy wybór',()=>{
   const fragment=kod.slice(kod.indexOf('  function renderujPozycjeSzkolenia'),kod.indexOf('  function renderujWyniki'));
-  asercje.match(fragment,/\$\{renderujPreflight\(aktualna\)\}<div[^]*data-preflight-retry[^]*Sprawdź ponownie[^]*data-zmien-mapowanie[^]*Zmień przypisanie/);
+  asercje.match(fragment,/\$\{renderujPreflight\(aktualna\)\}<div class="esync-akcje-karty"><button[^]*data-preflight-retry[^]*Sprawdź ponownie[^]*data-zmien-mapowanie[^]*Zmień przypisanie/);
   asercje.doesNotMatch(kod,/Zmień przypisane wydarzenie/);
   asercje.match(kod,/status:"AMBIGUOUS",selectedCandidate:null,reason:"CHANGE_MAPPING"/);
   asercje.match(kod,/\["NOT_FOUND","AMBIGUOUS"\]\.includes\(pozycja.status\)/);

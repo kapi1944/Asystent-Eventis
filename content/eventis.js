@@ -63,6 +63,7 @@
     eventisId: "",
     eventisTitle: "",
     mapping: null,
+    mapowanieZListy: null,
     source: null,
     statusZrodla: "UNKNOWN",
     tytulSemperNowegoOgloszenia: "",
@@ -272,6 +273,12 @@
     state.kontekstWydarzenia = kluczKontekstuWydarzenia();
     const key = state.organization ? mappingKey(state.organization,state.eventisId) : "";
     state.mapping = key ? (data.mappings || {})[key] || null : null;
+    const mapowanieZListy = state.organization && MODE === "edit"
+      ? MAPOWANIA_WYDARZEN.pobierzMapowaniePoIdEventis(data[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN],state.organization,state.eventisId)
+      : null;
+    state.mapowanieZListy = mapowanieZListy?.resolutionSource === "manual"
+      && (!state.mapping || String(mapowanieZListy.updatedAt || "") > String(state.mapping.learnedAt || ""))
+      ? mapowanieZListy : null;
     const pendingOperations = data.pendingOperations || {};
     state.pendingOperation = state.organization ? NARZEDZIA_KOLEJKI.znajdzOperacjeDlaStrony(pendingOperations,state.organization,state.eventisId,state.eventisTitle,state.tabId) : null;
     state.eventisImportQueue = NARZEDZIA_KOLEJKI.migrujKolejke(Array.isArray(data.eventisImportQueue) ? data.eventisImportQueue : []);
@@ -498,6 +505,13 @@
     if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return false;
     await storageSet({ mappings });
     if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return false;
+    const wspolnaPamiec = await storageGet(MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN);
+    const magazynMapowan = MAPOWANIA_WYDARZEN.zapiszMapowanie(wspolnaPamiec[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN],{
+      organization:organizacja,sourceTitle:source.title,normalizedTitle:normalize(source.title),eventId:identyfikatorWydarzenia,
+      eventUrl:location.href,eventTitle:tytulWydarzenia,resolutionSource:"source-manual"
+    });
+    if (identyfikatorWyszukiwania !== state.searchRequestId || kontekst !== state.kontekstWydarzenia) return false;
+    await storageSet({[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN]:magazynMapowan});
     state.mapping = mapping;
     state.mappingVerifiedThisSession = false;
     await audit("MAPPING_LEARNED", { sourceUrl:source.url, sourceTitle:source.title, origin });
@@ -872,16 +886,16 @@
     return {...weryfikacja,rawCount:kandydaci.size,form:formularz,networkVerificationErrors:weryfikacja.networkVerificationErrors + (!weryfikacja.results.length && ostatniBlad ? 1 : 0)};
   }
 
-  async function searchTraining(identyfikator=state.searchRequestId) {
-    const warianty = NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(state.eventisTitle);
+  async function searchTraining(identyfikator=state.searchRequestId, tytul = state.eventisTitle) {
+    const warianty = NARZEDZIA_WYSZUKIWANIA.generujWariantyZapytania(tytul);
     if (!warianty.length) throw new Error("Nie odczytano wystarczająco charakterystycznego tytułu ogłoszenia Eventis.");
-    zapiszDiagnostykeWyszukiwania({provider:state.organization,eventisTitle:state.eventisTitle,variants:warianty});
+    zapiszDiagnostykeWyszukiwania({provider:state.organization,eventisTitle:tytul,variants:warianty});
     const wynik = state.organization === "SEMPER"
       ? await searchSemper(warianty,identyfikator)
       : await searchIist(warianty,identyfikator);
     zapiszDiagnostykeWyszukiwania({
       provider:state.organization,
-      eventisTitle:state.eventisTitle,
+      eventisTitle:tytul,
       variants:warianty,
       candidateCount:wynik.rawCount,
       topCandidate:wynik.results[0]?.title || null,
@@ -2446,7 +2460,7 @@
     }
   }
 
-  async function onSearch() {
+  async function onSearch(opcje = {}) {
     if (!state.organization) {
       state.searchMessage = state.statusOrganizatora === "LOADING" ? "Oczekuję na pole Firma w formularzu Eventis." : "Nie rozpoznano organizatora. Wybierz źródło szkolenia.";
       render();
@@ -2462,11 +2476,47 @@
       state.searchMessage=`Szukam szkolenia w ${state.organization}…`;
       state.titleAtSearch=state.eventisTitle;
       render();
-      const wynik=await searchTraining(identyfikator);
+      const mapowanieZListy = opcje.mapowanie || null;
+      const wynik=await searchTraining(identyfikator,mapowanieZListy?.sourceTitle || state.eventisTitle);
       sprawdzAktualnoscWyszukiwania(identyfikator);
       let pokazane=wynik.results
         .filter(kandydat=>kandydat.verificationScore>=PROGI_WYSZUKIWANIA.POKAZ_KANDYDATA)
         .slice(0,PROGI_WYSZUKIWANIA.MAKS_WYNIKOW_W_UI);
+      if (mapowanieZListy && String(mapowanieZListy.eventId) === String(state.eventisId)
+        && mapowanieZListy.organization === state.organization) {
+        const tytulZapamietany = NARZEDZIA_WYSZUKIWANIA.normalizujTytul(mapowanieZListy.sourceTitle);
+        const dokladne = wynik.results.filter(kandydat => kandydat.source
+          && kandydat.provider === state.organization
+          && NARZEDZIA_WYSZUKIWANIA.normalizujTytul(kandydat.source.title) === tytulZapamietany);
+        if (dokladne.length === 1 && wynik.rawCount === 1) {
+          if (!await useSource(dokladne[0].source,{learn:false}) || identyfikator !== state.searchRequestId) return;
+          state.sourceLoadedFromMapping = true;
+          state.status="SEARCH_HIGH";
+          state.statusZrodla="FOUND";
+          state.searchMessage="";
+          state.searchFinalReason="resolved-list-memory";
+          render();
+          return;
+        }
+        if (dokladne.length) {
+          state.searchChoices=dokladne;
+          state.status="SEARCH_MULTIPLE";
+          state.statusZrodla="AMBIGUOUS";
+          state.searchMessage="Pamięć wskazuje kilka możliwych szkoleń. Wybierz właściwe.";
+          state.searchFinalReason="resolved-list-memory-ambiguous";
+          render();
+          return;
+        }
+        if (!dokladne.length) {
+          state.status="SEARCH_WEAK";
+          state.statusZrodla="AMBIGUOUS";
+          state.searchMessage="Pamięć wskazuje tytuł szkolenia, ale nie znaleziono jednoznacznego wyniku. Wybierz źródło ręcznie.";
+          state.searchFinalReason="resolved-list-memory-unconfirmed";
+          state.searchChoices=[];
+          render();
+          return;
+        }
+      }
       if(state.organization==="IIST"&&!pokazane.length&&!wynik.networkVerificationErrors){
         state.searchMessage="Brak podobnego tytułu w IIST. Sprawdzam pomocniczo bazę SEMPER…";
         render();
@@ -2720,7 +2770,8 @@
     const organizator=state.organizatorWydarzenia || (state.statusOrganizatora==="LOADING"?"ŁADOWANIE":"NIEZNANY");
     const trybZrodla=state.sposobWyboruZrodla==="MANUAL"?"wybrano ręcznie":"wykryto automatycznie";
     const ms=mappingState();
-    const remembered=!!(mapping&&source&&(state.sourceLoadedFromMapping||czyMapowanieDotyczyZrodla(mapping,source)));
+    const remembered=!!(source&&((mapping&&(state.sourceLoadedFromMapping||czyMapowanieDotyczyZrodla(mapping,source)))
+      || (state.mapowanieZListy && NARZEDZIA_WYSZUKIWANIA.normalizujTytul(source.title) === NARZEDZIA_WYSZUKIWANIA.normalizujTytul(state.mapowanieZListy.sourceTitle))));
     const statusClass=ms.kind==="danger"?"esync-danger":ms.kind==="warning"||remembered?"esync-warning":"esync-info";
     const score=Math.round(ms.score*100);
     const wyroznioneTytuly=source
@@ -2728,7 +2779,8 @@
       : null;
     let warning="";
     if (remembered) {
-      if(ms.kind==="danger") warning=`<div class="esync-danger"><b>🔴 Podejrzane powiązanie — operacje zablokowane</b><div class="esync-small">Podobieństwo tytułów: ${score}%. Wybierz właściwe szkolenie.</div></div>`;
+      if (state.mapowanieZListy) warning=`<div class="esync-success"><b>✓ Rozpoznano z pamięci</b><div class="esync-small">Powiązanie ogłoszenia #${esc(state.eventisId)} z ${esc(state.organization)} zostało odczytane z listy.</div></div>`;
+      else if(ms.kind==="danger") warning=`<div class="esync-danger"><b>🔴 Podejrzane powiązanie — operacje zablokowane</b><div class="esync-small">Podobieństwo tytułów: ${score}%. Wybierz właściwe szkolenie.</div></div>`;
       else if(!state.mappingVerifiedThisSession) warning=`<div class="${statusClass}"><b>⚠ Zapamiętane powiązanie — sprawdź</b><div class="esync-small">Link oszczędza wyszukiwanie, ale przed zmianą Eventis porównaj oba tytuły i potwierdź zgodność.</div><div class="esync-progress"><i style="width:${score}%"></i></div><div class="esync-small">Podobieństwo tytułów: ${score}%</div></div>`;
       else warning=`<div class="esync-success"><b>✓ Powiązanie zweryfikowane w tej sesji</b><div class="esync-small">Możesz uzupełnić brakujące terminy.</div></div>`;
     }
@@ -3141,10 +3193,29 @@
     observeTitleChanges();
     obserwujOrganizatora();
     chrome.storage.onChanged.addListener((zmiany, obszar) => {
-      if (obszar !== "local" || !zmiany.eventisImportQueue) return;
-      state.eventisImportQueue = Array.isArray(zmiany.eventisImportQueue.newValue) ? zmiany.eventisImportQueue.newValue : [];
-      compareTerms();
-      render();
+      if (obszar !== "local") return;
+      if (zmiany.eventisImportQueue) {
+        state.eventisImportQueue = Array.isArray(zmiany.eventisImportQueue.newValue) ? zmiany.eventisImportQueue.newValue : [];
+        compareTerms();
+        render();
+      }
+      if (zmiany[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN] && MODE === "edit" && state.organization) {
+        const nowe = MAPOWANIA_WYDARZEN.pobierzMapowaniePoIdEventis(zmiany[MAPOWANIA_WYDARZEN.KLUCZ_STORAGE_MAPOWAN].newValue,state.organization,state.eventisId);
+        const poprzedniTytul = state.mapowanieZListy?.normalizedTitle || "";
+        const mapowanieReczne = nowe?.resolutionSource === "manual" ? nowe : null;
+        const mappingNowszy = state.mapping && String(state.mapping.learnedAt || "") >= String(mapowanieReczne?.updatedAt || "");
+        if ((nowe?.normalizedTitle || "") !== poprzedniTytul && !mappingNowszy) {
+          state.searchRequestId++;
+          state.mapowanieZListy = mapowanieReczne;
+          state.source = null;
+          state.sourceTerms = [];
+          state.sourceLoadedFromMapping = false;
+          state.status = "INIT";
+          state.statusZrodla = "UNKNOWN";
+          if (mapowanieReczne) onSearch({mapowanie:mapowanieReczne});
+          else render();
+        }
+      }
     });
     const obserwatorFormularza = new MutationObserver(zmiany => {
       if (!zmiany.some(zmiana => !zmiana.target.closest?.("#esync-root,#esync-terminy-formularza,.esync-toast"))) return;
@@ -3157,16 +3228,17 @@
     }
     if (state.organization) await inspectPendingAfterReload();
     if(state.pendingLooksSaved) render();
-    if(state.organization && state.mapping) await loadRememberedMapping();
+    if(state.organization && state.mapping && !state.mapowanieZListy) await loadRememberedMapping();
     else if (state.organization) {
+      if (state.mapowanieZListy) await onSearch({mapowanie:state.mapowanieZListy});
       // Uczymy się aliasów tylko jako sugestii: nie przypisujemy automatycznie nowego Eventis ID bez kontroli użytkownika.
       const {mappings={}}=await storageGet(["mappings"]);
       const aliases=Object.values(mappings).filter(m=>m.organization===state.organization&&m.eventisEventId!==state.eventisId).map(m=>({...m,aliasScore:titleSimilarity(state.eventisTitle,m.eventisTitle)})).filter(m=>m.aliasScore>=.93).sort((a,b)=>b.aliasScore-a.aliasScore);
-      if(aliases.length){
+      if(aliases.length&&!state.mapowanieZListy){
         state.searchChoices=aliases.slice(0,3).map(m=>({url:m.sourceUrl,title:`[z pamięci] ${m.sourceTitle}`,similarity:m.aliasScore}));
         state.status="SEARCH_CHOICES";render();
       }
-      if(MODE==="edit"&&state.eventisTitle){
+      if(!state.mapowanieZListy&&MODE==="edit"&&state.eventisTitle){
         const identyfikatorWyszukiwania = state.searchRequestId;
         const kontekst = state.kontekstWydarzenia;
         const organizacja = state.organization;

@@ -127,6 +127,38 @@
 #esync-root .esync-kolejka-ogloszenia > summary > b { display:block; padding-inline-end:25px; }
 #esync-root .esync-kolejka-ogloszenia > summary + .esync-wiersz-kolejki { border-top:0; margin-top:0; }
 
+#esync-root .esync-akcje-karty {
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:5px;
+  margin-top:7px;
+}
+#esync-root .esync-akcje-karty .esync-btn {
+  width:100%;
+  min-width:0;
+  min-height:28px;
+  padding:5px 7px;
+}
+#esync-root .esync-btn.esync-zmien-przypisanie {
+  background:#575757;
+  border-color:#575757;
+  color:#fff;
+}
+#esync-root .esync-btn.esync-zmien-przypisanie:hover { background:#484848; }
+#esync-root .esync-btn[data-preflight-open] { background:#14852b; border-color:#14852b; color:#fff; }
+#esync-root .esync-btn[data-preflight-open]:hover { background:#116f24; }
+#esync-root .esync-btn[data-preflight-skip] { background:#c92c3c; border-color:#c92c3c; color:#fff; }
+#esync-root .esync-btn[data-preflight-skip]:hover { background:#ad2432; }
+#esync-root .esync-btn[data-preflight-retry] { background:#39739d; border-color:#39739d; color:#fff; }
+#esync-root .esync-btn[data-preflight-retry]:hover { background:#305f82; }
+#esync-root :is(button,a,summary,input,select,textarea):focus-visible { outline-color:#dd8046; }
+#esync-root :is(.esync-btn,.esync-icon-btn) { transition:transform 120ms ease-out,background-color 120ms ease-out; }
+#esync-root :is(.esync-btn,.esync-icon-btn):hover:not(:disabled) { transform:scale(1.025); }
+
+@media (prefers-reduced-motion:reduce) {
+  #esync-root :is(.esync-btn,.esync-icon-btn) { transition:none; }
+}
+
 #esync-root :is(.esync-btn,.esync-icon-btn,summary):hover:not(:disabled) { box-shadow:inset 0 0 0 100vmax rgb(15 23 42 / 7%); }
 #esync-root :is(button,a,summary,input,select,textarea):focus-visible {
   outline:2px solid var(--esync-fokus);
@@ -140,6 +172,7 @@
   cursor:not-allowed;
 }
 #esync-root button[aria-busy="true"]:disabled { cursor:progress; }
+#esync-root .esync-btn.esync-przycisk-kolejki.purple:hover:not(:disabled) { background:#7e22ce; }
 
 @media (prefers-reduced-motion:reduce) {
   #esync-root details > summary::after { transition:none; }

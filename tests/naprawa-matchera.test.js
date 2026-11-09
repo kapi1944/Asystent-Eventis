@@ -77,6 +77,17 @@ test("pamięć ręcznego ID przeżywa zmianę dopisków, lecz odrzuca inny temat
   asercje.equal(mapowania.pobierzBezpieczneMapowanie(mapowania.usunMapowanie(magazyn,"SEMPER",tytulEventis),"SEMPER",tytulZrodla,tytulZrodla),null);
 });
 
+test("pamięć z listy odczytuje dokładne ID Eventis i odrzuca konflikt przypisań",() => {
+  const drugiTytul = "Zarządzanie zespołem w administracji publicznej";
+  let magazyn = mapowania.zapiszMapowanie(null,{organization:"SEMPER",sourceTitle:tytulZrodla,eventTitle:tytulEventis,eventId:"89180",eventUrl:ogloszenie.url});
+  magazyn = mapowania.zapiszMapowanie(magazyn,{organization:"SEMPER",sourceTitle:drugiTytul,eventTitle:tytulEventis,eventId:"99221",eventUrl:"https://eventis.pl/event/edit/99221"});
+  asercje.equal(mapowania.pobierzMapowaniePoIdEventis(magazyn,"SEMPER","89180").normalizedTitle,wyszukiwanie.normalizujTytul(tytulZrodla));
+  asercje.equal(mapowania.pobierzMapowaniePoIdEventis(magazyn,"SEMPER","99221").normalizedTitle,wyszukiwanie.normalizujTytul(drugiTytul));
+  asercje.equal(mapowania.pobierzMapowaniePoIdEventis(magazyn,"IIST","89180"),null);
+  magazyn = mapowania.zapiszMapowanie(magazyn,{organization:"SEMPER",sourceTitle:"Szkolenie numer trzy",eventTitle:tytulEventis,eventId:"89180",eventUrl:ogloszenie.url});
+  asercje.equal(mapowania.pobierzMapowaniePoIdEventis(magazyn,"SEMPER","89180"),null);
+});
+
 test("przycisk bieżącego ogłoszenia zapisuje ID i przypisuje grupę do otwartej karty",async () => {
   const kod = pliki.readFileSync(require.resolve("../content/eventis.js"),"utf8");
   const obsluga = kod.slice(kod.indexOf("  function bindUI() {"),kod.indexOf('    $("#esync-collapse")?.addEventListener')) + "};bindUI();";
