@@ -10,7 +10,7 @@ test('skala: zakres, krok, reset, pamięć trybów i rzeczywisty układ DOM',asy
  await strona.setContent('<form id="eventForm"><input id="natywne" value="Bez zmian"></form><aside id="esync-root"><div class="esync-head"><div class="esync-head-text">Asystent Eventis</div><div class="esync-head-actions"></div></div><div class="esync-body"><details open><summary>Kolejka</summary><input id="szkic" value="1234"><div style="height:1800px">Terminy</div></details></div></aside>');
  await strona.addStyleTag({path:'content/eventis.css'});
  await strona.evaluate(()=>{
-  window.magazyn={settings:{operatorInitial:'Z',skalePanelu:{plywajacy:100,boczny:80}}};
+  window.magazyn={eventisTrybPanelu:'plywajacy',settings:{operatorInitial:'Z',skalePanelu:{plywajacy:100,boczny:80}}};
   window.chrome={runtime:{id:'test',onMessage:{addListener:obsluga=>window.odbierz=obsluga},sendMessage:async()=>({obslugiwany:true,aktywny:true})},storage:{local:{get:async()=>structuredClone(window.magazyn),set:async dane=>{Object.assign(window.magazyn,dane);window.zmien({settings:{newValue:dane.settings}},'local');}},onChanged:{addListener:obsluga=>window.zmien=obsluga}}};
  });
  await strona.addScriptTag({path:'shared/host-panelu.js'});

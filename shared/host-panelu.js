@@ -1,8 +1,11 @@
 (() => {
   "use strict";
   const SELEKTOR_AKCJI = "button,input,textarea,select,details,a";
-  let tryb = "plywajacy";
-  let obslugiwany = false;
+  let tryb = "boczny";
+  let preferencja = "boczny";
+  let stan = "CLOSED";
+  const kontekst = `${Date.now()}:${Math.random()}`;
+  let obslugiwany = true;
   let aktywnyKontekst = false;
   let numerZapytania = 0;
   let wersja = 0;
@@ -58,7 +61,10 @@
     zastosujTryb();
   }
 
-  Promise.resolve(chrome.storage.local?.get?.("settings")).then(dane => odczytajSkale(dane?.settings)).catch(blad => console.warn("Skala panelu",blad));
+  Promise.resolve(chrome.storage.local?.get?.(["settings","eventisTrybPanelu"])).then(dane => {
+    preferencja = dane?.eventisTrybPanelu === "plywajacy" ? "plywajacy" : "boczny";
+    odczytajSkale(dane?.settings);
+  }).catch(blad => console.warn("Ustawienia panelu",blad));
 
   if (!/^\/company\/?$|^\/company\/listevents(?:\/|$)|^\/event\/(?:edit|add)(?:\/|$)/i.test(location.pathname)
       && !document.querySelector("#esync-root")) {
@@ -78,29 +84,40 @@
     if (!korzen) return {ok:false,error:"Panel Eventis jeszcze się ładuje."};
     const html = korzen.innerHTML;
     if (html !== ostatniHtml) { ostatniHtml = html; wersja++; }
-    return {ok:true,html,wersja,tryb,skala:skale[tryb],klasy:korzen.className,komunikat:document.querySelector(".esync-toast")?.textContent || "",wartosci:Array.from(korzen.querySelectorAll(SELEKTOR_AKCJI),element => ({wartosc:element.value,zaznaczony:element.checked,otwarty:element.open}))};
+    return {ok:true,html,wersja,kontekst,tryb,skala:skale[tryb],klasy:korzen.className,komunikat:document.querySelector(".esync-toast")?.textContent || "",wartosci:Array.from(korzen.querySelectorAll(SELEKTOR_AKCJI),element => ({wartosc:element.value,zaznaczony:element.checked,otwarty:element.open}))};
   }
 
   function zastosujTryb() {
+    tryb = stan === "OPEN" || (obslugiwany && stan !== "UNAVAILABLE" && preferencja === "boczny") ? "boczny" : "plywajacy";
     const korzen = document.querySelector("#esync-root");
     if (!korzen) return;
     zastosujSkale(korzen);
     korzen.hidden = !aktywnyKontekst || tryb === "boczny";
-    if (!korzen.querySelector("#esync-tryb-panelu")) {
+    if (!document.querySelector("#esync-tryb-panelu")) {
       const przycisk = document.createElement("button");
       przycisk.type = "button";
       przycisk.id = "esync-tryb-panelu";
       przycisk.className = "esync-icon-btn";
-      przycisk.textContent = "◧";
+      przycisk.textContent = "◧ Otwórz asystenta";
       przycisk.title = "Panel boczny";
       przycisk.setAttribute("aria-label","Panel boczny");
       przycisk.addEventListener("click",() => {
         chrome.runtime.sendMessage({type:"OTWORZ_PANEL_BOCZNY"}).then(odpowiedz => {
+          stan = odpowiedz?.ok ? "OPEN" : "UNAVAILABLE";
+          if (odpowiedz?.ok) preferencja = "boczny";
+          zastosujTryb();
           if (!odpowiedz?.ok) alert(odpowiedz?.error || "Panel boczny jest niedostępny. Użyj panelu pływającego.");
-        }).catch(blad => console.warn("Panel boczny",blad));
+        }).catch(blad => { stan = "UNAVAILABLE"; zastosujTryb(); console.warn("Panel boczny",blad); });
       });
-      korzen.querySelector(".esync-head")?.appendChild(przycisk);
+      document.body.appendChild(przycisk);
     }
+    const przycisk = document.querySelector("#esync-tryb-panelu");
+    const rodzic = tryb === "plywajacy" ? korzen.querySelector(".esync-head") : document.body;
+    if (rodzic && przycisk.parentElement !== rodzic) rodzic.appendChild(przycisk);
+    przycisk.dataset.tryb = tryb;
+    const etykieta = tryb === "boczny" ? "◧ Otwórz asystenta" : "◧";
+    if (przycisk.textContent !== etykieta) przycisk.textContent = etykieta;
+    przycisk.hidden = !aktywnyKontekst || !obslugiwany || stan === "OPEN";
   }
 
   async function odswiezAktywnosc() {
@@ -109,6 +126,7 @@
       const wynik = await chrome.runtime.sendMessage({type:"CZY_AKTYWNY_KONTEKST_PANELU"});
       if (numer !== numerZapytania) return;
       aktywnyKontekst = !!wynik?.aktywny;
+      if (wynik?.stan) stan = wynik.stan;
       zastosujTryb();
     } catch (blad) { console.warn("Aktywność panelu",blad); }
   }
@@ -118,13 +136,15 @@
   chrome.runtime.onMessage.addListener((wiadomosc, nadawca, odpowiedz) => {
     if (nadawca.id !== chrome.runtime.id) return;
     if (wiadomosc?.type === "ODSWIEZ_AKTYWNOSC_PANELU") odswiezAktywnosc();
-    if (wiadomosc?.type === "ZAMKNIETO_PANEL_BOCZNY") { tryb = "plywajacy"; zastosujTryb(); odpowiedz({ok:true}); }
+    if (wiadomosc?.type === "ZAMKNIETO_PANEL_BOCZNY") { stan = "CLOSED"; zastosujTryb(); odpowiedz({ok:true}); }
+    if (wiadomosc?.type === "WYBIERZ_PANEL_PLYWAJACY") { stan = "CLOSED"; preferencja = "plywajacy"; zastosujTryb(); odpowiedz({ok:true}); }
     if (wiadomosc?.type === "POBIERZ_WIDOK_PANELU") {
-      tryb = "boczny";
+      stan = wiadomosc.stan || "OPEN";
       zastosujTryb();
       odpowiedz(pobierzWidok());
     }
     if (wiadomosc?.type === "AKCJA_PANELU") {
+      if (document.visibilityState === "hidden" || wiadomosc.kontekst !== kontekst) return odpowiedz({ok:false,error:"Kontekst karty zmienił się. Odśwież panel."});
       const widok = pobierzWidok();
       if (!widok.ok || wiadomosc.wersja !== widok.wersja) return odpowiedz({ok:false,error:"Widok zmienił się. Ponów działanie."});
       const elementy = document.querySelector("#esync-root").querySelectorAll(SELEKTOR_AKCJI);
@@ -145,12 +165,22 @@
   });
   chrome.storage.onChanged.addListener((zmiany,obszar) => {
     if (obszar === "local" && zmiany.settings) odczytajSkale(zmiany.settings.newValue);
+    if (obszar === "local" && zmiany.eventisTrybPanelu) {
+      preferencja = zmiany.eventisTrybPanelu.newValue === "plywajacy" ? "plywajacy" : "boczny";
+      zastosujTryb();
+    }
   });
-  const obserwator = new MutationObserver(zastosujTryb);
+  let powiadomienie;
+  const obserwator = new MutationObserver(() => {
+    zastosujTryb();
+    clearTimeout(powiadomienie);
+    powiadomienie = setTimeout(() => {
+      chrome.runtime.sendMessage({type:"ZMIANA_WIDOKU_PANELU"}).catch(() => {});
+    },80);
+  });
   obserwator.observe(document.body,{childList:true,subtree:true});
   chrome.runtime.sendMessage({type:"CZY_PANEL_BOCZNY"}).then(odpowiedz => {
     obslugiwany = !!odpowiedz?.obslugiwany;
-    if (!obslugiwany) tryb = "plywajacy";
     zastosujTryb();
   }).catch(blad => console.warn("Tryb panelu",blad));
 })();

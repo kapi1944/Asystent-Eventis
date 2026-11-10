@@ -54,7 +54,7 @@ test("Manifest V3: persistent context, źródło → kolejka → dynamiczny form
       if (adres !== adresZrodla) throw new Error("Zablokowano sieć testu MV3: " + adres);
       return {ok:true,status:200,url:adresZrodla,text:async () => zrodlo};
     };
-    await chrome.storage.local.set({eventisImportQueue:terminy,eventisQueueSchemaVersion:2,mappings:{"SEMPER|123":{
+    await chrome.storage.local.set({eventisTrybPanelu:"plywajacy",eventisImportQueue:terminy,eventisQueueSchemaVersion:2,mappings:{"SEMPER|123":{
       organization:"SEMPER",eventisEventId:"123",eventisTitle:tytul,sourceTitle:tytul,sourceUrl:adresZrodla,status:"ACTIVE",confidence:1
     }}});
   },{adresZrodla,zrodlo,tytul,terminy});
@@ -147,16 +147,27 @@ test("Manifest V3: persistent context, źródło → kolejka → dynamiczny form
     await panel.addStyleTag({path:sciezki.join(rozszerzenie,styl)});
   }
   await strona.bringToFront();
-  await panel.exposeFunction("przekazDoKartyTestowej",wiadomosc => pracownik.evaluate(async wiadomosc => {
-    const [karta] = await chrome.tabs.query({url:"https://eventis.pl/event/edit/123"});
-    return {...await chrome.tabs.sendMessage(karta.id,wiadomosc),identyfikatorKarty:karta.id};
-  },wiadomosc));
+  let ostatniaAkcja;
+  await panel.exposeFunction("przekazDoKartyTestowej",async wiadomosc => {
+    // Lustro w osobnej karcie symuluje natywny panel, który nie dezaktywuje karty Eventis.
+    if (wiadomosc.type === "AKCJA_PANELU") await strona.bringToFront();
+    const wynik = await pracownik.evaluate(async wiadomosc => {
+      const [karta] = await chrome.tabs.query({url:"https://eventis.pl/event/edit/123"});
+      if (wiadomosc.type === "POBIERZ_WIDOK_PANELU") kontrolerPanelu.ustawStan(karta.id,"OPEN");
+      if (wiadomosc.type === "ZAMKNIETO_PANEL_BOCZNY") kontrolerPanelu.ustawStan(karta.id,"CLOSED");
+      return {...await chrome.tabs.sendMessage(karta.id,wiadomosc),identyfikatorKarty:karta.id};
+    },wiadomosc);
+    if (wiadomosc.type === "AKCJA_PANELU") ostatniaAkcja = {wiadomosc,wynik};
+    return wynik;
+  });
   await panel.evaluate(() => { window.chrome = {runtime:{sendMessage:({wiadomosc}) => window.przekazDoKartyTestowej(wiadomosc)}}; });
   await panel.addScriptTag({path:sciezki.join(rozszerzenie,"sidepanel.js")});
   await panel.locator('#esync-add-queue-terms:not([disabled])').waitFor();
   await sprawdzWidok(panel);
   await panel.locator("#esync-add-queue-terms").click();
-  await panel.waitForFunction(() => document.querySelectorAll('[data-status-zapisu="WAITING_FOR_SAVE"]').length === 1);
+  await panel.waitForFunction(() => document.querySelectorAll('[data-status-zapisu="WAITING_FOR_SAVE"]').length === 1).catch(async blad => {
+    throw new Error(blad.message + " " + JSON.stringify({ostatniaAkcja,komunikat:await panel.locator("#komunikat").textContent(),widocznosc:await strona.evaluate(()=>document.visibilityState)}));
+  });
   await panel.evaluate(() => window.przekazDoKartyTestowej({type:"ZAMKNIETO_PANEL_BOCZNY"}));
   await panel.close();
 

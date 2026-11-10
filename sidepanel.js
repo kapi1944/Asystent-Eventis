@@ -11,12 +11,32 @@
   let trwaZanikanie = false;
   let trwaOdswiezanie = false;
   let identyfikatorOkna = null;
+  const przypisanaKarta = Number(new URL(location.href).searchParams.get("karta")) || null;
+  let kontekst = null;
+  let rewizja = 0;
   let port;
+  function zglosWidocznosc() {
+    const karta = przypisanaKarta ?? identyfikatorKarty;
+    if (karta !== null) port?.postMessage({identyfikatorKarty:karta,widoczny:document.visibilityState !== "hidden"});
+  }
+  function uniewaznijKontekst() {
+    rewizja++;
+    korzen.replaceChildren();
+    ostatniHtml = "";
+    identyfikatorKarty = null;
+    kontekst = null;
+    komunikat.textContent = "Odczytywanie aktywnej karty Eventis…";
+    odswiez();
+  }
   function polaczPanel() {
     if (!chrome.runtime.connect) return;
     port = chrome.runtime.connect({name:"panel-boczny"});
-    port.onDisconnect.addListener(() => { port = null; setTimeout(polaczPanel,1000); });
-    if (identyfikatorKarty !== null) port.postMessage({identyfikatorKarty});
+    port.onDisconnect.addListener(() => { port = null; uniewaznijKontekst(); setTimeout(polaczPanel,1000); });
+    port.onMessage?.addListener(wiadomosc => {
+      if (wiadomosc.type === "ZMIANA_KONTEKSTU_PANELU") uniewaznijKontekst();
+      if (wiadomosc.type === "ZMIANA_WIDOKU_PANELU") odswiez();
+    });
+    zglosWidocznosc();
   }
   polaczPanel();
 
@@ -39,9 +59,11 @@
   async function odswiez() {
     if (trwaOdswiezanie || trwaAkcja || trwaZanikanie || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
     trwaOdswiezanie = true;
+    const biezacaRewizja = rewizja;
     try {
       if (identyfikatorOkna === null && chrome.windows?.getCurrent) identyfikatorOkna = (await chrome.windows.getCurrent()).id;
-      const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
+      const widok = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty:przypisanaKarta,wiadomosc:{type:"POBIERZ_WIDOK_PANELU"}});
+      if (biezacaRewizja !== rewizja) return;
       if (trwaAkcja || (korzen.contains(document.activeElement) && document.activeElement.matches("input,textarea,select"))) return;
       if (!widok?.ok) throw new Error(widok?.error || "Otwórz kartę Eventis.");
       komunikat.textContent = widok.komunikat || "";
@@ -86,12 +108,13 @@
         window.scrollTo(0,przewiniecie);
         if (znikajace.length) {
           trwaZanikanie = true;
-          Promise.all(znikajace.map(zwinPozycje)).finally(() => { trwaZanikanie = false; });
+          Promise.all(znikajace.map(zwinPozycje)).finally(() => { trwaZanikanie = false; odswiez(); });
         }
       }
       wersja = widok.wersja;
       identyfikatorKarty = widok.identyfikatorKarty;
-      port?.postMessage({identyfikatorKarty});
+      kontekst = widok.kontekst;
+      zglosWidocznosc();
       korzen.className = widok.klasy || "";
       ostatnieWartosci = widok.wartosci;
       Array.from(korzen.querySelectorAll(selektor)).filter(element => !element.closest('[aria-hidden="true"]')).forEach((element,indeks) => {
@@ -101,48 +124,56 @@
         if (zapis?.otwarty !== undefined && element.open !== zapis.otwarty) element.open = zapis.otwarty;
       });
     } catch (blad) {
+      if (biezacaRewizja !== rewizja) return;
       komunikat.textContent = blad.message;
       korzen.replaceChildren();
       ostatniHtml = "";
       identyfikatorKarty = null;
-      port?.postMessage({identyfikatorKarty:null});
-    } finally { trwaOdswiezanie = false; }
+    } finally {
+      trwaOdswiezanie = false;
+      if (biezacaRewizja !== rewizja) odswiez();
+    }
   }
 
   async function przekazAkcje(zdarzenie) {
     const element = zdarzenie.target.closest(selektor);
     if (!element || !korzen.contains(element)) return;
-    if (trwaZanikanie) return;
+    if (trwaZanikanie || trwaAkcja || identyfikatorKarty === null) return;
     if (zdarzenie.type === "click" && !element.matches("button")) return;
     if (zdarzenie.type === "toggle" && !element.matches("details")) return;
     const elementy = Array.from(korzen.querySelectorAll(selektor));
     if (zdarzenie.type === "toggle" && element.open === ostatnieWartosci[elementy.indexOf(element)]?.otwarty) return;
     trwaAkcja = true;
+    const biezacaRewizja = rewizja;
     try {
       const wynik = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty,wiadomosc:{
-        type:"AKCJA_PANELU",wersja,indeks:elementy.indexOf(element),zdarzenie:zdarzenie.type,otwarty:element.open,
+        type:"AKCJA_PANELU",wersja,kontekst,indeks:elementy.indexOf(element),zdarzenie:zdarzenie.type,otwarty:element.open,
         wartosci:elementy.map(pole => ({wartosc:pole.value,zaznaczony:pole.checked}))
       }});
       if (!wynik?.ok) throw new Error(wynik?.error || "Nie udało się wykonać akcji.");
-    } catch (blad) { komunikat.textContent = blad.message; }
-    finally { trwaAkcja = false; }
+    } catch (blad) { if (biezacaRewizja === rewizja) komunikat.textContent = blad.message; }
+    finally { trwaAkcja = false; if (biezacaRewizja !== rewizja) odswiez(); }
   }
   for (const zdarzenie of ["click","input","change","toggle"]) korzen.addEventListener(zdarzenie,przekazAkcje,true);
   document.querySelector("#plywajacy").addEventListener("click",async () => {
     if (identyfikatorKarty !== null) {
-      await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty,wiadomosc:{type:"ZAMKNIETO_PANEL_BOCZNY"}});
-      port?.postMessage({identyfikatorKarty:null});
+      const wynik = await chrome.runtime.sendMessage({type:"PRZEKAZ_DO_PANELU",identyfikatorOkna,identyfikatorKarty,wiadomosc:{type:"WYBIERZ_PANEL_PLYWAJACY"}});
+      if (!wynik?.ok) { komunikat.textContent = wynik?.error || "Aktywna karta zmieniła się."; return; }
     }
     if (chrome.sidePanel?.close) {
       try {
-        const okno = await chrome.windows.getCurrent();
-        await chrome.sidePanel.close({windowId:okno.id});
+        await chrome.sidePanel.close({tabId:przypisanaKarta ?? identyfikatorKarty});
         return;
       } catch (blad) { console.debug("Zamknięcie panelu bocznego",blad); }
     }
     komunikat.textContent = "Panel pływający aktywny. Możesz zamknąć panel boczny przyciskiem Chrome.";
     window.close();
   });
-  setInterval(odswiez,800);
+  document.addEventListener("visibilitychange",() => { zglosWidocznosc(); uniewaznijKontekst(); });
+  chrome.tabs?.onActivated?.addListener(dane => { if (dane.windowId === identyfikatorOkna) uniewaznijKontekst(); });
+  chrome.tabs?.onUpdated?.addListener((identyfikator,zmiany) => {
+    if ((identyfikator === identyfikatorKarty || identyfikator === przypisanaKarta) && (zmiany.url !== undefined || zmiany.status === "loading")) uniewaznijKontekst();
+  });
+  setInterval(odswiez,2500);
   odswiez();
 })();

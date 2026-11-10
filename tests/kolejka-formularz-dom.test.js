@@ -851,6 +851,7 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     const przycisk=strona.locator('#esync-add-queue-terms');
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(147, 51, 234)');
     await przycisk.hover();
+    await strona.waitForFunction(() => getComputedStyle(document.querySelector('#esync-add-queue-terms')).backgroundColor === 'rgb(126, 34, 206)');
     asercje.equal(await przycisk.evaluate(element=>getComputedStyle(element).backgroundColor),'rgb(126, 34, 206)');
     await strona.keyboard.press('Tab');
     await przycisk.focus();

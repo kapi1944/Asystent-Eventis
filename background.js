@@ -7,61 +7,154 @@ const NARZEDZIA_KOLEJKI = globalThis.NarzedziaKolejkiEventis;
 const kolejkiClaimowOperacji = new Map();
 
 function czyKartaPaneluEventis(adres) {
-  return /^https:\/\/(?:[\w-]+\.)*eventis\.pl\//i.test(adres || "");
+  try {
+    const adresUrl = new URL(adres);
+    return adresUrl.protocol === "https:" && (adresUrl.hostname === "eventis.pl" || adresUrl.hostname.endsWith(".eventis.pl"));
+  } catch { return false; }
 }
 
-async function ustawDostepnoscPanelu(karta) {
-  if (!chrome.sidePanel?.setOptions || !karta?.id) return;
-  await chrome.sidePanel.setOptions({tabId:karta.id,path:"sidepanel.html",enabled:czyKartaPaneluEventis(karta.url)});
-}
+const kontrolerPanelu = (() => {
+  const konfiguracje = new Map();
+  const operacje = new Map();
+  const zlecenia = new Map();
+  const stany = new Map();
+  const porty = new Map();
+  const rewizje = new Map();
+  let oczekujePowiadomienie = false;
+  let zmianaKontekstu = false;
 
-if (chrome.sidePanel?.setOptions) {
-  chrome.sidePanel.setOptions({enabled:false})
-    .then(() => chrome.tabs.query({}))
-    .then(karty => Promise.all(karty.map(ustawDostepnoscPanelu)))
-    .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+  function powiadom(uniewaznij = false) {
+    zmianaKontekstu ||= uniewaznij;
+    if (oczekujePowiadomienie) return;
+    oczekujePowiadomienie = true;
+    Promise.resolve().then(async () => {
+      oczekujePowiadomienie = false;
+      const typ = zmianaKontekstu ? "ZMIANA_KONTEKSTU_PANELU" : "ZMIANA_WIDOKU_PANELU";
+      zmianaKontekstu = false;
+      for (const port of porty.keys()) {
+        try { port.postMessage({type:typ}); } catch {}
+      }
+      const karty = await chrome.tabs.query({});
+      await Promise.all(karty.filter(karta => czyKartaPaneluEventis(karta.url)).map(karta =>
+        chrome.tabs.sendMessage(karta.id,{type:"ODSWIEZ_AKTYWNOSC_PANELU"}).catch(() => {})));
+    }).catch(blad => console.debug("Powiadomienie panelu",blad));
+  }
+
+  function ustawStan(identyfikator, stan) {
+    if (!Number.isInteger(identyfikator) || stany.get(identyfikator) === stan) return;
+    stany.set(identyfikator,stan);
+    powiadom();
+  }
+
+  function aktualizuj(identyfikator) {
+    if (!Number.isInteger(identyfikator)) return;
+    const zlecenie = {};
+    zlecenia.set(identyfikator,zlecenie);
+    const operacja = (operacje.get(identyfikator) || Promise.resolve()).catch(() => {}).then(async () => {
+      if (zlecenia.get(identyfikator) !== zlecenie) return;
+      const karta = await chrome.tabs.get(identyfikator);
+      if (zlecenia.get(identyfikator) !== zlecenie) return;
+      const dostepny = czyKartaPaneluEventis(karta.url);
+      if (konfiguracje.get(identyfikator) === dostepny) return;
+      if (chrome.sidePanel?.setOptions) {
+        const sciezka = `sidepanel.html?karta=${identyfikator}`;
+        const opcje = await chrome.sidePanel.getOptions?.({tabId:identyfikator});
+        if (zlecenia.get(identyfikator) !== zlecenie) return;
+        if (opcje?.enabled !== dostepny || (dostepny && opcje?.path !== sciezka)) {
+          await chrome.sidePanel.setOptions({tabId:identyfikator,path:sciezka,enabled:dostepny});
+        }
+      }
+      if (zlecenia.get(identyfikator) !== zlecenie) return;
+      await chrome.action?.[dostepny ? "enable" : "disable"]?.(identyfikator);
+      if (zlecenia.get(identyfikator) !== zlecenie) return;
+      konfiguracje.set(identyfikator,dostepny);
+      if (!dostepny) ustawStan(identyfikator,"UNAVAILABLE");
+      else if (stany.get(identyfikator) === "UNAVAILABLE") ustawStan(identyfikator,"CLOSED");
+    }).catch(blad => {
+      konfiguracje.delete(identyfikator);
+      console.debug("Dostępność panelu bocznego",blad);
+    }).finally(() => { if (operacje.get(identyfikator) === operacja) operacje.delete(identyfikator); });
+    operacje.set(identyfikator,operacja);
+    return operacja;
+  }
+
+  function zmienKontekst() {
+    for (const [identyfikator,rewizja] of rewizje) rewizje.set(identyfikator,rewizja + 1);
+    powiadom(true);
+  }
+
+  chrome.tabs.onActivated?.addListener(({tabId:identyfikator}) => { zmienKontekst(); aktualizuj(identyfikator); });
   chrome.tabs.onUpdated?.addListener((identyfikator,zmiany,karta) => {
-    if (zmiany.url !== undefined || zmiany.status === "complete") {
-      ustawDostepnoscPanelu({...karta,id:identyfikator,url:zmiany.url ?? karta.url})
-        .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+    if (zmiany.url !== undefined || zmiany.status === "loading" || zmiany.status === "complete") {
+      if (karta?.active !== false) zmienKontekst();
+      aktualizuj(identyfikator);
     }
   });
-  chrome.tabs.onActivated?.addListener(({tabId:identyfikator}) => {
-    chrome.tabs.get(identyfikator).then(ustawDostepnoscPanelu)
-      .catch(blad => console.warn("Dostępność panelu bocznego",blad));
+  chrome.tabs.onRemoved?.addListener(identyfikator => {
+    zlecenia.delete(identyfikator);
+    konfiguracje.delete(identyfikator);
+    stany.delete(identyfikator);
+    zmienKontekst();
   });
-}
+  chrome.windows?.onFocusChanged?.addListener(() => {
+    zmienKontekst();
+    chrome.tabs.query({active:true}).then(karty => karty.forEach(karta => aktualizuj(karta.id))).catch(() => {});
+  });
+  chrome.sidePanel?.onOpened?.addListener(dane => ustawStan(dane.tabId,"OPEN"));
+  chrome.sidePanel?.onClosed?.addListener(dane => ustawStan(dane.tabId,"CLOSED"));
+  chrome.runtime.onConnect?.addListener(port => {
+    if (port.name !== "panel-boczny" || !czyNadawcaPanelu(port.sender)) return;
+    porty.set(port,null);
+    port.onMessage.addListener(wiadomosc => {
+      const identyfikator = wiadomosc?.identyfikatorKarty;
+      if (!Number.isInteger(identyfikator)) return;
+      porty.set(port,identyfikator);
+      ustawStan(identyfikator,wiadomosc.widoczny ? "OPEN" : "CLOSED");
+    });
+    port.onDisconnect.addListener(() => {
+      const identyfikator = porty.get(port);
+      porty.delete(port);
+      if (![...porty.values()].includes(identyfikator)) ustawStan(identyfikator,"CLOSED");
+    });
+  });
 
-function powiadomHostyPanelu() {
-  chrome.tabs.query({}).then(karty => Promise.all(karty.filter(karta => czyKartaPaneluEventis(karta.url)).map(karta =>
-    chrome.tabs.sendMessage(karta.id,{type:"ODSWIEZ_AKTYWNOSC_PANELU"}).catch(() => {})
-  ))).catch(() => {});
-}
-chrome.tabs.onActivated?.addListener(powiadomHostyPanelu);
-chrome.tabs.onUpdated?.addListener((identyfikator,zmiany) => {
-  if (zmiany.url !== undefined || zmiany.status === "complete") powiadomHostyPanelu();
-});
-chrome.windows?.onFocusChanged?.addListener(powiadomHostyPanelu);
+  const inicjalizacja = (async () => {
+    await chrome.action?.disable?.();
+    if (chrome.sidePanel?.setOptions) {
+      const domyslne = await chrome.sidePanel.getOptions?.({});
+      if (domyslne?.enabled !== false) await chrome.sidePanel.setOptions({enabled:false});
+    }
+    const karty = await chrome.tabs.query({});
+    await Promise.all(karty.map(karta => aktualizuj(karta.id)));
+    const ustawienia = await chrome.storage.local.get?.("eventisTrybPanelu");
+    if (ustawienia && ustawienia.eventisTrybPanelu === undefined) await chrome.storage.local.set({eventisTrybPanelu:"boczny"});
+  })().catch(blad => console.warn("Inicjalizacja panelu",blad));
 
-chrome.runtime.onConnect?.addListener(port => {
-  if (port.name !== "panel-boczny" || port.sender?.url !== chrome.runtime.getURL("sidepanel.html")) return;
-  let identyfikatorKarty = null;
-  const zwolnij = () => {
-    if (identyfikatorKarty !== null) chrome.tabs.sendMessage(identyfikatorKarty,{type:"ZAMKNIETO_PANEL_BOCZNY"}).catch(() => {});
-    identyfikatorKarty = null;
+  return {aktualizuj,inicjalizacja,ustawStan,
+    odswiezWidok:identyfikator => {
+      for (const [port,karta] of porty) {
+        if (karta === identyfikator) { try { port.postMessage({type:"ZMIANA_WIDOKU_PANELU"}); } catch {} }
+      }
+    },
+    stan:identyfikator => typeof chrome.sidePanel?.open !== "function" ? "UNAVAILABLE" : stany.get(identyfikator) || "CLOSED",
+    rewizja:identyfikator => { if (!rewizje.has(identyfikator)) rewizje.set(identyfikator,0); return rewizje.get(identyfikator); }
   };
-  port.onMessage.addListener(wiadomosc => {
-    if (wiadomosc?.identyfikatorKarty === identyfikatorKarty) return;
-    zwolnij();
-    if (Number.isInteger(wiadomosc?.identyfikatorKarty)) identyfikatorKarty = wiadomosc.identyfikatorKarty;
-  });
-  port.onDisconnect.addListener(zwolnij);
-});
+})();
+
+function czyNadawcaPanelu(nadawca) {
+  return !nadawca?.tab && nadawca?.url?.split("?")[0] === chrome.runtime.getURL("sidepanel.html");
+}
+
+async function otworzPanel(karta) {
+  // Wywołanie API przed pierwszym await zachowuje gest użytkownika.
+  await chrome.sidePanel.open({tabId:karta.id});
+  kontrolerPanelu.ustawStan(karta.id,"OPEN");
+  await chrome.storage.local.set({eventisTrybPanelu:"boczny"});
+}
 
 chrome.action?.onClicked?.addListener(karta => {
   if (!chrome.sidePanel?.open || !karta?.id || !czyKartaPaneluEventis(karta.url)) return;
-  chrome.sidePanel.open({tabId:karta.id})
-    .then(() => chrome.storage.local.set({eventisTrybPanelu:"boczny"}))
+  otworzPanel(karta)
     .catch(blad => console.warn("Otwarcie panelu bocznego",blad));
 });
 
@@ -491,11 +584,16 @@ async function setRichFieldInMainWorld(tabId, name, html, identyfikatorElementu,
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     switch (message?.type) {
+      case "ZMIANA_WIDOKU_PANELU": {
+        if (czyKartaPaneluEventis(sender.tab?.url)) kontrolerPanelu.odswiezWidok(sender.tab.id);
+        sendResponse({ok:true});
+        break;
+      }
       case "CZY_AKTYWNY_KONTEKST_PANELU": {
         if (!sender.tab?.id) throw new Error("Brak karty panelu.");
         const okno = await chrome.windows.getLastFocused();
         const [karta] = await chrome.tabs.query({active:true,windowId:okno.id});
-        sendResponse({ok:true,aktywny:!!okno.focused && karta?.id === sender.tab.id && czyKartaPaneluEventis(karta.url)});
+        sendResponse({ok:true,aktywny:!!okno.focused && karta?.id === sender.tab.id && czyKartaPaneluEventis(karta.url),stan:czyKartaPaneluEventis(karta?.url) ? kontrolerPanelu.stan(sender.tab.id) : "UNAVAILABLE"});
         break;
       }
       case "CZY_PANEL_BOCZNY": {
@@ -505,18 +603,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "OTWORZ_PANEL_BOCZNY": {
         if (!chrome.sidePanel?.open || !sender.tab?.id) throw new Error("Panel boczny jest niedostępny. Pozostawiono panel pływający.");
         if (!czyKartaPaneluEventis(sender.url || sender.tab.url)) throw new Error("Otwórz aktywną kartę listy lub edycji Eventis.");
-        await chrome.sidePanel.open({tabId:sender.tab.id});
-        await chrome.storage.local.set({eventisTrybPanelu:"boczny"});
+        await otworzPanel(sender.tab);
         sendResponse({ok:true});
         break;
       }
       case "PRZEKAZ_DO_PANELU": {
-        if (sender.tab || sender.url !== chrome.runtime.getURL("sidepanel.html")) throw new Error("Nieprawidłowy nadawca panelu.");
+        if (!czyNadawcaPanelu(sender)) throw new Error("Nieprawidłowy nadawca panelu.");
+        const rewizja = kontrolerPanelu.rewizja(message.identyfikatorOkna);
         const [karta] = await chrome.tabs.query(message.identyfikatorOkna ? {active:true,windowId:message.identyfikatorOkna} : {active:true,lastFocusedWindow:true});
         if (!karta?.id || !czyKartaPaneluEventis(karta.url)) throw new Error("Otwórz aktywną kartę listy lub edycji Eventis.");
-        if (message.identyfikatorKarty && message.identyfikatorKarty !== karta.id) throw new Error("Aktywna karta zmieniła się. Odśwież panel.");
-        if (!["POBIERZ_WIDOK_PANELU","AKCJA_PANELU","ZAMKNIETO_PANEL_BOCZNY"].includes(message.wiadomosc?.type)) throw new Error("Nieobsługiwany komunikat panelu.");
-        const wynik = await chrome.tabs.sendMessage(karta.id,message.wiadomosc);
+        const przypisanaKarta = Number(new URL(sender.url).searchParams.get("karta")) || null;
+        if ((przypisanaKarta !== null && przypisanaKarta !== karta.id) || (message.identyfikatorKarty != null && message.identyfikatorKarty !== karta.id)) throw new Error("Aktywna karta zmieniła się. Odśwież panel.");
+        if (!["POBIERZ_WIDOK_PANELU","AKCJA_PANELU","WYBIERZ_PANEL_PLYWAJACY"].includes(message.wiadomosc?.type)) throw new Error("Nieobsługiwany komunikat panelu.");
+        if (message.wiadomosc.type !== "POBIERZ_WIDOK_PANELU" && !Number.isInteger(message.identyfikatorKarty)) throw new Error("Brak kontekstu akcji panelu.");
+        if (rewizja !== kontrolerPanelu.rewizja(message.identyfikatorOkna)) throw new Error("Kontekst panelu zmienił się.");
+        const wiadomosc = message.wiadomosc.type === "POBIERZ_WIDOK_PANELU"
+          ? {...message.wiadomosc,stan:kontrolerPanelu.stan(karta.id)} : message.wiadomosc;
+        const wynik = await chrome.tabs.sendMessage(karta.id,wiadomosc);
+        const [aktualna] = await chrome.tabs.query({active:true,windowId:karta.windowId || message.identyfikatorOkna});
+        if (rewizja !== kontrolerPanelu.rewizja(message.identyfikatorOkna) || aktualna?.id !== karta.id || aktualna.url !== karta.url) throw new Error("Kontekst panelu zmienił się.");
+        if (message.wiadomosc.type === "WYBIERZ_PANEL_PLYWAJACY") await chrome.storage.local.set({eventisTrybPanelu:"plywajacy"});
         sendResponse({...wynik,identyfikatorKarty:karta.id});
         break;
       }
