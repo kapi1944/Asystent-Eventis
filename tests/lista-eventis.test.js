@@ -4,7 +4,9 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const maszyna = require("node:vm");
 const narzedzia = require("../shared/lista-eventis");
+const kolejka = require("../shared/kolejka-eventis");
 const mapowania = require("../shared/mapowania-wydarzen-eventis");
 
 function element(id, tytul, organizacja = "SEMPER") {
@@ -418,4 +420,40 @@ test("seria zachowuje identyfikatory kolejki i wygasa po dwóch godzinach", () =
   const aktywne = narzedzia.znajdzAktywneZadanie(serie,"SEMPER","401",new Date("2026-08-25T11:59:59.000Z").getTime());
   assert.deepEqual(aktywne.zadanie.identyfikatoryKolejki,["q1","q2"]);
   assert.equal(narzedzia.znajdzAktywneZadanie(serie,"SEMPER","401",new Date("2026-08-25T12:00:00.000Z").getTime()),null);
+});
+
+test("Pomiń termin w kafelku zmienia tylko jego status i renderuje ponownie", async () => {
+  const kod = fs.readFileSync(path.join(__dirname,"..","content","lista-eventis.js"),"utf8");
+  const poczatek = kod.indexOf("    for (const przycisk of $$('[data-queue-skip],[data-queue-restore]')");
+  const koniec = kod.indexOf('    $("#esync-otworz-karty")',poczatek);
+  assert.ok(poczatek >= 0 && koniec > poczatek);
+  const elementy = [
+    {id:"A",organization:"SEMPER",status:"PENDING",title:"Prawo pracy",normalizedTitle:"prawo-pracy",recordKey:"a",recordStatus:"CONFIRMED",start:"2026-11-20",end:"2026-11-21",city:"Warszawa"},
+    {id:"B",organization:"SEMPER",status:"PENDING",title:"Prawo pracy",normalizedTitle:"prawo-pracy",recordKey:"b",recordStatus:"CONFIRMED",start:"2026-11-22",end:"2026-11-23",city:"Kraków"}
+  ];
+  let zapisane;
+  let odswiezone = 0;
+  let wyrenderowane = 0;
+  let akcja;
+  const stan = {bladAnalizy:false,komunikat:"",kolejka:[]};
+  const przycisk = {dataset:{queueSkip:"A"},addEventListener:(_, sluchacz) => {akcja = sluchacz();}};
+  await maszyna.runInNewContext(`(async()=>{${kod.slice(poczatek,koniec)}})()`,{
+    przycisk,
+    $$:() => [przycisk],
+    chrome:{
+      storage:{local:{get:async () => ({eventisImportQueue:elementy})}},
+      runtime:{sendMessage:async wiadomosc => {zapisane = wiadomosc;return {ok:true,items:wiadomosc.items};}}
+    },
+    NARZEDZIA_KOLEJKI:kolejka,
+    stan,
+    odswiezPlanOtwarcia:async () => {odswiezone++;},
+    renderuj:() => {wyrenderowane++;},
+    obsluzAsynchronicznie:akcja => akcja
+  });
+  await akcja;
+  assert.equal(zapisane.type,"MERGE_QUEUE_ITEMS");
+  assert.equal(zapisane.items.map(item => `${item.id}:${item.status}`).join(","),"A:SKIPPED");
+  assert.equal(stan.kolejka.map(item => `${item.id}:${item.status}`).join(","),"A:SKIPPED");
+  assert.equal(odswiezone,1);
+  assert.equal(wyrenderowane,1);
 });

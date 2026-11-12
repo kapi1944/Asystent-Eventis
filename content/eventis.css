@@ -193,3 +193,11 @@
   }
   #esync-root details[open] > summary::after { transform:rotate(135deg); }
 }
+
+/* EVENTIS_UI_KARTY_KOMPAKTOWE_2026_11_12 */
+#esync-root .esync-statusy-powiazania{gap:4px;margin-bottom:6px}
+#esync-root .esync-statusy-powiazania .esync-badge{font-size:9px;line-height:1.25;padding:2px 5px;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+#esync-root .esync-naglowek-szkolenia>div{min-width:0}
+#esync-root .esync-termin-kolejki>span:first-child{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+#esync-root .esync-termin-kolejki .esync-akcje-terminu{flex:0 0 auto;white-space:nowrap}
+#esync-root .esync-termin-kolejki .esync-akcje-terminu .esync-btn{white-space:nowrap}

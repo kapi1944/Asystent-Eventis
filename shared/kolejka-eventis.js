@@ -281,7 +281,7 @@
     const nazwa = serwis === "zrodlo" ? DOZWOLONE_ORGANIZACJE.has(organizacja) ? organizacja : "ŹRÓDŁO" : "EVENTIS";
     const opisy = {
       FOUND:["green", "znaleziono"],
-      NOT_FOUND:[serwis === "zrodlo" ? "yellow" : "red", serwis === "zrodlo" ? "nie znaleziono szkolenia" : "NIE ZNALEZIONO OGŁOSZENIA EVENTIS"],
+      NOT_FOUND:[serwis === "zrodlo" ? "yellow" : "red", serwis === "zrodlo" ? "nie znaleziono szkolenia" : "Nie znaleziono ogłoszenia"],
       CREATE_NEW:["red", "wybrano utworzenie nowego ogłoszenia"],
       AMBIGUOUS:["yellow", "kilka podobnych wyników — wybierz właściwy"],
       SEARCHING:["gray", "wyszukiwanie trwa"],

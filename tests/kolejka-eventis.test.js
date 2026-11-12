@@ -337,3 +337,40 @@ test("ręczne dane zachowują regułę czterodniowego szkolenia i źródłową t
   assert.equal(termin.confirmedOnSemper,false);
   assert.equal(kolejka.dopasujElementKolejkiDoTerminow(element,[termin]).length,1);
 });
+
+test("etykiety powiązań rozróżniają źródło i ogłoszenie Eventis", () => {
+  assert.deepEqual(kolejka.opiszStatusPowiazania("FOUND","zrodlo","SEMPER"),{status:"FOUND",klasa:"green",etykieta:"SEMPER: znaleziono"});
+  assert.deepEqual(kolejka.opiszStatusPowiazania("FOUND","eventis","SEMPER"),{status:"FOUND",klasa:"green",etykieta:"EVENTIS: znaleziono"});
+  assert.deepEqual(kolejka.opiszStatusPowiazania("NOT_FOUND","eventis","SEMPER"),{status:"NOT_FOUND",klasa:"red",etykieta:"EVENTIS: Nie znaleziono ogłoszenia"});
+  assert.equal(kolejka.opiszStatusPowiazania("NOT_FOUND","zrodlo","SEMPER").etykieta,"SEMPER: nie znaleziono szkolenia");
+  assert.equal(kolejka.opiszStatusPowiazania("AMBIGUOUS","eventis","SEMPER").klasa,"yellow");
+  assert.equal(kolejka.opiszStatusPowiazania("CREATE_NEW","eventis","SEMPER").klasa,"red");
+  assert.equal(kolejka.opiszStatusPowiazania("SEARCHING","eventis","SEMPER").etykieta,"EVENTIS: wyszukiwanie trwa");
+  assert.equal(kolejka.opiszStatusPowiazania("ERROR","eventis","SEMPER").klasa,"red");
+  assert.equal(kolejka.opiszStatusPowiazania("UNKNOWN","eventis","SEMPER").klasa,"gray");
+});
+
+test("profile SEMPER i IIST zachowują własny znacznik źródła nad tytułem", () => {
+  for (const organizacja of ["SEMPER","IIST"]) {
+    const statusy = kolejka.ustalStatusyPowiazania({organization:organizacja,status:"NOT_FOUND"}, {statusZrodla:"FOUND"}, organizacja, {});
+    assert.equal(statusy.zrodlo.etykieta,`${organizacja}: znaleziono`);
+    assert.equal(statusy.ogloszenie.etykieta,"EVENTIS: Nie znaleziono ogłoszenia");
+    assert.equal(statusy.ogloszenie.klasa,"red");
+  }
+  const nieznana = kolejka.ustalStatusyPowiazania({status:"NOT_FOUND"}, {statusZrodla:"FOUND"}, "INNA", {});
+  assert.equal(nieznana.zrodlo.etykieta,"ŹRÓDŁO: znaleziono");
+});
+
+test("statusy tworzenia, wyszukiwania i błędu pozostają rozróżnialne", () => {
+  const utworzenie = kolejka.ustalStatusyPowiazania({status:"NOT_FOUND",manualStatus:"CREATE_NEW"}, {}, "SEMPER", {});
+  assert.equal(utworzenie.ogloszenie.status,"CREATE_NEW");
+  assert.equal(utworzenie.ogloszenie.etykieta,"EVENTIS: wybrano utworzenie nowego ogłoszenia");
+  const wyszukiwanie = kolejka.ustalStatusyPowiazania({status:"NOT_FOUND"}, {}, "SEMPER", {trwa:true});
+  assert.equal(wyszukiwanie.ogloszenie.status,"SEARCHING");
+  const blad = kolejka.ustalStatusyPowiazania({status:"NOT_FOUND"}, {}, "SEMPER", {blad:"timeout"});
+  assert.equal(blad.ogloszenie.status,"ERROR");
+  assert.equal(blad.ogloszenie.klasa,"red");
+  const niejednoznaczne = kolejka.ustalStatusyPowiazania({status:"AMBIGUOUS"}, {}, "SEMPER", {});
+  assert.equal(niejednoznaczne.ogloszenie.status,"AMBIGUOUS");
+  assert.equal(niejednoznaczne.ogloszenie.klasa,"yellow");
+});

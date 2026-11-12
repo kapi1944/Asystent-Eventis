@@ -1001,4 +1001,117 @@ test("regresje kolejki i kolorów w rzeczywistym DOM, bez połączeń sieciowych
     }
     await strona.close();
   });
+
+  await podtesty.test("kafelek: znaczniki nad tytułem, jeden komunikat braku i Pomiń w wierszu terminu",async () => {
+    const strona = await przygotuj();
+    const tytul = "Zarządzanie projektami i kontrola ryzyka ".repeat(8).trim();
+    for (const szerokosc of [320,360,390,768]) {
+      await strona.setViewportSize({width:szerokosc,height:900});
+      const wynik = await strona.evaluate(tytul => {
+        const element = {id:"ui-term",organization:"SEMPER",normalizedTitle:"zarzadzanie-projektami",title:tytul,
+          start:"2026-11-20",end:"2026-11-21",city:"Warszawa",status:"PENDING",recordStatus:"CONFIRMED"};
+        stan.organizacja = "SEMPER";
+        stan.kolejka = [element];
+        stan.preflight.wyniki = {};
+        const pozycja = {organization:"SEMPER",sourceTitle:tytul,normalizedSourceTitle:"zarzadzanie-projektami",status:"NOT_FOUND",selectedCandidate:null};
+        stan.preflight.wyniki[kluczRozstrzygniecia(pozycja)] = {statusZrodla:"FOUND",status:"UNVERIFIED"};
+        $("#esync-root").innerHTML = '<div class="esync-body">' + renderujPozycjeSzkolenia(pozycja,0) + '</div>';
+        const karta = $(".esync-pozycja-szkolenia");
+        const pierwszeDziecko = karta.firstElementChild;
+        const znaczniki = Array.from(karta.querySelectorAll(":scope > .esync-statusy-powiazania > .esync-badge"));
+        const termin = karta.querySelector(".esync-termin-kolejki");
+        const pierwszySpan = termin.querySelector("span:first-child");
+        const przycisk = termin.querySelector("[data-queue-skip]");
+        const akcje = termin.querySelector(".esync-akcje-terminu");
+        const prostokat = element => {const r = element.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right};};
+        const body = $(".esync-body");
+        return {
+          pierwszeDziecko:pierwszeDziecko.className,
+          znaczniki:znaczniki.map(znacznik => znacznik.innerText),
+          klasy:znaczniki.map(znacznik => znacznik.className),
+          opisBrak:karta.textContent.includes("Nie znaleziono odpowiedniego ogłoszenia Eventis"),
+          termSub:karta.querySelectorAll(".esync-term-sub").length,
+          termin:termin.innerText,
+          przycisk:przycisk?.innerText || "",
+          akcjeFlexWrap:getComputedStyle(akcje).flexWrap,
+          przyciskWhiteSpace:getComputedStyle(przycisk).whiteSpace,
+          prostokatTerminu:prostokat(termin),
+          prostokatSpanu:prostokat(pierwszySpan),
+          prostokatPrzycisku:prostokat(przycisk),
+          bodyScrollWidth:body.scrollWidth,
+          bodyClientWidth:body.clientWidth,
+          kartaScrollWidth:karta.scrollWidth,
+          kartaClientWidth:karta.clientWidth,
+          przyciski:Array.from(karta.querySelectorAll("button")).map(przycisk => przycisk.innerText.trim())
+        };
+      },tytul);
+      asercje.match(wynik.pierwszeDziecko,/esync-statusy-powiazania/);
+      asercje.deepEqual(wynik.znaczniki,["SEMPER: znaleziono","EVENTIS: Nie znaleziono ogłoszenia"]);
+      asercje.match(wynik.klasy[1],/red/);
+      asercje.equal(wynik.opisBrak,false);
+      asercje.equal(wynik.termSub,0);
+      asercje.match(wynik.termin,/Oczekuje/);
+      asercje.doesNotMatch(wynik.termin,/Oczekuje na weryfikację/);
+      asercje.equal(wynik.przycisk,"Pomiń");
+      asercje.equal(wynik.akcjeFlexWrap,"nowrap");
+      asercje.equal(wynik.przyciskWhiteSpace,"nowrap");
+      asercje.ok(wynik.prostokatPrzycisku.top < wynik.prostokatSpanu.bottom && wynik.prostokatPrzycisku.bottom > wynik.prostokatSpanu.top,`${szerokosc}px: Pomiń poza wierszem terminu`);
+      asercje.ok(wynik.prostokatPrzycisku.right <= wynik.prostokatTerminu.right + 1,`${szerokosc}px: Pomiń poza kafelkiem`);
+      asercje.ok(wynik.bodyScrollWidth <= wynik.bodyClientWidth + 1,`${szerokosc}px: poziome przewijanie ${wynik.bodyScrollWidth}/${wynik.bodyClientWidth}`);
+      asercje.ok(wynik.kartaScrollWidth <= wynik.kartaClientWidth + 1,`${szerokosc}px: karta ${wynik.kartaScrollWidth}/${wynik.kartaClientWidth}`);
+      for (const nazwa of ["Pomiń ten tytuł","Utwórz nowe ogłoszenie","Wskaż istniejące ogłoszenie","Wyszukaj ponownie"]) {
+        asercje.ok(wynik.przyciski.includes(nazwa),`${szerokosc}px: brak ${nazwa}`);
+      }
+    }
+    await strona.close();
+  });
+
+  await podtesty.test("kafelki FOUND, AMBIGUOUS i CREATE_NEW zachowują rozróżnialne znaczniki",async () => {
+    const strona = await przygotuj();
+    await strona.setViewportSize({width:360,height:900});
+    const statusy = await strona.evaluate(() => {
+      const element = {id:"ui-term",organization:"SEMPER",normalizedTitle:"prawo-pracy",title:"Prawo pracy",
+        start:"2026-11-20",end:"2026-11-21",city:"Warszawa",status:"PENDING",recordStatus:"CONFIRMED"};
+      stan.organizacja = "SEMPER";
+      stan.kolejka = [element];
+      stan.skanowanie = {};
+      const utworz = (status,opcje = {}) => {
+        stan.preflight.wyniki = {};
+        const pozycja = {organization:"SEMPER",sourceTitle:"Prawo pracy",normalizedSourceTitle:"prawo-pracy",status,...opcje};
+        stan.preflight.wyniki[kluczRozstrzygniecia(pozycja)] = {statusZrodla:"FOUND",status:"UNVERIFIED"};
+        $("#esync-root").innerHTML = '<div class="esync-body">' + renderujPozycjeSzkolenia(pozycja,0) + '</div>';
+        const karta = $(".esync-pozycja-szkolenia");
+        return {
+          znaczniki:Array.from(karta.querySelectorAll(":scope > .esync-statusy-powiazania > .esync-badge")).map(znacznik => ({tekst:znacznik.innerText,klasa:znacznik.className})),
+          opisy:Array.from(karta.querySelectorAll(".esync-small")).map(opis => opis.innerText),
+          opisBrak:karta.textContent.includes("Nie znaleziono odpowiedniego ogłoszenia Eventis"),
+          tytul:karta.querySelector(".esync-term-main")?.innerText || "",
+          przyciski:Array.from(karta.querySelectorAll("button")).map(przycisk => przycisk.innerText.trim())
+        };
+      };
+      return {
+        found:utworz("AUTO_MATCH",{selectedCandidate:{eventId:"123",url:"https://eventis.pl/event/edit/123"}}),
+        ambiguous:utworz("AMBIGUOUS",{candidates:[{eventId:"1",title:"Prawo pracy",score:.8,url:"https://eventis.pl/event/edit/1"}]}),
+        createNew:utworz("NOT_FOUND",{manualStatus:"CREATE_NEW"})
+      };
+    });
+    asercje.deepEqual(statusy.found.znaczniki.map(znacznik => znacznik.tekst),["SEMPER: znaleziono","EVENTIS: znaleziono"]);
+    asercje.match(statusy.found.znaczniki[0].klasa,/green/);
+    asercje.match(statusy.found.znaczniki[1].klasa,/green/);
+    asercje.deepEqual(statusy.ambiguous.znaczniki.map(znacznik => znacznik.tekst),["SEMPER: znaleziono","EVENTIS: kilka podobnych wyników — wybierz właściwy"]);
+    asercje.match(statusy.ambiguous.znaczniki[1].klasa,/yellow/);
+    asercje.ok(statusy.ambiguous.opisy.includes("Wybierz właściwe wydarzenie Eventis."));
+    asercje.deepEqual(statusy.createNew.znaczniki.map(znacznik => znacznik.tekst),["SEMPER: znaleziono","EVENTIS: wybrano utworzenie nowego ogłoszenia"]);
+    asercje.match(statusy.createNew.znaczniki[1].klasa,/red/);
+    asercje.ok(statusy.createNew.opisy.includes("Wybrano utworzenie nowego ogłoszenia."));
+    for (const karta of Object.values(statusy)) {
+      asercje.equal(karta.opisBrak,false);
+      asercje.equal(karta.tytul,"Prawo pracy");
+      asercje.ok(karta.przyciski.includes("Sprawdź ponownie"));
+      asercje.ok(karta.przyciski.includes("Zmień przypisanie"));
+    }
+    asercje.ok(statusy.ambiguous.przyciski.includes("Pomiń ten tytuł"));
+    asercje.ok(statusy.ambiguous.przyciski.includes("Utwórz nowe ogłoszenie"));
+    await strona.close();
+  });
 });
